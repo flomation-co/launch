@@ -1,0 +1,15 @@
+{
+  "package": {
+    "component_name": "launch",
+    "name": "flomation-launch",
+    "nicename": "Flomation Launch",
+    "summary": "Flomation Automate Launch Service",
+    "description": "Flomation Automate Launch Service - Launch service for automation workflows",
+    "license": "MIT",
+    "url": "https://flomation.co"
+  },
+  "maintainer": {
+    "name": "Build System",
+    "email": "build@flomation.co"
+  }
+}

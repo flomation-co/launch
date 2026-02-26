@@ -1,0 +1,261 @@
+include:
+  - project: 'flomation/infrastructure/ci-templates'
+    ref: main
+    file: '.gitlab-ci-templates.yml'
+
+stages:
+  - prepare
+  - test
+  - build
+  - rpm-publish
+  - deb-publish
+  - publish
+  - Development
+  - "Deploy to LIVE"
+
+variables:
+  VERSION: 1.0.${CI_PIPELINE_IID}
+  NAME: launch
+  AWS_ACCESS_KEY_ID: ${GITLAB_AWS_USER_KEY}
+  AWS_SECRET_ACCESS_KEY: ${GITLAB_AWS_USER_SECRET}
+  AWS_DEFAULT_REGION: eu-west-2
+  DEPLOY_BUCKET: ${AWS_DEPLOYMENT_BUCKET}
+  CI_TEMPLATES_PROJECT: flomation/infrastructure/ci-templates
+
+inject-metadata:
+  extends: .inject-metadata-template
+
+security:
+  stage: prepare
+  script:
+    - make sec
+
+lint:
+  stage: prepare
+  script:
+    - make lint
+
+compile:
+  stage: build
+  script:
+    - make build
+  artifacts:
+    paths:
+      - ./build.zip
+      - ./dist/flomation*
+    expire_in: 1 hour
+  cache:
+    policy: push
+    paths:
+      - ./build.zip
+
+build-rpm-8:
+  extends: .build-rpm-template
+  image: rockylinux/rockylinux:8
+  variables:
+    EL_VERSION: "8"
+    CI_TEMPLATES_REF: "main"
+    APPLICATION_BINARY: "${PACKAGE_NAME}-amd64-linux*"
+    ARCH: x86_64
+  needs:
+    - inject-metadata
+    - compile
+  artifacts:
+    paths:
+      - ${PACKAGE_NAME}-*el8.*.rpm
+    expire_in: 30 days
+
+build-rpm-9:
+  extends: .build-rpm-template
+  image: rockylinux/rockylinux:9
+  variables:
+    EL_VERSION: "9"
+    CI_TEMPLATES_REF: "main"
+    APPLICATION_BINARY: "${PACKAGE_NAME}-amd64-linux*"
+    ARCH: x86_64
+  needs:
+    - inject-metadata
+    - compile
+  artifacts:
+    paths:
+      - ${PACKAGE_NAME}-*el9.*.rpm
+    expire_in: 30 days
+
+build-rpm-8-arm64:
+  extends: .build-rpm-template
+  image: rockylinux/rockylinux:8
+  variables:
+    EL_VERSION: "8"
+    CI_TEMPLATES_REF: "main"
+    APPLICATION_BINARY: "${PACKAGE_NAME}-arm64-linux*"
+    ARCH: aarch64
+  needs:
+    - inject-metadata
+    - compile
+  artifacts:
+    paths:
+      - ${PACKAGE_NAME}-*el8.*.rpm
+    expire_in: 30 days
+
+build-rpm-9-arm64:
+  extends: .build-rpm-template
+  image: rockylinux/rockylinux:9
+  variables:
+    EL_VERSION: "9"
+    CI_TEMPLATES_REF: "main"
+    APPLICATION_BINARY: "${PACKAGE_NAME}-arm64-linux*"
+    ARCH: aarch64
+  needs:
+    - inject-metadata
+    - compile
+  artifacts:
+    paths:
+      - ${PACKAGE_NAME}-*el9.*.rpm
+    expire_in: 30 days
+
+build-deb:
+  extends: .build-deb-template
+  variables:
+    CI_TEMPLATES_REF: "main"
+    APPLICATION_BINARY: "${PACKAGE_NAME}-amd64-linux*"
+    ARCH: amd64
+  needs:
+    - inject-metadata
+    - compile
+  artifacts:
+    paths:
+      - ${PACKAGE_NAME}_*.deb
+    expire_in: 30 days
+
+build-deb-arm64:
+  extends: .build-deb-template
+  variables:
+    CI_TEMPLATES_REF: "main"
+    APPLICATION_BINARY: "${PACKAGE_NAME}-arm64-linux*"
+    ARCH: arm64
+  needs:
+    - inject-metadata
+    - compile
+  artifacts:
+    paths:
+      - ${PACKAGE_NAME}_*.deb
+    expire_in: 30 days
+
+build-msi:
+  extends: .build-msi-template
+  variables:
+    CI_TEMPLATES_REF: "main"
+    APPLICATION_BINARY: "${PACKAGE_NAME}-amd64-windows*"
+    ARCH: x64
+  needs:
+    - inject-metadata
+    - compile
+  artifacts:
+    paths:
+      - ${PACKAGE_NAME}-*.msi
+    expire_in: 30 days
+
+publish:
+  stage: publish
+  only:
+    - main
+  script:
+    - aws s3 cp build.zip s3://${DEPLOY_BUCKET}/${NAME}/${CI_PIPELINE_IID}.zip
+    - aws s3 cp build.zip s3://${DEPLOY_BUCKET}/${NAME}/latest.zip
+  cache:
+    policy: pull
+    paths:
+      - ./build.zip
+
+publish-msi:
+  extends: .publish-msi-template
+  needs:
+    - inject-metadata
+    - build-msi
+
+publish-rpm-8:
+  extends: .publish-rpm-template
+  variables:
+    RPM_FILE_PATTERN: "${PACKAGE_NAME}-*el8.x86_64.rpm"
+    EL_VERSION: "8"
+    CI_TEMPLATES_REF: "main"
+    ARCH: x86_64
+    S3_ACCESS_KEY_PARAM: ${S3_ACCESS_KEY_PARAM_DEV}
+    S3_SECRET_KEY_PARAM: ${S3_SECRET_KEY_PARAM_DEV}
+  needs:
+    - inject-metadata
+    - build-rpm-8
+
+publish-rpm-9:
+  extends: .publish-rpm-template
+  variables:
+    RPM_FILE_PATTERN: "${PACKAGE_NAME}-*el9.x86_64.rpm"
+    EL_VERSION: "9"
+    CI_TEMPLATES_REF: "main"
+    ARCH: x86_64
+    S3_ACCESS_KEY_PARAM: ${S3_ACCESS_KEY_PARAM_DEV}
+    S3_SECRET_KEY_PARAM: ${S3_SECRET_KEY_PARAM_DEV}
+  needs:
+    - inject-metadata
+    - build-rpm-9
+
+publish-rpm-8-arm64:
+  extends: .publish-rpm-template
+  variables:
+    RPM_FILE_PATTERN: "${PACKAGE_NAME}-*el8.aarch64.rpm"
+    EL_VERSION: "8"
+    CI_TEMPLATES_REF: "main"
+    ARCH: aarch64
+    S3_ACCESS_KEY_PARAM: ${S3_ACCESS_KEY_PARAM_DEV}
+    S3_SECRET_KEY_PARAM: ${S3_SECRET_KEY_PARAM_DEV}
+  needs:
+    - inject-metadata
+    - build-rpm-8-arm64
+
+publish-rpm-9-arm64:
+  extends: .publish-rpm-template
+  variables:
+    RPM_FILE_PATTERN: "${PACKAGE_NAME}-*el9.aarch64.rpm"
+    EL_VERSION: "9"
+    CI_TEMPLATES_REF: "main"
+    ARCH: aarch64
+    S3_ACCESS_KEY_PARAM: ${S3_ACCESS_KEY_PARAM_DEV}
+    S3_SECRET_KEY_PARAM: ${S3_SECRET_KEY_PARAM_DEV}
+  needs:
+    - inject-metadata
+    - build-rpm-9-arm64
+
+publish-deb:
+  extends: .publish-deb-template
+  variables:
+    DEB_FILE_PATTERN: "${PACKAGE_NAME}_*_amd64.deb"
+    CI_TEMPLATES_REF: "main"
+    ARCH: amd64
+    S3_ACCESS_KEY_PARAM: ${S3_ACCESS_KEY_PARAM_DEV}
+    S3_SECRET_KEY_PARAM: ${S3_SECRET_KEY_PARAM_DEV}
+  needs:
+    - inject-metadata
+    - build-deb
+
+publish-deb-arm64:
+  extends: .publish-deb-template
+  variables:
+    DEB_FILE_PATTERN: "${PACKAGE_NAME}_*_arm64.deb"
+    CI_TEMPLATES_REF: "main"
+    ARCH: arm64
+    S3_ACCESS_KEY_PARAM: ${S3_ACCESS_KEY_PARAM_DEV}
+    S3_SECRET_KEY_PARAM: ${S3_SECRET_KEY_PARAM_DEV}
+  needs:
+    - inject-metadata
+    - build-deb-arm64
+
+Deploy to DEV:
+  stage: Development
+  variables:
+    ENVIRONMENT: dev
+  only:
+    - main
+  script:
+    - aws s3 cp s3://${DEPLOY_BUCKET}/deploy-application-aws.sh .
+    - chmod +x deploy-application-aws.sh
+    - ENVIRONMENT=${ENVIRONMENT} APPLICATION=${NAME} ./deploy-application-aws.sh
