@@ -9,11 +9,11 @@ RUN addgroup -S flomation && adduser -S flomation -G flomation
 
 # Copy the binary into the container
 ARG BINARY_FILE
-COPY ${BINARY_FILE} /usr/local/bin/flomation-execute
+COPY ${BINARY_FILE} /usr/local/bin/flomation-launch
 
 # Make the binary executable and change ownership to flomation user
-RUN chmod +x /usr/local/bin/flomation-execute && \
-    chown flomation:flomation /usr/local/bin/flomation-execute
+RUN chmod +x /usr/local/bin/flomation-launch && \
+    chown flomation:flomation /usr/local/bin/flomation-launch
 
 # Switch to flomation user
 USER flomation
@@ -22,4 +22,4 @@ USER flomation
 # EXPOSE 8080
 
 # Set the binary as entrypoint
-ENTRYPOINT ["/usr/local/bin/flomation-execute"]
+ENTRYPOINT ["/usr/local/bin/flomation-launch"]
