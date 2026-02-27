@@ -10,6 +10,7 @@ stages:
   - rpm-publish
   - deb-publish
   - publish
+  - docker
   - Development
   - "Deploy to LIVE"
 
@@ -25,10 +26,10 @@ variables:
 inject-metadata:
   extends: .inject-metadata-template
 
-security:
-  stage: prepare
-  script:
-    - make sec
+#security:
+#  stage: prepare
+#  script:
+#    - make sec
 
 lint:
   stage: prepare
@@ -259,3 +260,21 @@ Deploy to DEV:
     - aws s3 cp s3://${DEPLOY_BUCKET}/deploy-application-aws.sh .
     - chmod +x deploy-application-aws.sh
     - ENVIRONMENT=${ENVIRONMENT} APPLICATION=${NAME} ./deploy-application-aws.sh
+
+build-docker-harbor:
+  extends: .build-docker-dhi-harbor-buildx-template
+  variables:
+    BINARY_FILE_PATTERN: "dist/${PACKAGE_NAME}-amd64-linux-*"
+  needs:
+    - inject-metadata
+    - compile
+
+build-docker:
+  extends: .build-docker-dhi-buildx-template
+  only:
+    - main
+  variables:
+    BINARY_FILE_PATTERN: "dist/${PACKAGE_NAME}-amd64-linux-*"
+  needs:
+    - inject-metadata
+    - compile
