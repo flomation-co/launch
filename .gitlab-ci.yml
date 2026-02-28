@@ -12,6 +12,7 @@ stages:
   - publish
   - docker
   - Development
+  - test-suite
   - "Deploy to LIVE"
 
 variables:
@@ -278,3 +279,12 @@ build-docker:
   needs:
     - inject-metadata
     - compile
+
+test-suite:
+  extends: .test-suite-template
+  only:
+    - main
+  needs:
+    - inject-metadata
+    - compile
+    - "Deploy to DEV"
