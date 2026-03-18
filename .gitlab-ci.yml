@@ -8,6 +8,7 @@ stages:
   - sync
   - test
   - build
+  - docs
   - rpm-publish
   - deb-publish
   - publish
@@ -51,6 +52,21 @@ compile:
     policy: push
     paths:
       - ./build.zip
+generate-docs:
+  extends: .generate-docs-template
+  rules:
+    - changes:
+        - internal/config/*
+  variables:
+    DOCS_SOURCE_FILE: internal/config/config.go
+    DOCS_COMPONENT_NAME: ${NAME}
+    CI_TEMPLATES_REF: main
+  artifacts:
+    name: "${NAME}-docs-${VERSION}"
+    paths:
+      - docs/
+    expire_in: 30 days
+
 
 build-rpm-8:
   extends: .build-rpm-template
@@ -251,6 +267,16 @@ publish-deb-arm64:
   needs:
     - inject-metadata
     - build-deb-arm64
+
+publish-docs:
+  extends: .publish-docs-template
+  rules:
+    - changes:
+        - internal/config/*
+  variables:
+    DOCS_S3_PATH: docs/flomation/config
+  dependencies:
+    - generate-docs
 
 Deploy to DEV:
   stage: Development
