@@ -8,6 +8,7 @@ stages:
   - sync
   - test
   - build
+  - docs
   - rpm-publish
   - deb-publish
   - publish
