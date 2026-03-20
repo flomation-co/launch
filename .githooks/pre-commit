@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+#
+# Flomation pre-commit hook: Auto-generate README.md using Claude Code
+#
+# What this does:
+#   1. Checks if any "meaningful" files changed (not just README.md itself)
+#   2. Calls Claude Code in headless mode to generate/update README.md
+#   3. Stages the updated README.md so it's included in the commit
+#
+# Requirements:
+#   - Claude Code CLI installed (`npm install -g @anthropic-ai/claude-code`)
+#   - Authenticated via either:
+#       - A Claude subscription (Pro/Max/Team/Enterprise) — just run `claude` and log in
+#       - An ANTHROPIC_API_KEY environment variable (pay-as-you-go)
+#   - .claude/readme-prompt.md exists in the project root
+#
+# Safety:
+#   - If Claude Code is not installed, the commit proceeds normally (with a warning)
+#   - If the API call fails, the commit proceeds normally (with a warning)
+#   - If no meaningful files changed, the hook skips entirely
+#   - A lock file prevents the hook from running recursively
+#
+
+set -euo pipefail
+
+# ─── Configuration ───────────────────────────────────────────────────────────
+
+# Files/patterns to IGNORE when deciding whether to regenerate the README.
+# If ONLY these files changed, the hook won't run Claude Code.
+IGNORE_PATTERNS=(
+    "README.md"
+    "*.lock"
+    "package-lock.json"
+    "yarn.lock"
+    ".gitignore"
+    ".claude/*"
+    ".githooks/*"
+)
+
+# Maximum time (seconds) to wait for Claude Code to respond.
+TIMEOUT_SECONDS=120
+
+# Lock file to prevent recursive runs
+LOCK_FILE="/tmp/.flomation-readme-hook-$(pwd | md5sum | cut -d' ' -f1).lock"
+
+# ─── Helper functions ────────────────────────────────────────────────────────
+
+warn() {
+    echo "⚠️  [readme-hook] $1" >&2
+}
+
+info() {
+    echo "ℹ️  [readme-hook] $1" >&2
+}
+
+cleanup() {
+    rm -f "$LOCK_FILE"
+}
+
+# ─── Guard checks ───────────────────────────────────────────────────────────
+
+# Prevent recursive runs (e.g., if something re-triggers the hook)
+if [ -f "$LOCK_FILE" ]; then
+    exit 0
+fi
+trap cleanup EXIT
+touch "$LOCK_FILE"
+
+# Check if Claude Code CLI is installed
+if ! command -v claude &>/dev/null; then
+    warn "Claude Code CLI not found. Skipping README generation."
+    warn "Install it: npm install -g @anthropic-ai/claude-code"
+    exit 0
+fi
+
+# Note: No API key check here.
+# Claude Code works with either:
+#   - A logged-in subscription (Pro/Max/Team/Enterprise) via `claude /login`
+#   - An ANTHROPIC_API_KEY environment variable (pay-as-you-go)
+# If neither is configured, the claude -p call below will fail gracefully
+# and the commit will proceed with a warning.
+
+# Check if the prompt template exists
+PROMPT_FILE=".claude/readme-prompt.md"
+if [ ! -f "$PROMPT_FILE" ]; then
+    warn "Prompt template not found at $PROMPT_FILE. Skipping README generation."
+    exit 0
+fi
+
+# ─── Determine if meaningful files changed ───────────────────────────────────
+
+# Get list of staged files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+
+if [ -z "$STAGED_FILES" ]; then
+    exit 0
+fi
+
+# Filter out ignored patterns
+MEANINGFUL_FILES=""
+for file in $STAGED_FILES; do
+    IGNORED=false
+    for pattern in "${IGNORE_PATTERNS[@]}"; do
+        # shellcheck disable=SC2254
+        case "$file" in
+            $pattern) IGNORED=true; break ;;
+        esac
+    done
+    if [ "$IGNORED" = false ]; then
+        MEANINGFUL_FILES="$MEANINGFUL_FILES $file"
+    fi
+done
+
+# If no meaningful files changed, skip
+if [ -z "$(echo "$MEANINGFUL_FILES" | xargs)" ]; then
+    exit 0
+fi
+
+# ─── Generate README ────────────────────────────────────────────────────────
+
+info "Generating README.md with Claude Code..."
+
+# Build the prompt
+# We tell Claude Code to:
+#   1. Read the project files
+#   2. Follow the template in .claude/readme-prompt.md
+#   3. Write the output to README.md
+PROMPT1="Read the instructions in .claude/readme-prompt.md carefully. \
+Then examine this project's source files, configuration files, and any existing README.md. \
+Generate a complete README.md following the Flomation template defined in the prompt file. \
+Write the result directly to README.md in the project root. \
+If a README.md already exists, update it — don't start from scratch unless it's completely wrong. \
+Preserve any manually-written sections that are marked with <!-- MANUAL --> comments. \
+Only output the file — no explanation or commentary. Omit any references to gitlabci as this is non relevant to the readme"
+
+# Run Claude Code in headless mode with a timeout
+if timeout "${TIMEOUT_SECONDS}" claude -p "$PROMPT1" --allowedTools "Edit,Write,Read" > /dev/null 2>&1; then
+    # Check if README.md was actually modified
+    if git diff --name-only README.md 2>/dev/null | grep -q "README.md"; then
+        git add README.md
+        info "README.md updated and staged."
+    else
+        info "README.md unchanged."
+    fi
+else
+    EXIT_CODE=$?
+    if [ "$EXIT_CODE" -eq 124 ]; then
+        warn "Claude Code timed out after ${TIMEOUT_SECONDS}s. Skipping README generation."
+    else
+        warn "Claude Code failed (exit code: $EXIT_CODE). Skipping README generation."
+    fi
+    # Don't block the commit — just warn
+    exit 0
+fi
+
+exit 0
