@@ -28,6 +28,10 @@ type ServiceConfig struct {
 	Key *string `json:"key"`
 }
 
+type SecurityConfig struct {
+	IdentityService string `json:"identity_service"`
+}
+
 type GoogleConfig struct {
 	ClientID        string  `json:"client_id"`
 	ClientSecret    string  `json:"client_secret"`
@@ -38,6 +42,7 @@ type Config struct {
 	Database         DatabaseConfig   `json:"database"`
 	HttpListenConfig HttpListenConfig `json:"http"`
 	Automate         ServiceConfig    `json:"automate"`
+	Security         SecurityConfig   `json:"security"`
 	Google           *GoogleConfig    `json:"google"`
 }
 

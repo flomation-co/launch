@@ -20,6 +20,7 @@ import (
 	"flomation.app/automate/launch/internal/config"
 	"flomation.app/automate/launch/internal/google"
 	"flomation.app/automate/launch/internal/version"
+	"github.com/flomation-co/sentinel-client"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -82,7 +83,10 @@ func (s *Service) configure() error {
 	s.engine.POST("/form/:id", s.submitForm)
 	s.engine.GET("/image/:id", s.handleImageLoad)
 
-	s.engine.POST("/trigger/:id", s.createTrigger)
+	admin := s.engine.Group("/trigger")
+	admin.Use(s.jwtMiddleware)
+	admin.POST("/:id", s.createTrigger)
+	admin.DELETE("/:id", s.deleteTrigger)
 
 	// TODO: Temp
 	s.engine.GET("/google/credential", func(c *gin.Context) {
@@ -409,4 +413,31 @@ func (s *Service) handleForm(c *gin.Context) {
 	c.HTML(http.StatusOK, "form.html", gin.H{
 		"Form": strings.TrimSuffix(string(j)[1:], "\""),
 	})
+}
+
+func (s *Service) jwtMiddleware(c *gin.Context) {
+	header := c.GetHeader("Authorization")
+	parts := strings.Split(header, " ")
+	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+
+	if s.config.Security.IdentityService == "" {
+		log.Warn("identity service not configured — rejecting request")
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := sentinel.GetUser(s.config.Security.IdentityService, parts[1])
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err,
+		}).Error("unable to validate token with identity service")
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+
+	c.Set("account_id", *userID)
+	c.Next()
 }
