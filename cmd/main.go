@@ -4,6 +4,7 @@ import (
 	"flomation.app/automate/launch/internal/config"
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
 	"flomation.app/automate/launch/internal/http"
+	"flomation.app/automate/launch/internal/schedule"
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
 	"flomation.app/automate/launch/internal/version"
@@ -45,6 +46,9 @@ func main() {
 
 	_ = gitpoll.NewService(cfg, db, t)
 	log.Info("git poll service started")
+
+	_ = schedule.NewService(cfg, t, db)
+	log.Info("schedule service started")
 
 	r, err := http.NewService(cfg, t)
 	if err != nil {
