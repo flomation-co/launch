@@ -20,6 +20,7 @@ type Service struct {
 
 	stmtGetTriggerByID      *sqlx.NamedStmt
 	stmtGetTriggersByFlowID *sqlx.NamedStmt
+	stmtGetTriggersByType   *sqlx.NamedStmt
 }
 
 func NewService(config *config.Config) (*Service, error) {
@@ -102,6 +103,23 @@ func NewService(config *config.Config) (*Service, error) {
 		return nil, errors.Wrap(err, "unable to prepare named statement stmtGetTriggersByFlowID")
 	}
 
+	if s.stmtGetTriggersByType, err = db.PrepareNamed(`
+		SELECT
+		    id,
+		    type,
+		    data,
+		    flow_id,
+		    created_at,
+		    disabled_at
+		FROM
+		    trigger
+		WHERE
+		    type = :type
+		    AND disabled_at IS NULL;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare named statement stmtGetTriggersByType")
+	}
+
 	return &s, nil
 }
 
@@ -149,6 +167,19 @@ func (s *Service) GetTriggersByFlowID(flowId string) ([]*launch.Trigger, error) 
 		FlowID string `db:"id"`
 	}{
 		FlowID: flowId,
+	}); err != nil {
+		return nil, err
+	}
+
+	return t, nil
+}
+
+func (s *Service) GetTriggersByType(triggerType string) ([]*launch.Trigger, error) {
+	var t []*launch.Trigger
+	if err := s.stmtGetTriggersByType.Select(&t, struct {
+		Type string `db:"type"`
+	}{
+		Type: triggerType,
 	}); err != nil {
 		return nil, err
 	}

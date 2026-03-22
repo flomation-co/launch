@@ -1,21 +1,57 @@
 package poll
 
 import (
-	"flomation.app/automate/launch/internal/config"
+	"encoding/json"
+	"os/exec"
+	"regexp"
+	"strings"
+	"sync"
 	"time"
+
+	"flomation.app/automate/launch"
+	"flomation.app/automate/launch/internal/config"
+	"flomation.app/automate/launch/internal/persistence"
+	"flomation.app/automate/launch/internal/trigger"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
-	DefaultPollInterval = time.Second
+	DefaultPollInterval = 60 * time.Second
+	MinPollInterval     = 10 * time.Second
 )
 
-type Service struct {
-	config *config.Config
+// triggerConfig holds the parsed configuration from a git-poll trigger's Data field.
+type triggerConfig struct {
+	RepositoryURL string `json:"repository_url"`
+	SSHKey        string `json:"ssh_key"`
+	BranchRegex   string `json:"branch_regex"`
+	PollInterval  string `json:"poll_interval"`
 }
 
-func NewService(config *config.Config) *Service {
+// branchRef represents a branch name and its HEAD commit hash from ls-remote.
+type branchRef struct {
+	Hash   string
+	Branch string
+}
+
+type Service struct {
+	config  *config.Config
+	db      *persistence.Service
+	trigger *trigger.Service
+
+	// state tracks the last known commit hash per trigger per branch.
+	// Key: triggerID -> branchName -> commitHash
+	state map[string]map[string]string
+	mu    sync.RWMutex
+}
+
+func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service) *Service {
 	s := Service{
-		config: config,
+		config:  config,
+		db:      db,
+		trigger: trigger,
+		state:   make(map[string]map[string]string),
 	}
 
 	go s.watch()
@@ -24,8 +60,172 @@ func NewService(config *config.Config) *Service {
 }
 
 func (s *Service) watch() {
-	for {
+	// Initial delay to let the service start up fully.
+	time.Sleep(5 * time.Second)
 
+	for {
+		s.poll()
 		time.Sleep(DefaultPollInterval)
 	}
+}
+
+func (s *Service) poll() {
+	triggers, err := s.db.GetTriggersByType(launch.TriggerTypeGitPoll)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err,
+		}).Error("unable to get git-poll triggers")
+		return
+	}
+
+	for _, tr := range triggers {
+		s.checkTrigger(tr)
+	}
+}
+
+func (s *Service) checkTrigger(tr *launch.Trigger) {
+	var cfg triggerConfig
+	if err := json.Unmarshal(tr.Data, &cfg); err != nil {
+		log.WithFields(log.Fields{
+			"error":      err,
+			"trigger_id": tr.ID,
+		}).Error("unable to parse git-poll trigger config")
+		return
+	}
+
+	if cfg.RepositoryURL == "" {
+		log.WithFields(log.Fields{
+			"trigger_id": tr.ID,
+		}).Warn("git-poll trigger has no repository URL")
+		return
+	}
+
+	refs, err := lsRemote(cfg.RepositoryURL, cfg.SSHKey)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error":      err,
+			"trigger_id": tr.ID,
+			"repo":       cfg.RepositoryURL,
+		}).Error("unable to ls-remote repository")
+		return
+	}
+
+	var branchFilter *regexp.Regexp
+	if cfg.BranchRegex != "" {
+		branchFilter, err = regexp.Compile(cfg.BranchRegex)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"error":      err,
+				"trigger_id": tr.ID,
+				"regex":      cfg.BranchRegex,
+			}).Error("invalid branch regex")
+			return
+		}
+	}
+
+	s.mu.Lock()
+	if s.state[tr.ID] == nil {
+		s.state[tr.ID] = make(map[string]string)
+	}
+	known := s.state[tr.ID]
+	s.mu.Unlock()
+
+	for _, ref := range refs {
+		if branchFilter != nil && !branchFilter.MatchString(ref.Branch) {
+			continue
+		}
+
+		s.mu.RLock()
+		previousHash, seen := known[ref.Branch]
+		s.mu.RUnlock()
+
+		if !seen {
+			// First time seeing this branch — record state but don't trigger,
+			// to avoid firing on every existing branch at startup.
+			s.mu.Lock()
+			s.state[tr.ID][ref.Branch] = ref.Hash
+			s.mu.Unlock()
+			continue
+		}
+
+		if ref.Hash != previousHash {
+			log.WithFields(log.Fields{
+				"trigger_id": tr.ID,
+				"branch":     ref.Branch,
+				"old_hash":   previousHash,
+				"new_hash":   ref.Hash,
+			}).Info("git change detected, firing trigger")
+
+			s.mu.Lock()
+			s.state[tr.ID][ref.Branch] = ref.Hash
+			s.mu.Unlock()
+
+			data := map[string]interface{}{
+				"branch":         ref.Branch,
+				"commit_hash":    ref.Hash,
+				"commit_message": "",
+				"repository_url": cfg.RepositoryURL,
+			}
+
+			if err := s.trigger.Trigger(tr, data); err != nil {
+				log.WithFields(log.Fields{
+					"error":      err,
+					"trigger_id": tr.ID,
+					"branch":     ref.Branch,
+				}).Error("unable to fire git-poll trigger")
+			}
+		}
+	}
+}
+
+// lsRemote runs `git ls-remote --heads` against the repository and returns
+// the branch refs. This avoids cloning the entire repository.
+func lsRemote(repoURL string, sshKey string) ([]branchRef, error) {
+	args := []string{"ls-remote", "--heads", repoURL}
+
+	cmd := exec.Command("git", args...)
+
+	if sshKey != "" {
+		cmd.Env = append(cmd.Environ(),
+			"GIT_SSH_COMMAND=ssh -i "+sshKey+" -o StrictHostKeyChecking=no",
+		)
+	}
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	return parseRefs(string(output)), nil
+}
+
+// parseRefs parses the output of `git ls-remote --heads` into branchRef values.
+// Each line has the format: <hash>\t<refname>
+func parseRefs(output string) []branchRef {
+	var refs []branchRef
+
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		hash := parts[0]
+		refName := parts[1]
+
+		// Strip refs/heads/ prefix to get the branch name.
+		branch := strings.TrimPrefix(refName, "refs/heads/")
+
+		refs = append(refs, branchRef{
+			Hash:   hash,
+			Branch: branch,
+		})
+	}
+
+	return refs
 }
