@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +22,7 @@ const (
 // ScheduleConfig represents the configuration stored in a schedule trigger's Data field.
 type ScheduleConfig struct {
 	Mode       string   `json:"mode"`                  // "interval", "daily", "weekly"
-	Interval   int      `json:"interval,omitempty"`     // e.g. 15
+	Interval   string   `json:"interval,omitempty"`     // e.g. "15"
 	Unit       string   `json:"unit,omitempty"`         // "minutes", "hours", "days"
 	TimeOfDay  string   `json:"time_of_day,omitempty"`  // "HH:MM" 24-hour format
 	DaysOfWeek []string `json:"days_of_week,omitempty"` // ["monday","wednesday"]
@@ -162,18 +163,19 @@ func ShouldFire(cfg ScheduleConfig, lastFired time.Time, now time.Time) bool {
 }
 
 func shouldFireInterval(cfg ScheduleConfig, lastFired time.Time, now time.Time) bool {
-	if cfg.Interval <= 0 {
+	interval, err := strconv.Atoi(cfg.Interval)
+	if err != nil || interval <= 0 {
 		return false
 	}
 
 	var duration time.Duration
 	switch cfg.Unit {
 	case "minutes":
-		duration = time.Duration(cfg.Interval) * time.Minute
+		duration = time.Duration(interval) * time.Minute
 	case "hours":
-		duration = time.Duration(cfg.Interval) * time.Hour
+		duration = time.Duration(interval) * time.Hour
 	case "days":
-		duration = time.Duration(cfg.Interval) * 24 * time.Hour
+		duration = time.Duration(interval) * 24 * time.Hour
 	default:
 		return false
 	}

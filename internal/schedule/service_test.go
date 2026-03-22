@@ -11,7 +11,7 @@ func Test_ShouldFire_Interval_Minutes(t *testing.T) {
 	t.Parallel()
 	RegisterTestingT(t)
 
-	cfg := ScheduleConfig{Mode: "interval", Interval: 5, Unit: "minutes"}
+	cfg := ScheduleConfig{Mode: "interval", Interval: "5", Unit: "minutes"}
 	now := time.Now()
 
 	// Not enough time passed
@@ -25,7 +25,7 @@ func Test_ShouldFire_Interval_Hours(t *testing.T) {
 	t.Parallel()
 	RegisterTestingT(t)
 
-	cfg := ScheduleConfig{Mode: "interval", Interval: 2, Unit: "hours"}
+	cfg := ScheduleConfig{Mode: "interval", Interval: "2", Unit: "hours"}
 	now := time.Now()
 
 	Expect(ShouldFire(cfg, now.Add(-1*time.Hour), now)).To(BeFalse())
@@ -36,7 +36,7 @@ func Test_ShouldFire_Interval_Days(t *testing.T) {
 	t.Parallel()
 	RegisterTestingT(t)
 
-	cfg := ScheduleConfig{Mode: "interval", Interval: 1, Unit: "days"}
+	cfg := ScheduleConfig{Mode: "interval", Interval: "1", Unit: "days"}
 	now := time.Now()
 
 	Expect(ShouldFire(cfg, now.Add(-12*time.Hour), now)).To(BeFalse())
@@ -47,7 +47,7 @@ func Test_ShouldFire_Interval_ZeroInterval(t *testing.T) {
 	t.Parallel()
 	RegisterTestingT(t)
 
-	cfg := ScheduleConfig{Mode: "interval", Interval: 0, Unit: "minutes"}
+	cfg := ScheduleConfig{Mode: "interval", Interval: "0", Unit: "minutes"}
 	Expect(ShouldFire(cfg, time.Now().Add(-time.Hour), time.Now())).To(BeFalse())
 }
 
@@ -55,7 +55,7 @@ func Test_ShouldFire_Interval_InvalidUnit(t *testing.T) {
 	t.Parallel()
 	RegisterTestingT(t)
 
-	cfg := ScheduleConfig{Mode: "interval", Interval: 5, Unit: "weeks"}
+	cfg := ScheduleConfig{Mode: "interval", Interval: "5", Unit: "weeks"}
 	Expect(ShouldFire(cfg, time.Now().Add(-time.Hour), time.Now())).To(BeFalse())
 }
 
