@@ -43,6 +43,10 @@ func (s *Service) UpdateTrigger(trigger launch.Trigger) error {
 	return s.db.UpdateTrigger(trigger)
 }
 
+func (s *Service) RemoveTrigger(trigger launch.Trigger) error {
+	return s.db.RemoveTrigger(trigger)
+}
+
 func (s *Service) GetTriggerByID(id string) (*launch.Trigger, error) {
 	return s.db.GetTriggerByID(id)
 }

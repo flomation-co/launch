@@ -2,7 +2,6 @@ package http
 
 import (
 	"net/http"
-	"time"
 
 	"flomation.app/automate/launch"
 
@@ -64,17 +63,15 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	}
 
 	if t == nil {
-		c.AbortWithStatus(http.StatusNotFound)
+		// Already deleted or never existed — treat as success
+		c.Status(http.StatusOK)
 		return
 	}
 
-	now := time.Now()
-	t.DisabledAt = &now
-
-	if err := s.trigger.UpdateTrigger(*t); err != nil {
+	if err := s.trigger.RemoveTrigger(*t); err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
-		}).Error("unable to disable trigger")
+		}).Error("unable to delete trigger")
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
