@@ -1,6 +1,9 @@
 package launch
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	TriggerTypeManual    = "manual"
@@ -17,7 +20,7 @@ const (
 type Trigger struct {
 	ID         string     `json:"id" db:"id"`
 	Type       string     `json:"type" db:"type"`
-	Data       []byte     `json:"data" db:"data"`
+	Data       json.RawMessage `json:"data" db:"data"`
 	FlowID     string     `json:"flow_id" db:"flow_id"`
 	CreatedAt  time.Time  `json:"created_at" db:"created_at"`
 	DisabledAt *time.Time `json:"disabled_at" db:"disabled_at"`
