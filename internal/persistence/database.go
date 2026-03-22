@@ -45,14 +45,18 @@ func NewService(config *config.Config) (*Service, error) {
 
 	if s.stmtCreateTrigger, err = db.PrepareNamed(`
 		INSERT INTO trigger (
+			id,
 			type,
 			data,
-			flow_id                
+			flow_id
 		) VALUES (
+			:id,
 			:type,
 			:data,
 			:flow_id
-		) RETURNING id;
+		)
+		ON CONFLICT (id) DO UPDATE SET data = :data
+		RETURNING id;
 	`); err != nil {
 		return nil, errors.Wrap(err, "unable to prepare named statement stmtCreateTrigger")
 	}

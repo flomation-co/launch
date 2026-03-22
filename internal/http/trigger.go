@@ -32,30 +32,23 @@ func (s *Service) createTrigger(c *gin.Context) {
 		return
 	}
 
-	if t == nil {
-		r, err := s.trigger.CreateTrigger(tr)
-		if err != nil {
-			log.WithFields(log.Fields{
-				"error": err,
-			}).Error("unable to create new trigger")
-			c.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
+	// Use the API's trigger ID so upsert works correctly
+	tr.ID = id
 
-		c.JSON(http.StatusCreated, r)
-		return
-	}
-
-	err = s.trigger.UpdateTrigger(tr)
+	r, err := s.trigger.CreateTrigger(tr)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
-		}).Error("unable to update existing trigger")
+		}).Error("unable to upsert trigger")
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
-	c.JSON(http.StatusOK, tr)
+	if t == nil {
+		c.JSON(http.StatusCreated, r)
+	} else {
+		c.JSON(http.StatusOK, r)
+	}
 }
 
 func (s *Service) deleteTrigger(c *gin.Context) {
