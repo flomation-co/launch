@@ -20,7 +20,7 @@ func CheckAndUpdate(config *config.Config) error {
 		return err
 	}
 
-	m, err := migrate.NewWithSourceInstance("iofs", d, fmt.Sprintf("postgres://%v:%v@%v:%d/%v", config.Database.Username, config.Database.Password, config.Database.Hostname, config.Database.Port, config.Database.Database))
+	m, err := migrate.NewWithSourceInstance("iofs", d, fmt.Sprintf("postgres://%v:%v@%v:%d/%v?sslmode=%v", config.Database.Username, config.Database.Password, config.Database.Hostname, config.Database.Port, config.Database.Database, config.Database.SSLModeOverride))
 	if err != nil {
 		return err
 	}

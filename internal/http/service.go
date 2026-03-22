@@ -18,7 +18,6 @@ import (
 	"flomation.app/automate/launch/internal/trigger"
 
 	"flomation.app/automate/launch/internal/config"
-	"flomation.app/automate/launch/internal/google"
 	"flomation.app/automate/launch/internal/version"
 	"github.com/flomation-co/sentinel-client"
 	"github.com/gin-gonic/gin"
@@ -29,15 +28,13 @@ import (
 type Service struct {
 	config  *config.Config
 	engine  *gin.Engine
-	google  *google.Service
 	trigger *trigger.Service
 }
 
-func NewService(config *config.Config, google *google.Service, trigger *trigger.Service) (*Service, error) {
+func NewService(config *config.Config, trigger *trigger.Service) (*Service, error) {
 	s := Service{
 		config:  config,
 		engine:  gin.New(),
-		google:  google,
 		trigger: trigger,
 	}
 
@@ -87,24 +84,6 @@ func (s *Service) configure() error {
 	admin.Use(s.jwtMiddleware)
 	admin.POST("/:id", s.createTrigger)
 	admin.DELETE("/:id", s.deleteTrigger)
-
-	// TODO: Temp
-	s.engine.GET("/google/credential", func(c *gin.Context) {
-		code := c.Query("code")
-		if code == "" {
-			c.AbortWithStatus(http.StatusBadRequest)
-			return
-		}
-
-		state := c.Query("state")
-
-		s.google.ReceiveAuthCode(google.TokenResponse{
-			Code:  code,
-			State: state,
-		})
-
-		c.Status(http.StatusOK)
-	})
 
 	return nil
 }

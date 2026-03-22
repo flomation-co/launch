@@ -24,12 +24,13 @@ type Service struct {
 }
 
 func NewService(config *config.Config) (*Service, error) {
-	db, err := sqlx.Connect("postgres", fmt.Sprintf("postgres://%v:%v@%v:%d/%v",
+	db, err := sqlx.Connect("postgres", fmt.Sprintf("postgres://%v:%v@%v:%d/%v?sslmode=%v",
 		config.Database.Username,
 		config.Database.Password,
 		config.Database.Hostname,
 		config.Database.Port,
-		config.Database.Database))
+		config.Database.Database,
+		config.Database.SSLModeOverride))
 	if err != nil {
 		return nil, err
 	}

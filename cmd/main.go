@@ -3,7 +3,6 @@ package main
 import (
 	"flomation.app/automate/launch/internal/config"
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
-	"flomation.app/automate/launch/internal/google"
 	"flomation.app/automate/launch/internal/http"
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
@@ -43,25 +42,11 @@ func main() {
 	}
 
 	t := trigger.NewService(cfg, db)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err,
-		}).Error("unable to create trigger service")
-		return
-	}
 
 	_ = gitpoll.NewService(cfg, db, t)
 	log.Info("git poll service started")
 
-	g, err := google.NewService(cfg)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err,
-		}).Error("unable to create google drive service")
-		return
-	}
-
-	r, err := http.NewService(cfg, g, t)
+	r, err := http.NewService(cfg, t)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
