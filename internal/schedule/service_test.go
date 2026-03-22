@@ -163,11 +163,11 @@ func Test_ParseTimeOfDay(t *testing.T) {
 	Expect(h).To(Equal(23))
 	Expect(m).To(Equal(59))
 
-	h, m = parseTimeOfDay("invalid")
-	Expect(h).To(Equal(-1))
-	Expect(m).To(Equal(-1))
+	h3, m3 := parseTimeOfDay("invalid")
+	Expect(h3).To(Equal(-1))
+	Expect(m3).To(Equal(-1))
 
-	h, m = parseTimeOfDay("25:00")
-	Expect(h).To(Equal(-1))
-	Expect(m).To(Equal(-1))
+	h4, m4 := parseTimeOfDay("25:00")
+	Expect(h4).To(Equal(-1))
+	Expect(m4).To(Equal(-1))
 }
