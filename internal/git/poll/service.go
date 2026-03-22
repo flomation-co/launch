@@ -2,6 +2,8 @@ package poll
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -178,12 +180,40 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 	}
 }
 
+// repoURLPattern matches common Git repository URL formats:
+// SSH:   git@host:org/repo.git, ssh://user@host/path
+// HTTPS: https://host/org/repo.git
+// File:  /path/to/repo (absolute paths only)
+var repoURLPattern = regexp.MustCompile(`^(?:(?:https?|ssh|git)://[^\s]+|[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+:[^\s]+|/[^\s]+)$`)
+
+// validateRepoURL checks that the repository URL is a valid git remote and
+// does not contain shell metacharacters or suspicious patterns.
+func validateRepoURL(url string) error {
+	if url == "" {
+		return errors.New("repository URL is empty")
+	}
+
+	if strings.ContainsAny(url, ";|&$`\\'\"\n\r") {
+		return fmt.Errorf("repository URL contains disallowed characters: %q", url)
+	}
+
+	if !repoURLPattern.MatchString(url) {
+		return fmt.Errorf("repository URL does not match expected format: %q", url)
+	}
+
+	return nil
+}
+
 // lsRemote runs `git ls-remote --heads` against the repository and returns
 // the branch refs. This avoids cloning the entire repository.
 func lsRemote(repoURL string, sshKey string) ([]branchRef, error) {
-	args := []string{"ls-remote", "--heads", repoURL}
+	if err := validateRepoURL(repoURL); err != nil {
+		return nil, err
+	}
 
-	cmd := exec.Command("git", args...)
+	// #nosec G204 — repoURL is validated above and passed as a single argument,
+	// not interpreted by a shell.
+	cmd := exec.Command("git", "ls-remote", "--heads", repoURL)
 
 	if sshKey != "" {
 		cmd.Env = append(cmd.Environ(),

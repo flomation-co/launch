@@ -32,6 +32,40 @@ func Test_ParseRefs_EmptyOutput(t *testing.T) {
 	Expect(refs).To(BeNil())
 }
 
+func Test_ValidateRepoURL_ValidURLs(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	validURLs := []string{
+		"https://github.com/org/repo.git",
+		"git@github.com:org/repo.git",
+		"ssh://git@gitlab.example.com/org/repo.git",
+		"https://gitlab.tooling.flomation.app/flomation/automate/executor.git",
+		"/home/user/repos/my-project",
+	}
+
+	for _, url := range validURLs {
+		Expect(validateRepoURL(url)).To(BeNil(), "expected valid: %s", url)
+	}
+}
+
+func Test_ValidateRepoURL_InvalidURLs(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	invalidURLs := []string{
+		"",
+		"https://example.com/repo; rm -rf /",
+		"https://example.com/repo | cat /etc/passwd",
+		"repo`whoami`",
+		"https://example.com/repo\nmalicious",
+	}
+
+	for _, url := range invalidURLs {
+		Expect(validateRepoURL(url)).NotTo(BeNil(), "expected invalid: %s", url)
+	}
+}
+
 func Test_ParseRefs_MalformedLines(t *testing.T) {
 	t.Parallel()
 	RegisterTestingT(t)
