@@ -2,21 +2,22 @@ package poll
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	git "github.com/go-git/go-git/v6"
+	gitconfig "github.com/go-git/go-git/v6/config"
+	gitssh "github.com/go-git/go-git/v6/plumbing/transport/ssh"
+	"github.com/go-git/go-git/v6/storage/memory"
+	log "github.com/sirupsen/logrus"
+
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/config"
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
-
-	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -185,99 +186,44 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 	}
 }
 
-// repoURLPattern matches common Git repository URL formats:
-// SSH:   git@host:org/repo.git, ssh://user@host/path
-// HTTPS: https://host/org/repo.git
-// File:  /path/to/repo (absolute paths only)
-var repoURLPattern = regexp.MustCompile(`^(?:(?:https?|ssh|git)://[^\s]+|[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+:[^\s]+|/[^\s]+)$`)
-
-// validateRepoURL checks that the repository URL is a valid git remote and
-// does not contain shell metacharacters or suspicious patterns.
-func validateRepoURL(url string) error {
-	if url == "" {
-		return errors.New("repository URL is empty")
-	}
-
-	if strings.ContainsAny(url, ";|&$`\\'\"\n\r") {
-		return fmt.Errorf("repository URL contains disallowed characters: %q", url)
-	}
-
-	if !repoURLPattern.MatchString(url) {
-		return fmt.Errorf("repository URL does not match expected format: %q", url)
-	}
-
-	return nil
-}
-
-// lsRemote runs `git ls-remote --heads` against the repository and returns
-// the branch refs. This avoids cloning the entire repository.
+// lsRemote uses go-git to list remote branch refs without cloning.
 func lsRemote(repoURL string, sshKey string) ([]branchRef, error) {
-	if err := validateRepoURL(repoURL); err != nil {
-		return nil, err
+	if repoURL == "" {
+		return nil, fmt.Errorf("repository URL is empty")
 	}
 
-	// #nosec G204 — repoURL is validated above and passed as a single argument,
-	// not interpreted by a shell.
-	cmd := exec.Command("git", "ls-remote", "--heads", repoURL)
+	remote := git.NewRemote(memory.NewStorage(), &gitconfig.RemoteConfig{
+		Name: "origin",
+		URLs: []string{repoURL},
+	})
+
+	listOpts := &git.ListOptions{}
 
 	if sshKey != "" {
-		// Write the SSH key to a temp file (ssh -i requires a file path)
-		tmpFile, err := os.CreateTemp("", "flomation-ssh-key-*")
+		auth, err := gitssh.NewPublicKeys("git", []byte(sshKey), "")
 		if err != nil {
-			return nil, fmt.Errorf("unable to create temp SSH key file: %w", err)
+			return nil, fmt.Errorf("unable to create SSH auth: %w", err)
 		}
-		defer os.Remove(tmpFile.Name())
-
-		if _, err := tmpFile.WriteString(sshKey); err != nil {
-			tmpFile.Close()
-			return nil, fmt.Errorf("unable to write SSH key to temp file: %w", err)
-		}
-		tmpFile.Close()
-
-		if err := os.Chmod(tmpFile.Name(), 0600); err != nil {
-			return nil, fmt.Errorf("unable to set SSH key file permissions: %w", err)
-		}
-
-		cmd.Env = append(cmd.Environ(),
-			"GIT_SSH_COMMAND=ssh -i "+tmpFile.Name()+" -o StrictHostKeyChecking=no",
-		)
+		listOpts.Auth = auth
 	}
 
-	output, err := cmd.Output()
+	refs, err := remote.List(listOpts)
 	if err != nil {
 		return nil, err
 	}
 
-	return parseRefs(string(output)), nil
-}
-
-// parseRefs parses the output of `git ls-remote --heads` into branchRef values.
-// Each line has the format: <hash>\t<refname>
-func parseRefs(output string) []branchRef {
-	var refs []branchRef
-
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	for _, line := range lines {
-		if line == "" {
+	var results []branchRef
+	for _, ref := range refs {
+		refName := ref.Name().String()
+		if !strings.HasPrefix(refName, "refs/heads/") {
 			continue
 		}
 
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		hash := parts[0]
-		refName := parts[1]
-
-		// Strip refs/heads/ prefix to get the branch name.
-		branch := strings.TrimPrefix(refName, "refs/heads/")
-
-		refs = append(refs, branchRef{
-			Hash:   hash,
-			Branch: branch,
+		results = append(results, branchRef{
+			Hash:   ref.Hash().String(),
+			Branch: strings.TrimPrefix(refName, "refs/heads/"),
 		})
 	}
 
-	return refs
+	return results, nil
 }
