@@ -2,7 +2,6 @@ package http
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"image"
@@ -10,6 +9,7 @@ import (
 	"image/png"
 	"net/http"
 	"strings"
+	"time"
 
 	"flomation.app/automate/launch/internal/assets"
 
@@ -131,14 +131,14 @@ func (s *Service) handleImageLoad(c *gin.Context) {
 
 	ip := c.ClientIP()
 	userAgent := c.Request.UserAgent()
-	cookies := c.Request.Cookies()
-	// TODO: Extend this with Referrer, etc
+	referrer := c.Request.Referer()
 
 	go func() {
 		data := map[string]interface{}{
-			"ip":         ip,
-			"user_agent": userAgent,
-			"cookies":    cookies,
+			"ip":           ip,
+			"user_agent":   userAgent,
+			"referrer":     referrer,
+			"triggered_at": time.Now().UTC().Format(time.RFC3339),
 		}
 
 		if err := s.trigger.Trigger(tr, data); err != nil {
@@ -267,15 +267,21 @@ func (s *Service) handleQr(c *gin.Context) {
 		return
 	}
 
+	data := map[string]interface{}{
+		"triggered_at": time.Now().UTC().Format(time.RFC3339),
+		"ip":           c.ClientIP(),
+		"user_agent":   c.Request.UserAgent(),
+	}
+
 	go func() {
-		if err := s.trigger.Trigger(tr, nil); err != nil {
+		if err := s.trigger.Trigger(tr, data); err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
 			}).Error("unable to fire trigger")
 		}
 	}()
 
-	c.Status(http.StatusOK)
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Flomation</title><style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#161019;color:#fff;text-align:center;}</style></head><body><div><h2>QR Code Scanned</h2><p>Your request has been received.</p></div></body></html>`))
 }
 
 func (s *Service) submitForm(c *gin.Context) {
@@ -380,17 +386,8 @@ func (s *Service) handleForm(c *gin.Context) {
 		return
 	}
 
-	j, err := json.Marshal(tr.Data)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err,
-		}).Error("unable to marshal form data")
-		c.AbortWithStatus(http.StatusBadRequest)
-		return
-	}
-
 	c.HTML(http.StatusOK, "form.html", gin.H{
-		"Form": strings.TrimSuffix(string(j)[1:], "\""),
+		"Form": string(tr.Data),
 	})
 }
 
