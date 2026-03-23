@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"html/template"
 	"image"
@@ -387,7 +388,7 @@ func (s *Service) handleForm(c *gin.Context) {
 	}
 
 	c.HTML(http.StatusOK, "form.html", gin.H{
-		"Form": string(tr.Data),
+		"Form": base64.StdEncoding.EncodeToString(tr.Data),
 	})
 }
 
