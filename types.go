@@ -15,6 +15,7 @@ const (
 	TriggerTypeForm      = "form"
 	TriggerTypeWebhook   = "webhook"
 	TriggerTypeGitPoll   = "git-poll"
+	TriggerTypeS3        = "s3"
 )
 
 type Trigger struct {
