@@ -112,7 +112,7 @@ func Test_ShouldFire_Weekly_CorrectDay(t *testing.T) {
 	cfg := ScheduleConfig{
 		Mode:       "weekly",
 		TimeOfDay:  "10:00",
-		DaysOfWeek: []string{"monday"},
+		DaysOfWeek: "monday",
 	}
 
 	now := time.Date(today.Year(), today.Month(), today.Day(), 10, 30, 0, 0, time.Local)
@@ -134,7 +134,7 @@ func Test_ShouldFire_Weekly_WrongDay(t *testing.T) {
 	cfg := ScheduleConfig{
 		Mode:       "weekly",
 		TimeOfDay:  "10:00",
-		DaysOfWeek: []string{"monday", "friday"},
+		DaysOfWeek: "monday,friday",
 	}
 
 	now := time.Date(today.Year(), today.Month(), today.Day(), 10, 30, 0, 0, time.Local)

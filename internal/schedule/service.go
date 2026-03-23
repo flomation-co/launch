@@ -25,7 +25,7 @@ type ScheduleConfig struct {
 	Interval   string   `json:"interval,omitempty"`     // e.g. "15"
 	Unit       string   `json:"unit,omitempty"`         // "minutes", "hours", "days"
 	TimeOfDay  string   `json:"time_of_day,omitempty"`  // "HH:MM" 24-hour format
-	DaysOfWeek []string `json:"days_of_week,omitempty"` // ["monday","wednesday"]
+	DaysOfWeek string   `json:"days_of_week,omitempty"` // "monday,wednesday"
 	Timezone   string   `json:"timezone,omitempty"`     // IANA timezone e.g. "Europe/London"
 }
 
@@ -201,14 +201,17 @@ func shouldFireDaily(cfg ScheduleConfig, lastFired time.Time, now time.Time) boo
 }
 
 func shouldFireWeekly(cfg ScheduleConfig, lastFired time.Time, now time.Time) bool {
-	if cfg.TimeOfDay == "" || len(cfg.DaysOfWeek) == 0 {
+	if cfg.TimeOfDay == "" || cfg.DaysOfWeek == "" {
 		return false
 	}
+
+	// Split comma-separated days
+	days := strings.Split(cfg.DaysOfWeek, ",")
 
 	// Check if today is one of the configured days
 	todayName := strings.ToLower(now.Weekday().String())
 	dayMatch := false
-	for _, d := range cfg.DaysOfWeek {
+	for _, d := range days {
 		if strings.ToLower(strings.TrimSpace(d)) == todayName {
 			dayMatch = true
 			break
