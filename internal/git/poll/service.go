@@ -102,12 +102,16 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 		return
 	}
 
-	refs, err := lsRemote(cfg.RepositoryURL, cfg.SSHKey)
+	// Resolve variable references in config values
+	repoURL := s.trigger.ResolveString(tr.ID, cfg.RepositoryURL)
+	sshKey := s.trigger.ResolveString(tr.ID, cfg.SSHKey)
+
+	refs, err := lsRemote(repoURL, sshKey)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error":      err,
 			"trigger_id": tr.ID,
-			"repo":       cfg.RepositoryURL,
+			"repo":       repoURL,
 		}).Error("unable to ls-remote repository")
 		return
 	}
@@ -166,7 +170,7 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 				"branch":         ref.Branch,
 				"commit_hash":    ref.Hash,
 				"commit_message": "",
-				"repository_url": cfg.RepositoryURL,
+				"repository_url": repoURL,
 			}
 
 			if err := s.trigger.Trigger(tr, data); err != nil {

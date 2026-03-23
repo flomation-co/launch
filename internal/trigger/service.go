@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -53,6 +55,90 @@ func (s *Service) GetTriggerByID(id string) (*launch.Trigger, error) {
 
 func (s *Service) GetTriggersByFlowID(flowId string) ([]*launch.Trigger, error) {
 	return s.db.GetTriggersByFlowID(flowId)
+}
+
+func (s *Service) GetTriggersByType(typeName string) ([]*launch.Trigger, error) {
+	return s.db.GetTriggersByType(typeName)
+}
+
+// ResolveVariables calls the API to resolve ${secrets.X} and ${env.X}
+// references using the trigger's flow environment.
+func (s *Service) ResolveVariables(triggerID string, variables []string) (map[string]string, error) {
+	if len(variables) == 0 {
+		return nil, nil
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"variables": variables,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%v/api/v1/trigger/%v/resolve", s.config.Automate.URL, triggerID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := http.Client{Timeout: time.Second * 10}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		if res.Body != nil {
+			_ = res.Body.Close()
+		}
+	}()
+
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		return nil, fmt.Errorf("resolve variables returned status %v", res.Status)
+	}
+
+	var resolved map[string]string
+	if err := json.NewDecoder(res.Body).Decode(&resolved); err != nil {
+		return nil, err
+	}
+
+	return resolved, nil
+}
+
+// ResolveString resolves all ${...} variable references in a string value.
+func (s *Service) ResolveString(triggerID string, value string) string {
+	if !strings.Contains(value, "${") {
+		return value
+	}
+
+	// Extract variable references
+	var vars []string
+	re := regexp.MustCompile(`\$\{([^}]+)\}`)
+	matches := re.FindAllStringSubmatch(value, -1)
+	for _, m := range matches {
+		vars = append(vars, m[1])
+	}
+
+	if len(vars) == 0 {
+		return value
+	}
+
+	resolved, err := s.ResolveVariables(triggerID, vars)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error":      err,
+			"trigger_id": triggerID,
+		}).Warn("unable to resolve trigger variables")
+		return value
+	}
+
+	result := value
+	for key, val := range resolved {
+		result = strings.ReplaceAll(result, "${"+key+"}", val)
+	}
+
+	return result
 }
 
 func (s *Service) Trigger(trigger *launch.Trigger, data interface{}) error {
