@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -220,8 +221,25 @@ func lsRemote(repoURL string, sshKey string) ([]branchRef, error) {
 	cmd := exec.Command("git", "ls-remote", "--heads", repoURL)
 
 	if sshKey != "" {
+		// Write the SSH key to a temp file (ssh -i requires a file path)
+		tmpFile, err := os.CreateTemp("", "flomation-ssh-key-*")
+		if err != nil {
+			return nil, fmt.Errorf("unable to create temp SSH key file: %w", err)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		if _, err := tmpFile.WriteString(sshKey); err != nil {
+			tmpFile.Close()
+			return nil, fmt.Errorf("unable to write SSH key to temp file: %w", err)
+		}
+		tmpFile.Close()
+
+		if err := os.Chmod(tmpFile.Name(), 0600); err != nil {
+			return nil, fmt.Errorf("unable to set SSH key file permissions: %w", err)
+		}
+
 		cmd.Env = append(cmd.Environ(),
-			"GIT_SSH_COMMAND=ssh -i "+sshKey+" -o StrictHostKeyChecking=no",
+			"GIT_SSH_COMMAND=ssh -i "+tmpFile.Name()+" -o StrictHostKeyChecking=no",
 		)
 	}
 
