@@ -188,12 +188,16 @@ publish:
 
 publish-msi:
   extends: .publish-msi-template
+  only:
+    - main
   needs:
     - inject-metadata
     - build-msi
 
 publish-rpm-8:
   extends: .publish-rpm-template
+  only:
+    - main
   variables:
     RPM_FILE_PATTERN: "${PACKAGE_NAME}-*el8.x86_64.rpm"
     EL_VERSION: "8"
@@ -207,6 +211,8 @@ publish-rpm-8:
 
 publish-rpm-9:
   extends: .publish-rpm-template
+  only:
+    - main
   variables:
     RPM_FILE_PATTERN: "${PACKAGE_NAME}-*el9.x86_64.rpm"
     EL_VERSION: "9"
@@ -220,6 +226,8 @@ publish-rpm-9:
 
 publish-rpm-8-arm64:
   extends: .publish-rpm-template
+  only:
+    - main
   variables:
     RPM_FILE_PATTERN: "${PACKAGE_NAME}-*el8.aarch64.rpm"
     EL_VERSION: "8"
@@ -233,6 +241,8 @@ publish-rpm-8-arm64:
 
 publish-rpm-9-arm64:
   extends: .publish-rpm-template
+  only:
+    - main
   variables:
     RPM_FILE_PATTERN: "${PACKAGE_NAME}-*el9.aarch64.rpm"
     EL_VERSION: "9"
@@ -246,6 +256,8 @@ publish-rpm-9-arm64:
 
 publish-deb:
   extends: .publish-deb-template
+  only:
+    - main
   variables:
     DEB_FILE_PATTERN: "${PACKAGE_NAME}_*_amd64.deb"
     CI_TEMPLATES_REF: "main"
@@ -258,6 +270,8 @@ publish-deb:
 
 publish-deb-arm64:
   extends: .publish-deb-template
+  only:
+    - main
   variables:
     DEB_FILE_PATTERN: "${PACKAGE_NAME}_*_arm64.deb"
     CI_TEMPLATES_REF: "main"
