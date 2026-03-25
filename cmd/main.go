@@ -4,6 +4,7 @@ import (
 	"flomation.app/automate/launch/internal/config"
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
 	"flomation.app/automate/launch/internal/http"
+	s3trigger "flomation.app/automate/launch/internal/s3"
 	"flomation.app/automate/launch/internal/schedule"
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
@@ -49,6 +50,9 @@ func main() {
 
 	_ = schedule.NewService(cfg, t, db)
 	log.Info("schedule service started")
+
+	_ = s3trigger.NewService(cfg, db, t)
+	log.Info("s3 trigger service started")
 
 	r, err := http.NewService(cfg, t)
 	if err != nil {

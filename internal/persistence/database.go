@@ -2,7 +2,9 @@ package persistence
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/config"
@@ -21,6 +23,13 @@ type Service struct {
 	stmtGetTriggerByID      *sqlx.NamedStmt
 	stmtGetTriggersByFlowID *sqlx.NamedStmt
 	stmtGetTriggersByType   *sqlx.NamedStmt
+
+	stmtGetTriggerState    *sqlx.NamedStmt
+	stmtUpsertTriggerState *sqlx.NamedStmt
+	stmtDeleteTriggerState *sqlx.NamedStmt
+	stmtDeleteAllTriggerState *sqlx.NamedStmt
+	stmtTryAcquireLease    *sqlx.NamedStmt
+	stmtReleaseLease       *sqlx.NamedStmt
 }
 
 func NewService(config *config.Config) (*Service, error) {
@@ -125,6 +134,54 @@ func NewService(config *config.Config) (*Service, error) {
 		return nil, errors.Wrap(err, "unable to prepare named statement stmtGetTriggersByType")
 	}
 
+	if s.stmtGetTriggerState, err = db.PrepareNamed(`
+		SELECT state_key, state_data
+		FROM trigger_state
+		WHERE trigger_id = :trigger_id;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare named statement stmtGetTriggerState")
+	}
+
+	if s.stmtUpsertTriggerState, err = db.PrepareNamed(`
+		INSERT INTO trigger_state (trigger_id, state_key, state_data, updated_at)
+		VALUES (:trigger_id, :state_key, :state_data, NOW())
+		ON CONFLICT (trigger_id, state_key) DO UPDATE
+		SET state_data = :state_data, updated_at = NOW();
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare named statement stmtUpsertTriggerState")
+	}
+
+	if s.stmtDeleteTriggerState, err = db.PrepareNamed(`
+		DELETE FROM trigger_state
+		WHERE trigger_id = :trigger_id AND state_key = :state_key;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare named statement stmtDeleteTriggerState")
+	}
+
+	if s.stmtDeleteAllTriggerState, err = db.PrepareNamed(`
+		DELETE FROM trigger_state
+		WHERE trigger_id = :trigger_id;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare named statement stmtDeleteAllTriggerState")
+	}
+
+	if s.stmtTryAcquireLease, err = db.PrepareNamed(`
+		INSERT INTO trigger_lease (trigger_id, instance_id, leased_at, expires_at)
+		VALUES (:trigger_id, :instance_id, NOW(), NOW() + :duration * INTERVAL '1 second')
+		ON CONFLICT (trigger_id) DO UPDATE
+		SET instance_id = :instance_id, leased_at = NOW(), expires_at = NOW() + :duration * INTERVAL '1 second'
+		WHERE trigger_lease.expires_at < NOW() OR trigger_lease.instance_id = :instance_id;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare named statement stmtTryAcquireLease")
+	}
+
+	if s.stmtReleaseLease, err = db.PrepareNamed(`
+		DELETE FROM trigger_lease
+		WHERE trigger_id = :trigger_id AND instance_id = :instance_id;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare named statement stmtReleaseLease")
+	}
+
 	return &s, nil
 }
 
@@ -190,4 +247,93 @@ func (s *Service) GetTriggersByType(triggerType string) ([]*launch.Trigger, erro
 	}
 
 	return t, nil
+}
+
+type triggerStateRow struct {
+	StateKey  string          `db:"state_key"`
+	StateData json.RawMessage `db:"state_data"`
+}
+
+func (s *Service) GetTriggerState(triggerID string) (map[string]json.RawMessage, error) {
+	var rows []triggerStateRow
+	if err := s.stmtGetTriggerState.Select(&rows, struct {
+		TriggerID string `db:"trigger_id"`
+	}{
+		TriggerID: triggerID,
+	}); err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]json.RawMessage, len(rows))
+	for _, r := range rows {
+		result[r.StateKey] = r.StateData
+	}
+
+	return result, nil
+}
+
+func (s *Service) UpsertTriggerState(triggerID, stateKey string, stateData json.RawMessage) error {
+	_, err := s.stmtUpsertTriggerState.Exec(struct {
+		TriggerID string          `db:"trigger_id"`
+		StateKey  string          `db:"state_key"`
+		StateData json.RawMessage `db:"state_data"`
+	}{
+		TriggerID: triggerID,
+		StateKey:  stateKey,
+		StateData: stateData,
+	})
+	return err
+}
+
+func (s *Service) DeleteTriggerState(triggerID, stateKey string) error {
+	_, err := s.stmtDeleteTriggerState.Exec(struct {
+		TriggerID string `db:"trigger_id"`
+		StateKey  string `db:"state_key"`
+	}{
+		TriggerID: triggerID,
+		StateKey:  stateKey,
+	})
+	return err
+}
+
+func (s *Service) DeleteAllTriggerState(triggerID string) error {
+	_, err := s.stmtDeleteAllTriggerState.Exec(struct {
+		TriggerID string `db:"trigger_id"`
+	}{
+		TriggerID: triggerID,
+	})
+	return err
+}
+
+func (s *Service) TryAcquireLease(triggerID, instanceID string, duration time.Duration) (bool, error) {
+	result, err := s.stmtTryAcquireLease.Exec(struct {
+		TriggerID  string  `db:"trigger_id"`
+		InstanceID string  `db:"instance_id"`
+		Duration   float64 `db:"duration"`
+	}{
+		TriggerID:  triggerID,
+		InstanceID: instanceID,
+		Duration:   duration.Seconds(),
+	})
+	if err != nil {
+		return false, err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+
+	return rows > 0, nil
+}
+
+func (s *Service) ReleaseLease(triggerID, instanceID string) error {
+	_, err := s.stmtReleaseLease.Exec(struct {
+		TriggerID  string `db:"trigger_id"`
+		InstanceID string `db:"instance_id"`
+	}{
+		TriggerID:  triggerID,
+		InstanceID: instanceID,
+	})
+	return err
 }
