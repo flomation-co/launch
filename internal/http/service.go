@@ -49,12 +49,33 @@ func NewService(config *config.Config, trigger *trigger.Service) (*Service, erro
 	return &s, nil
 }
 
+func corsMiddleware(c *gin.Context) {
+	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+	c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+	if c.Request.Method == "OPTIONS" {
+		c.AbortWithStatus(204)
+		return
+	}
+
+	c.Next()
+}
+
 func (s *Service) configure() error {
+	s.engine.Use(corsMiddleware)
+
 	s.engine.GET("version", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"version": version.Version,
 			"date":    version.BuiltDate,
 			"hash":    version.GetHash(),
+		})
+	})
+
+	s.engine.GET("health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status": "ok",
 		})
 	})
 
