@@ -1,10 +1,9 @@
 package schedule
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +16,9 @@ import (
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
 )
+
+//go:embed bank-holidays.json
+var bankHolidaysData []byte
 
 const (
 	tickInterval = 15 * time.Second
@@ -73,26 +75,10 @@ func NewService(cfg *config.Config, triggerSvc *trigger.Service, db *persistence
 	return s
 }
 
-const bankHolidayURL = "https://www.gov.uk/bank-holidays.json"
-
 func (s *Service) loadBankHolidays() {
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(bankHolidayURL)
-	if err != nil {
-		log.WithError(err).Warn("unable to fetch UK bank holidays — bank holiday exclusion will not work")
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.WithError(err).Warn("unable to read bank holidays response")
-		return
-	}
-
 	var data bankHolidayResponse
-	if err := json.Unmarshal(body, &data); err != nil {
-		log.WithError(err).Warn("unable to parse bank holidays JSON")
+	if err := json.Unmarshal(bankHolidaysData, &data); err != nil {
+		log.WithError(err).Warn("unable to parse embedded bank holidays JSON")
 		return
 	}
 
@@ -102,7 +88,7 @@ func (s *Service) loadBankHolidays() {
 	}
 	s.mu.Unlock()
 
-	log.WithField("count", len(data.EnglandAndWales.Events)).Info("loaded UK bank holidays")
+	log.WithField("count", len(data.EnglandAndWales.Events)).Info("loaded UK bank holidays from embedded data")
 }
 
 func (s *Service) isBankHoliday(t time.Time) bool {
