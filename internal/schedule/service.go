@@ -2,6 +2,9 @@ package schedule
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,12 +24,13 @@ const (
 
 // ScheduleConfig represents the configuration stored in a schedule trigger's Data field.
 type ScheduleConfig struct {
-	Mode       string   `json:"mode"`                  // "interval", "daily", "weekly"
-	Interval   string   `json:"interval,omitempty"`     // e.g. "15"
-	Unit       string   `json:"unit,omitempty"`         // "minutes", "hours", "days"
-	TimeOfDay  string   `json:"time_of_day,omitempty"`  // "HH:MM" 24-hour format
-	DaysOfWeek string   `json:"days_of_week,omitempty"` // "monday,wednesday"
-	Timezone   string   `json:"timezone,omitempty"`     // IANA timezone e.g. "Europe/London"
+	Mode                 string `json:"mode"`                            // "interval", "daily", "weekly"
+	Interval             string `json:"interval,omitempty"`              // e.g. "15"
+	Unit                 string `json:"unit,omitempty"`                  // "minutes", "hours", "days"
+	TimeOfDay            string `json:"time_of_day,omitempty"`           // "HH:MM" 24-hour format
+	DaysOfWeek           string `json:"days_of_week,omitempty"`          // "monday,wednesday"
+	Timezone             string `json:"timezone,omitempty"`              // IANA timezone e.g. "Europe/London"
+	ExcludeBankHolidays  string `json:"exclude_bank_holidays,omitempty"` // "true" to skip UK bank holidays
 }
 
 // SchedulePayload is the payload sent when a schedule trigger fires.
@@ -35,26 +39,77 @@ type SchedulePayload struct {
 	ScheduleMode string `json:"schedule_mode"`
 }
 
+// bankHolidayResponse models the GOV.UK bank-holidays.json response.
+type bankHolidayResponse struct {
+	EnglandAndWales struct {
+		Events []struct {
+			Date string `json:"date"` // "YYYY-MM-DD"
+		} `json:"events"`
+	} `json:"england-and-wales"`
+}
+
 type Service struct {
 	config  *config.Config
 	trigger *trigger.Service
 	db      *persistence.Service
 
-	mu        sync.Mutex
-	lastFired map[string]time.Time
+	mu           sync.Mutex
+	lastFired    map[string]time.Time
+	bankHolidays map[string]bool // "YYYY-MM-DD" → true
 }
 
 func NewService(cfg *config.Config, triggerSvc *trigger.Service, db *persistence.Service) *Service {
 	s := &Service{
-		config:    cfg,
-		trigger:   triggerSvc,
-		db:        db,
-		lastFired: make(map[string]time.Time),
+		config:       cfg,
+		trigger:      triggerSvc,
+		db:           db,
+		lastFired:    make(map[string]time.Time),
+		bankHolidays: make(map[string]bool),
 	}
 
+	s.loadBankHolidays()
 	go s.watch()
 
 	return s
+}
+
+const bankHolidayURL = "https://www.gov.uk/bank-holidays.json"
+
+func (s *Service) loadBankHolidays() {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(bankHolidayURL)
+	if err != nil {
+		log.WithError(err).Warn("unable to fetch UK bank holidays — bank holiday exclusion will not work")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.WithError(err).Warn("unable to read bank holidays response")
+		return
+	}
+
+	var data bankHolidayResponse
+	if err := json.Unmarshal(body, &data); err != nil {
+		log.WithError(err).Warn("unable to parse bank holidays JSON")
+		return
+	}
+
+	s.mu.Lock()
+	for _, event := range data.EnglandAndWales.Events {
+		s.bankHolidays[event.Date] = true
+	}
+	s.mu.Unlock()
+
+	log.WithField("count", len(data.EnglandAndWales.Events)).Info("loaded UK bank holidays")
+}
+
+func (s *Service) isBankHoliday(t time.Time) bool {
+	dateStr := fmt.Sprintf("%04d-%02d-%02d", t.Year(), t.Month(), t.Day())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bankHolidays[dateStr]
 }
 
 func (s *Service) watch() {
@@ -118,6 +173,15 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 		s.mu.Lock()
 		s.lastFired[tr.ID] = now
 		s.mu.Unlock()
+		return
+	}
+
+	// Check bank holiday exclusion
+	if cfg.ExcludeBankHolidays == "true" && s.isBankHoliday(now) {
+		log.WithFields(log.Fields{
+			"trigger_id": tr.ID,
+			"date":       now.Format("2006-01-02"),
+		}).Debug("skipping schedule trigger — UK bank holiday")
 		return
 	}
 
