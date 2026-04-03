@@ -1,0 +1,2 @@
+-- PostgreSQL does not support removing values from enums
+-- This is a no-op; the 'slack' value will remain
