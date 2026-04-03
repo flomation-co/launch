@@ -305,7 +305,7 @@ func (s *Service) storeMessage(reg *launch.AgentRegistration, msg InboundMessage
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/api/v1/agent/%s/message", reg.APIURL, reg.AgentID)
+	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/message", reg.APIURL, reg.AgentID)
 	client := http.Client{Timeout: apiTimeout}
 	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
