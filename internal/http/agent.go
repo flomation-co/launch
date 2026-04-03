@@ -1,10 +1,14 @@
 package http
 
 import (
+	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/agent"
+	"flomation.app/automate/launch/internal/telegram"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -91,4 +95,65 @@ func (s *Service) handleAgentWebhook(c *gin.Context) {
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"status": "received"})
+}
+
+// handleTelegramWebhook handles POST /webhook/telegram/:agent_id — receives Telegram Bot API updates.
+func (s *Service) handleTelegramWebhook(c *gin.Context) {
+	agentID := c.Param("agent_id")
+	if err := uuid.Validate(agentID); err != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20)) // 1 MB limit
+	if err != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	parsed := telegram.ParseUpdate(body)
+	if parsed == nil {
+		// Not a message update (could be callback_query, etc.) — acknowledge silently
+		c.Status(http.StatusOK)
+		return
+	}
+
+	// Build sender string for display
+	sender := parsed.SenderName
+	if sender == "" && parsed.SenderUsername != "" {
+		sender = "@" + parsed.SenderUsername
+	}
+	if sender == "" {
+		sender = fmt.Sprintf("user:%d", parsed.SenderID)
+	}
+
+	msg := agent.InboundMessage{
+		ChannelType: "telegram",
+		Sender:      sender,
+		Content:     parsed.Text,
+		Metadata: map[string]interface{}{
+			"message_id":      parsed.MessageID,
+			"chat_id":         parsed.ChatID,
+			"chat_type":       parsed.ChatType,
+			"chat_title":      parsed.ChatTitle,
+			"sender_id":       parsed.SenderID,
+			"sender_username": parsed.SenderUsername,
+			"sender_name":     parsed.SenderName,
+			"date":            parsed.Date.Format("2006-01-02T15:04:05Z"),
+			"chat_id_str":     strconv.FormatInt(parsed.ChatID, 10),
+		},
+	}
+
+	// Dispatch asynchronously — Telegram expects a quick 200 response
+	go func() {
+		if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
+			log.WithFields(log.Fields{
+				"agent_id": agentID,
+				"error":    err,
+				"chat_id":  parsed.ChatID,
+			}).Error("failed to handle telegram message")
+		}
+	}()
+
+	c.Status(http.StatusOK)
 }

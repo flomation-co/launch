@@ -14,6 +14,7 @@ import (
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/config"
 	"flomation.app/automate/launch/internal/persistence"
+	"flomation.app/automate/launch/internal/telegram"
 	"flomation.app/automate/launch/internal/trigger"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -34,9 +35,10 @@ type Service struct {
 	config     *config.Config
 	db         *persistence.Service
 	trigger    *trigger.Service
+	telegram   *telegram.Service
 	instanceID string
 
-	mu           sync.RWMutex
+	mu            sync.RWMutex
 	managedAgents map[string]*managedAgent // agentID → active management state
 }
 
@@ -48,11 +50,12 @@ type managedAgent struct {
 }
 
 // NewService creates and starts the agent orchestration service.
-func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service) *Service {
+func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, telegramSvc *telegram.Service) *Service {
 	s := &Service{
 		config:        config,
 		db:            db,
 		trigger:       trigger,
+		telegram:      telegramSvc,
 		instanceID:    uuid.New().String(),
 		managedAgents: make(map[string]*managedAgent),
 	}
@@ -75,6 +78,7 @@ func (s *Service) RegisterAgent(reg launch.AgentRegistration) error {
 	}
 
 	s.startManaging(&reg)
+	s.activateChannels(&reg)
 
 	log.WithFields(log.Fields{
 		"agent_id":    reg.AgentID,
@@ -86,6 +90,7 @@ func (s *Service) RegisterAgent(reg launch.AgentRegistration) error {
 
 // DeregisterAgent is called (via HTTP) when the API stops an agent.
 func (s *Service) DeregisterAgent(agentID string) error {
+	s.deactivateChannels(agentID)
 	s.stopManaging(agentID)
 
 	if err := s.db.DisableAgentRegistration(agentID); err != nil {
@@ -366,6 +371,53 @@ func (s *Service) dispatchExecution(reg *launch.AgentRegistration, msg InboundMe
 	}).Info("agent execution dispatched")
 
 	return nil
+}
+
+// activateChannels sets up external channel integrations for an agent.
+func (s *Service) activateChannels(reg *launch.AgentRegistration) {
+	var channels []struct {
+		Type   string          `json:"type"`
+		Config json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(reg.Channels, &channels); err != nil {
+		log.WithFields(log.Fields{
+			"agent_id": reg.AgentID,
+			"error":    err,
+		}).Warn("unable to parse agent channels")
+		return
+	}
+
+	for _, ch := range channels {
+		switch ch.Type {
+		case "telegram":
+			var cfg struct {
+				BotToken string `json:"bot_token"`
+			}
+			if err := json.Unmarshal(ch.Config, &cfg); err != nil || cfg.BotToken == "" {
+				log.WithFields(log.Fields{
+					"agent_id": reg.AgentID,
+				}).Warn("telegram channel missing bot_token")
+				continue
+			}
+			if err := s.telegram.RegisterWebhook(reg.AgentID, cfg.BotToken); err != nil {
+				log.WithFields(log.Fields{
+					"agent_id": reg.AgentID,
+					"error":    err,
+				}).Error("failed to register telegram webhook")
+			}
+		// Future: case "email" — start IMAP polling
+		}
+	}
+}
+
+// deactivateChannels tears down external channel integrations for an agent.
+func (s *Service) deactivateChannels(agentID string) {
+	if err := s.telegram.DeregisterWebhook(agentID); err != nil {
+		log.WithFields(log.Fields{
+			"agent_id": agentID,
+			"error":    err,
+		}).Warn("failed to deregister telegram webhook")
+	}
 }
 
 // InboundMessage represents a message received from an external channel.

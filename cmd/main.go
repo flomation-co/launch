@@ -8,6 +8,7 @@ import (
 	s3trigger "flomation.app/automate/launch/internal/s3"
 	"flomation.app/automate/launch/internal/schedule"
 	"flomation.app/automate/launch/internal/persistence"
+	"flomation.app/automate/launch/internal/telegram"
 	"flomation.app/automate/launch/internal/trigger"
 	"flomation.app/automate/launch/internal/version"
 	log "github.com/sirupsen/logrus"
@@ -55,7 +56,10 @@ func main() {
 	_ = s3trigger.NewService(cfg, db, t)
 	log.Info("s3 trigger service started")
 
-	agentSvc := agent.NewService(cfg, db, t)
+	telegramSvc := telegram.NewService(cfg.PublicURL)
+	log.Info("telegram service started")
+
+	agentSvc := agent.NewService(cfg, db, t, telegramSvc)
 	log.Info("agent service started")
 
 	r, err := http.NewService(cfg, t, agentSvc)
