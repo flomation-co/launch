@@ -118,6 +118,7 @@ func (s *Service) configure() error {
 	// Agent inbound webhooks (edge-facing, no auth — validated by agent ID)
 	s.engine.POST("/webhook/agent/:agent_id", s.handleAgentWebhook)
 	s.engine.POST("/webhook/telegram/:agent_id", s.handleTelegramWebhook)
+	s.engine.POST("/webhook/slack/:agent_id", s.handleSlackWebhook)
 
 	return nil
 }

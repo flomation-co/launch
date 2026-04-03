@@ -8,6 +8,7 @@ import (
 
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/agent"
+	slackpkg "flomation.app/automate/launch/internal/slack"
 	"flomation.app/automate/launch/internal/telegram"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -151,6 +152,64 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 				"error":    err,
 				"chat_id":  parsed.ChatID,
 			}).Error("failed to handle telegram message")
+		}
+	}()
+
+	c.Status(http.StatusOK)
+}
+
+// handleSlackWebhook handles POST /webhook/slack/:agent_id — receives Slack Events API payloads.
+func (s *Service) handleSlackWebhook(c *gin.Context) {
+	agentID := c.Param("agent_id")
+	if err := uuid.Validate(agentID); err != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+	if err != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	// Parse the event — handle url_verification challenge first
+	parsed, verification := slackpkg.ParseEvent(body)
+
+	if verification != nil {
+		// Slack is verifying the endpoint — respond with the challenge
+		c.JSON(http.StatusOK, gin.H{"challenge": verification.Challenge})
+		return
+	}
+
+	if parsed == nil {
+		// Not a message event — acknowledge silently
+		c.Status(http.StatusOK)
+		return
+	}
+
+	msg := agent.InboundMessage{
+		ChannelType: "slack",
+		Sender:      parsed.UserID,
+		Content:     parsed.Text,
+		Metadata: map[string]interface{}{
+			"user_id":    parsed.UserID,
+			"channel_id": parsed.ChannelID,
+			"timestamp":  parsed.Timestamp,
+			"thread_ts":  parsed.ThreadTS,
+			"team_id":    parsed.TeamID,
+			"event_id":   parsed.EventID,
+			"event_type": parsed.EventType,
+		},
+	}
+
+	// Dispatch asynchronously — Slack expects a quick 200
+	go func() {
+		if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
+			log.WithFields(log.Fields{
+				"agent_id": agentID,
+				"error":    err,
+				"channel":  parsed.ChannelID,
+			}).Error("failed to handle slack message")
 		}
 	}()
 
