@@ -351,13 +351,13 @@ func (s *Service) dispatchExecution(reg *launch.AgentRegistration, msg InboundMe
 		return err
 	}
 
-	// Use trigger-specific endpoint if trigger ID is available, otherwise direct execute
+	// Use internal endpoints (no auth required) for service-to-service calls
 	var url string
 	if reg.TriggerID != nil {
-		url = fmt.Sprintf("%s/api/v1/flo/%s/trigger/%s/execute",
+		url = fmt.Sprintf("%s/api/v1/internal/flo/%s/trigger/%s/execute",
 			reg.APIURL, *reg.OrchestratorFlowID, *reg.TriggerID)
 	} else {
-		url = fmt.Sprintf("%s/api/v1/flo/%s/execute",
+		url = fmt.Sprintf("%s/api/v1/internal/flo/%s/execute",
 			reg.APIURL, *reg.OrchestratorFlowID)
 	}
 
