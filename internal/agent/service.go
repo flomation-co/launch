@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -129,7 +130,7 @@ func (s *Service) HandleInboundMessage(agentID string, message InboundMessage) e
 	}
 
 	// Dispatch execution if orchestrator flow is configured
-	if reg.OrchestratorFlowID != nil && reg.TriggerID != nil {
+	if reg.OrchestratorFlowID != nil {
 		if err := s.dispatchExecution(reg, message, msgID); err != nil {
 			log.WithFields(log.Fields{
 				"agent_id": agentID,
@@ -329,7 +330,7 @@ func (s *Service) storeMessage(reg *launch.AgentRegistration, msg InboundMessage
 
 // dispatchExecution triggers the agent's orchestrator flow via the API.
 func (s *Service) dispatchExecution(reg *launch.AgentRegistration, msg InboundMessage, msgID *string) error {
-	if reg.OrchestratorFlowID == nil || reg.TriggerID == nil {
+	if reg.OrchestratorFlowID == nil {
 		return nil
 	}
 
@@ -350,8 +351,15 @@ func (s *Service) dispatchExecution(reg *launch.AgentRegistration, msg InboundMe
 		return err
 	}
 
-	url := fmt.Sprintf("%s/api/v1/flo/%s/trigger/%s/execute",
-		reg.APIURL, *reg.OrchestratorFlowID, *reg.TriggerID)
+	// Use trigger-specific endpoint if trigger ID is available, otherwise direct execute
+	var url string
+	if reg.TriggerID != nil {
+		url = fmt.Sprintf("%s/api/v1/flo/%s/trigger/%s/execute",
+			reg.APIURL, *reg.OrchestratorFlowID, *reg.TriggerID)
+	} else {
+		url = fmt.Sprintf("%s/api/v1/flo/%s/execute",
+			reg.APIURL, *reg.OrchestratorFlowID)
+	}
 
 	client := http.Client{Timeout: apiTimeout}
 	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
@@ -361,13 +369,17 @@ func (s *Service) dispatchExecution(reg *launch.AgentRegistration, msg InboundMe
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("API returned %d triggering execution", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("API returned %d triggering execution: %s", resp.StatusCode, string(body))
 	}
 
+	hasTrigger := reg.TriggerID != nil
 	log.WithFields(log.Fields{
-		"agent_id": reg.AgentID,
-		"flow_id":  *reg.OrchestratorFlowID,
-		"sender":   msg.Sender,
+		"agent_id":    reg.AgentID,
+		"flow_id":     *reg.OrchestratorFlowID,
+		"sender":      msg.Sender,
+		"has_trigger": hasTrigger,
+		"url":         url,
 	}).Info("agent execution dispatched")
 
 	return nil
