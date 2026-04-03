@@ -30,6 +30,15 @@ type Service struct {
 	stmtDeleteAllTriggerState *sqlx.NamedStmt
 	stmtTryAcquireLease    *sqlx.NamedStmt
 	stmtReleaseLease       *sqlx.NamedStmt
+
+	// Agent statements
+	stmtUpsertAgentRegistration *sqlx.NamedStmt
+	stmtGetAgentRegistration    *sqlx.NamedStmt
+	stmtGetActiveAgentRegs      *sqlx.NamedStmt
+	stmtDisableAgentRegistration *sqlx.NamedStmt
+	stmtTryAcquireAgentLease    *sqlx.NamedStmt
+	stmtReleaseAgentLease       *sqlx.NamedStmt
+	stmtGetExpiredAgentLeases   *sqlx.NamedStmt
 }
 
 func NewService(config *config.Config) (*Service, error) {
@@ -180,6 +189,65 @@ func NewService(config *config.Config) (*Service, error) {
 		WHERE trigger_id = :trigger_id AND instance_id = :instance_id;
 	`); err != nil {
 		return nil, errors.Wrap(err, "unable to prepare named statement stmtReleaseLease")
+	}
+
+	// --- Agent statements ---
+
+	if s.stmtUpsertAgentRegistration, err = db.PrepareNamed(`
+		INSERT INTO agent_registration (agent_id, orchestrator_flow_id, trigger_id, channels, environment_id,
+			max_executions_per_hour, requires_approval, api_url)
+		VALUES (:agent_id, :orchestrator_flow_id, :trigger_id, :channels, :environment_id,
+			:max_executions_per_hour, :requires_approval, :api_url)
+		ON CONFLICT (agent_id) DO UPDATE SET
+			orchestrator_flow_id = :orchestrator_flow_id, trigger_id = :trigger_id,
+			channels = :channels, environment_id = :environment_id,
+			max_executions_per_hour = :max_executions_per_hour, requires_approval = :requires_approval,
+			api_url = :api_url, disabled_at = NULL;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare stmtUpsertAgentRegistration")
+	}
+
+	if s.stmtGetAgentRegistration, err = db.PrepareNamed(`
+		SELECT * FROM agent_registration WHERE agent_id = :agent_id;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare stmtGetAgentRegistration")
+	}
+
+	if s.stmtGetActiveAgentRegs, err = db.PrepareNamed(`
+		SELECT * FROM agent_registration WHERE disabled_at IS NULL;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare stmtGetActiveAgentRegs")
+	}
+
+	if s.stmtDisableAgentRegistration, err = db.PrepareNamed(`
+		UPDATE agent_registration SET disabled_at = NOW() WHERE agent_id = :agent_id;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare stmtDisableAgentRegistration")
+	}
+
+	if s.stmtTryAcquireAgentLease, err = db.PrepareNamed(`
+		INSERT INTO agent_lease (agent_id, instance_id, leased_at, expires_at)
+		VALUES (:agent_id, :instance_id, NOW(), NOW() + :duration * INTERVAL '1 second')
+		ON CONFLICT (agent_id) DO UPDATE
+		SET instance_id = :instance_id, leased_at = NOW(), expires_at = NOW() + :duration * INTERVAL '1 second'
+		WHERE agent_lease.expires_at < NOW() OR agent_lease.instance_id = :instance_id;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare stmtTryAcquireAgentLease")
+	}
+
+	if s.stmtReleaseAgentLease, err = db.PrepareNamed(`
+		DELETE FROM agent_lease WHERE agent_id = :agent_id AND instance_id = :instance_id;
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare stmtReleaseAgentLease")
+	}
+
+	if s.stmtGetExpiredAgentLeases, err = db.PrepareNamed(`
+		SELECT r.* FROM agent_registration r
+		LEFT JOIN agent_lease l ON l.agent_id = r.agent_id
+		WHERE r.disabled_at IS NULL
+		AND (l.agent_id IS NULL OR l.expires_at < NOW());
+	`); err != nil {
+		return nil, errors.Wrap(err, "unable to prepare stmtGetExpiredAgentLeases")
 	}
 
 	return &s, nil

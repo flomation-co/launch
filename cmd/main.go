@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/config"
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
 	"flomation.app/automate/launch/internal/http"
@@ -54,7 +55,10 @@ func main() {
 	_ = s3trigger.NewService(cfg, db, t)
 	log.Info("s3 trigger service started")
 
-	r, err := http.NewService(cfg, t)
+	agentSvc := agent.NewService(cfg, db, t)
+	log.Info("agent service started")
+
+	r, err := http.NewService(cfg, t, agentSvc)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
