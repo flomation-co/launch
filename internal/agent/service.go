@@ -334,16 +334,22 @@ func (s *Service) dispatchExecution(reg *launch.AgentRegistration, msg InboundMe
 		return nil
 	}
 
-	// Build trigger data with message content
+	// Build trigger data with message content.
+	// Promote metadata fields to top level so they're accessible as ${trigger.chat_id} etc.
 	data := map[string]interface{}{
 		"agent_id":     reg.AgentID,
 		"channel_type": msg.ChannelType,
 		"sender":       msg.Sender,
 		"content":      msg.Content,
-		"metadata":     msg.Metadata,
 	}
 	if msgID != nil {
 		data["message_id"] = *msgID
+	}
+	// Flatten metadata into trigger data for direct variable access
+	for k, v := range msg.Metadata {
+		if _, exists := data[k]; !exists {
+			data[k] = v
+		}
 	}
 
 	payload, err := json.Marshal(data)
