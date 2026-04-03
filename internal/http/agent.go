@@ -132,15 +132,14 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 		Sender:      sender,
 		Content:     parsed.Text,
 		Metadata: map[string]interface{}{
-			"message_id":      parsed.MessageID,
-			"chat_id":         parsed.ChatID,
+			"message_id":      fmt.Sprintf("%d", parsed.MessageID),
+			"chat_id":         strconv.FormatInt(parsed.ChatID, 10),
 			"chat_type":       parsed.ChatType,
 			"chat_title":      parsed.ChatTitle,
-			"sender_id":       parsed.SenderID,
+			"sender_id":       fmt.Sprintf("%d", parsed.SenderID),
 			"sender_username": parsed.SenderUsername,
 			"sender_name":     parsed.SenderName,
 			"date":            parsed.Date.Format("2006-01-02T15:04:05Z"),
-			"chat_id_str":     strconv.FormatInt(parsed.ChatID, 10),
 		},
 	}
 
