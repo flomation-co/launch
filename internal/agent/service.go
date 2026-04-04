@@ -362,6 +362,9 @@ func (s *Service) dispatchExecution(reg *launch.AgentRegistration, msg InboundMe
 		"sender":       msg.Sender,
 		"content":      msg.Content,
 	}
+	if reg.SystemPrompt != nil && *reg.SystemPrompt != "" {
+		data["system_prompt"] = *reg.SystemPrompt
+	}
 	if msgID != nil {
 		data["message_id"] = *msgID
 	}

@@ -37,6 +37,7 @@ type AgentRegistration struct {
 	EnvironmentID        *string         `json:"environment_id" db:"environment_id"`
 	MaxExecutionsPerHour int             `json:"max_executions_per_hour" db:"max_executions_per_hour"`
 	RequiresApproval     bool            `json:"requires_approval" db:"requires_approval"`
+	SystemPrompt         *string         `json:"system_prompt,omitempty" db:"system_prompt"`
 	APIURL               string          `json:"api_url" db:"api_url"`
 	RegisteredAt         time.Time       `json:"registered_at" db:"registered_at"`
 	DisabledAt           *time.Time      `json:"disabled_at" db:"disabled_at"`

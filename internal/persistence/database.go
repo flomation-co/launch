@@ -195,14 +195,14 @@ func NewService(config *config.Config) (*Service, error) {
 
 	if s.stmtUpsertAgentRegistration, err = db.PrepareNamed(`
 		INSERT INTO agent_registration (agent_id, orchestrator_flow_id, trigger_id, channels, environment_id,
-			max_executions_per_hour, requires_approval, api_url)
+			max_executions_per_hour, requires_approval, system_prompt, api_url)
 		VALUES (:agent_id, :orchestrator_flow_id, :trigger_id, :channels, :environment_id,
-			:max_executions_per_hour, :requires_approval, :api_url)
+			:max_executions_per_hour, :requires_approval, :system_prompt, :api_url)
 		ON CONFLICT (agent_id) DO UPDATE SET
 			orchestrator_flow_id = :orchestrator_flow_id, trigger_id = :trigger_id,
 			channels = :channels, environment_id = :environment_id,
 			max_executions_per_hour = :max_executions_per_hour, requires_approval = :requires_approval,
-			api_url = :api_url, disabled_at = NULL;
+			system_prompt = :system_prompt, api_url = :api_url, disabled_at = NULL;
 	`); err != nil {
 		return nil, errors.Wrap(err, "unable to prepare stmtUpsertAgentRegistration")
 	}

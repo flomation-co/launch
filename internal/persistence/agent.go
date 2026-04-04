@@ -23,6 +23,7 @@ func (s *Service) UpsertAgentRegistration(reg launch.AgentRegistration) error {
 		EnvironmentID        *string         `db:"environment_id"`
 		MaxExecutionsPerHour int             `db:"max_executions_per_hour"`
 		RequiresApproval     bool            `db:"requires_approval"`
+		SystemPrompt         *string         `db:"system_prompt"`
 		APIURL               string          `db:"api_url"`
 	}{
 		AgentID:              reg.AgentID,
@@ -32,6 +33,7 @@ func (s *Service) UpsertAgentRegistration(reg launch.AgentRegistration) error {
 		EnvironmentID:        reg.EnvironmentID,
 		MaxExecutionsPerHour: reg.MaxExecutionsPerHour,
 		RequiresApproval:     reg.RequiresApproval,
+		SystemPrompt:         reg.SystemPrompt,
 		APIURL:               reg.APIURL,
 	})
 	return err
