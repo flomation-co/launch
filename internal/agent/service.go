@@ -115,8 +115,23 @@ func (s *Service) HandleInboundMessage(agentID string, message InboundMessage) e
 	if err != nil {
 		return fmt.Errorf("failed to get agent registration: %w", err)
 	}
-	if reg == nil || reg.DisabledAt != nil {
-		return fmt.Errorf("agent %s is not registered or is disabled", agentID)
+	if reg == nil {
+		return fmt.Errorf("agent %s is not registered", agentID)
+	}
+
+	// If the agent was disabled (e.g. after a failed execution or stale state),
+	// auto-recover by re-enabling it. The webhook is still arriving, which means
+	// the external channel is still active and the user expects the agent to work.
+	if reg.DisabledAt != nil {
+		log.WithFields(log.Fields{
+			"agent_id": agentID,
+		}).Info("auto-recovering disabled agent registration")
+		if err := s.db.UpsertAgentRegistration(*reg); err != nil {
+			log.WithFields(log.Fields{
+				"agent_id": agentID,
+				"error":    err,
+			}).Error("failed to re-enable agent registration")
+		}
 	}
 
 	// Store message via API
