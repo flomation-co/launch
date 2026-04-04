@@ -188,25 +188,32 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 		return
 	}
 
-	// Resolve user display name from Slack API if possible
-	senderName := parsed.UserID
+	// Resolve user names from Slack API if possible
+	senderDisplay := parsed.UserID
+	senderReal := parsed.UserID
 	reg, _ := s.agent.GetRegistration(agentID)
 	if reg != nil {
 		if botToken := extractSlackBotToken(reg.Channels); botToken != "" {
-			if name, err := slackpkg.LookupUserName(botToken, parsed.UserID); err == nil && name != "" {
-				senderName = name
+			if info, err := slackpkg.LookupUser(botToken, parsed.UserID); err == nil && info != nil {
+				if info.DisplayName != "" {
+					senderDisplay = info.DisplayName
+				}
+				if info.RealName != "" {
+					senderReal = info.RealName
+				}
 			}
 		}
 	}
 
 	msg := agent.InboundMessage{
 		ChannelType: "slack",
-		Sender:      senderName,
+		Sender:      senderDisplay,
 		Content:     parsed.Text,
 		Metadata: map[string]interface{}{
-			"user_id":     parsed.UserID,
-			"user_name":   senderName,
-			"channel_id":  parsed.ChannelID,
+			"user_id":      parsed.UserID,
+			"user_name":    senderReal,
+			"display_name": senderDisplay,
+			"channel_id":   parsed.ChannelID,
 			"timestamp":   parsed.Timestamp,
 			"thread_ts":   parsed.ThreadTS,
 			"team_id":     parsed.TeamID,
