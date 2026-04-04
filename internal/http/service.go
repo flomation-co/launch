@@ -16,6 +16,7 @@ import (
 
 	"flomation.app/automate/launch"
 
+	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/trigger"
 
 	"flomation.app/automate/launch/internal/config"
@@ -30,13 +31,15 @@ type Service struct {
 	config  *config.Config
 	engine  *gin.Engine
 	trigger *trigger.Service
+	agent   *agent.Service
 }
 
-func NewService(config *config.Config, trigger *trigger.Service) (*Service, error) {
+func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service) (*Service, error) {
 	s := Service{
 		config:  config,
 		engine:  gin.New(),
 		trigger: trigger,
+		agent:   agentSvc,
 	}
 
 	templ := template.Must(template.ParseFS(assets.Templates, "files/form.html"))
@@ -106,6 +109,16 @@ func (s *Service) configure() error {
 	admin.Use(s.jwtMiddleware)
 	admin.POST("/:id", s.createTrigger)
 	admin.DELETE("/:id", s.deleteTrigger)
+
+	// Agent registration (internal, called by API service)
+	agentAdmin := s.engine.Group("/agent")
+	agentAdmin.POST("/:id", s.registerAgent)
+	agentAdmin.DELETE("/:id", s.deregisterAgent)
+
+	// Agent inbound webhooks (edge-facing, no auth — validated by agent ID)
+	s.engine.POST("/webhook/agent/:agent_id", s.handleAgentWebhook)
+	s.engine.POST("/webhook/telegram/:agent_id", s.handleTelegramWebhook)
+	s.engine.POST("/webhook/slack/:agent_id", s.handleSlackWebhook)
 
 	return nil
 }

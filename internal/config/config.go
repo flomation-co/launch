@@ -44,6 +44,7 @@ type Config struct {
 	Automate         ServiceConfig    `json:"automate"`
 	Security         SecurityConfig   `json:"security"`
 	Google           *GoogleConfig    `json:"google"`
+	PublicURL        string           `json:"public_url"` // e.g. "https://launch.flomation.app"
 }
 
 func LoadConfig(path string) (*Config, error) {
