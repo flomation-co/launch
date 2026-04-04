@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -187,18 +188,30 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 		return
 	}
 
+	// Resolve user display name from Slack API if possible
+	senderName := parsed.UserID
+	reg, _ := s.agent.GetRegistration(agentID)
+	if reg != nil {
+		if botToken := extractSlackBotToken(reg.Channels); botToken != "" {
+			if name, err := slackpkg.LookupUserName(botToken, parsed.UserID); err == nil && name != "" {
+				senderName = name
+			}
+		}
+	}
+
 	msg := agent.InboundMessage{
 		ChannelType: "slack",
-		Sender:      parsed.UserID,
+		Sender:      senderName,
 		Content:     parsed.Text,
 		Metadata: map[string]interface{}{
-			"user_id":    parsed.UserID,
-			"channel_id": parsed.ChannelID,
-			"timestamp":  parsed.Timestamp,
-			"thread_ts":  parsed.ThreadTS,
-			"team_id":    parsed.TeamID,
-			"event_id":   parsed.EventID,
-			"event_type": parsed.EventType,
+			"user_id":     parsed.UserID,
+			"user_name":   senderName,
+			"channel_id":  parsed.ChannelID,
+			"timestamp":   parsed.Timestamp,
+			"thread_ts":   parsed.ThreadTS,
+			"team_id":     parsed.TeamID,
+			"event_id":    parsed.EventID,
+			"event_type":  parsed.EventType,
 		},
 	}
 
@@ -214,4 +227,23 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 	}()
 
 	c.Status(http.StatusOK)
+}
+
+// extractSlackBotToken finds the bot_token from a Slack channel in the agent's channel config.
+func extractSlackBotToken(channelsRaw json.RawMessage) string {
+	var channels []struct {
+		Type   string `json:"type"`
+		Config struct {
+			BotToken string `json:"bot_token"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(channelsRaw, &channels); err != nil {
+		return ""
+	}
+	for _, ch := range channels {
+		if ch.Type == "slack" && ch.Config.BotToken != "" {
+			return ch.Config.BotToken
+		}
+	}
+	return ""
 }

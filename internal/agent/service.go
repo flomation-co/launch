@@ -108,6 +108,11 @@ func (s *Service) DeregisterAgent(agentID string) error {
 	return nil
 }
 
+// GetRegistration returns the agent registration for channel config access.
+func (s *Service) GetRegistration(agentID string) (*launch.AgentRegistration, error) {
+	return s.db.GetAgentRegistration(agentID)
+}
+
 // HandleInboundMessage processes an incoming message for an agent.
 // This is called from HTTP webhook handlers and is stateless — any instance can handle it.
 func (s *Service) HandleInboundMessage(agentID string, message InboundMessage) error {

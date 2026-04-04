@@ -147,6 +147,46 @@ type URLVerification struct {
 	Challenge string `json:"challenge"`
 }
 
+// LookupUserName resolves a Slack user ID to their display name.
+func LookupUserName(botToken string, userID string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, slackAPIBase+"/users.info?user="+userID, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+botToken)
+
+	client := &http.Client{Timeout: httpTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		OK   bool `json:"ok"`
+		User struct {
+			RealName    string `json:"real_name"`
+			DisplayName string `json:"profile"`
+			Profile     struct {
+				DisplayName string `json:"display_name"`
+				RealName    string `json:"real_name"`
+			} `json:"profile"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if !result.OK {
+		return "", fmt.Errorf("users.info failed")
+	}
+
+	// Prefer display name, fall back to real name
+	if result.User.Profile.DisplayName != "" {
+		return result.User.Profile.DisplayName, nil
+	}
+	return result.User.RealName, nil
+}
+
 // SendMessage sends a text message to a Slack channel via the Bot API.
 func SendMessage(botToken string, channelID string, text string, threadTS string) (string, error) {
 	payload := map[string]interface{}{
