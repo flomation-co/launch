@@ -391,8 +391,12 @@ func TestDispatchExecution_PlumbsMemoryKeysIntoTriggerData(t *testing.T) {
 	if req.Body["conversation_history"] == nil {
 		t.Fatalf("expected conversation_history in trigger data")
 	}
-	if req.Body["system_prompt"] != "You are a helpful assistant." {
-		t.Fatalf("expected system_prompt in trigger data, got %v", req.Body["system_prompt"])
+	// Phase 2b: system_prompt is now the server-assembled view rather
+	// than the raw persona string. The persona is embedded in the
+	// assembled string; assert containment, not equality.
+	sp, _ := req.Body["system_prompt"].(string)
+	if !strings.Contains(sp, "You are a helpful assistant.") {
+		t.Fatalf("expected persona embedded in assembled system_prompt, got %v", req.Body["system_prompt"])
 	}
 	if req.Body["message_id"] != "msg-new" {
 		t.Fatalf("expected message_id, got %v", req.Body["message_id"])
@@ -508,8 +512,11 @@ func TestHandleInboundMessageForReg_EndToEnd_WiresValuesBetweenSteps(t *testing.
 	if execReq.Body["message_id"] != "msg-new" {
 		t.Fatalf("expected message_id from scoped store, got %v", execReq.Body["message_id"])
 	}
-	if execReq.Body["system_prompt"] != "You are a helpful assistant." {
-		t.Fatalf("expected system_prompt from registration, got %v", execReq.Body["system_prompt"])
+	// Phase 2b: system_prompt is now server-assembled. Persona is
+	// embedded; assert containment rather than strict equality.
+	esp, _ := execReq.Body["system_prompt"].(string)
+	if !strings.Contains(esp, "You are a helpful assistant.") {
+		t.Fatalf("expected persona embedded in assembled system_prompt, got %v", execReq.Body["system_prompt"])
 	}
 }
 
