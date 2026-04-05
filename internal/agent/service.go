@@ -656,8 +656,15 @@ func (s *Service) dispatchExecution(
 		"sender":       msg.Sender,
 		"content":      msg.Content,
 	}
-	if reg.SystemPrompt != nil && *reg.SystemPrompt != "" {
-		data["system_prompt"] = *reg.SystemPrompt
+	// Phase 2b: system_prompt is now the server-assembled view
+	// (persona + honesty directive + pinned memories + channel directive
+	// + any open pending confirmations) rather than the raw persona
+	// string from the agent registration. See internal/agent/system_prompt.go.
+	// The assembler fails open — on any fetch error the assembled string
+	// degrades to persona + directives with no memory context, so the
+	// reply path is never blocked on memory I/O.
+	if assembled := s.assembleSystemPrompt(reg, msg, agentUserID); assembled != "" {
+		data["system_prompt"] = assembled
 	}
 	if msgID != nil {
 		data["message_id"] = *msgID
