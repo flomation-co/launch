@@ -214,11 +214,11 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 			"user_name":    senderReal,
 			"display_name": senderDisplay,
 			"channel_id":   parsed.ChannelID,
-			"timestamp":   parsed.Timestamp,
-			"thread_ts":   parsed.ThreadTS,
-			"team_id":     parsed.TeamID,
-			"event_id":    parsed.EventID,
-			"event_type":  parsed.EventType,
+			"timestamp":    parsed.Timestamp,
+			"thread_ts":    parsed.ThreadTS,
+			"team_id":      parsed.TeamID,
+			"event_id":     parsed.EventID,
+			"event_type":   parsed.EventType,
 		},
 	}
 

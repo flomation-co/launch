@@ -24,21 +24,21 @@ type Service struct {
 	stmtGetTriggersByFlowID *sqlx.NamedStmt
 	stmtGetTriggersByType   *sqlx.NamedStmt
 
-	stmtGetTriggerState    *sqlx.NamedStmt
-	stmtUpsertTriggerState *sqlx.NamedStmt
-	stmtDeleteTriggerState *sqlx.NamedStmt
+	stmtGetTriggerState       *sqlx.NamedStmt
+	stmtUpsertTriggerState    *sqlx.NamedStmt
+	stmtDeleteTriggerState    *sqlx.NamedStmt
 	stmtDeleteAllTriggerState *sqlx.NamedStmt
-	stmtTryAcquireLease    *sqlx.NamedStmt
-	stmtReleaseLease       *sqlx.NamedStmt
+	stmtTryAcquireLease       *sqlx.NamedStmt
+	stmtReleaseLease          *sqlx.NamedStmt
 
 	// Agent statements
-	stmtUpsertAgentRegistration *sqlx.NamedStmt
-	stmtGetAgentRegistration    *sqlx.NamedStmt
-	stmtGetActiveAgentRegs      *sqlx.NamedStmt
+	stmtUpsertAgentRegistration  *sqlx.NamedStmt
+	stmtGetAgentRegistration     *sqlx.NamedStmt
+	stmtGetActiveAgentRegs       *sqlx.NamedStmt
 	stmtDisableAgentRegistration *sqlx.NamedStmt
-	stmtTryAcquireAgentLease    *sqlx.NamedStmt
-	stmtReleaseAgentLease       *sqlx.NamedStmt
-	stmtGetExpiredAgentLeases   *sqlx.NamedStmt
+	stmtTryAcquireAgentLease     *sqlx.NamedStmt
+	stmtReleaseAgentLease        *sqlx.NamedStmt
+	stmtGetExpiredAgentLeases    *sqlx.NamedStmt
 }
 
 func NewService(config *config.Config) (*Service, error) {

@@ -175,7 +175,7 @@ func Test_StateDiff_ChangedETag(t *testing.T) {
 	existingJSON, _ := json.Marshal(existingState)
 
 	known := map[string]json.RawMessage{
-		"file1.txt":     existingJSON,
+		"file1.txt": existingJSON,
 		sentinelKey: json.RawMessage(`{"status":"initialised"}`),
 	}
 
@@ -200,8 +200,8 @@ func Test_StateDiff_DeletedObjects(t *testing.T) {
 	existingState2, _ := json.Marshal(objectState{ETag: "\"bbb\"", Size: 200, LastModified: "2026-03-23T10:00:00Z"})
 
 	known := map[string]json.RawMessage{
-		"file1.txt":     existingState1,
-		"file2.txt":     existingState2,
+		"file1.txt": existingState1,
+		"file2.txt": existingState2,
 		sentinelKey: json.RawMessage(`{"status":"initialised"}`),
 	}
 
