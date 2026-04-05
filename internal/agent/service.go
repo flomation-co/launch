@@ -113,8 +113,25 @@ func (s *Service) GetRegistration(agentID string) (*launch.AgentRegistration, er
 	return s.db.GetAgentRegistration(agentID)
 }
 
+// defaultHistoryLimit is the number of prior turns we pull into the
+// conversation_history field of trigger data. The AI actions default to
+// the same value when consuming it, so 20 turns of context is the
+// Phase 1 working setpoint.
+const defaultHistoryLimit = 20
+
 // HandleInboundMessage processes an incoming message for an agent.
 // This is called from HTTP webhook handlers and is stateless — any instance can handle it.
+//
+// Phase 1 of the Agent Memory feature added identity + conversation
+// resolution: before the inbound turn is stored, we resolve the sender
+// to a canonical AgentUser and pick (or open) the conversation scoped
+// to (agent, user, channel, thread). Prior history is fetched from
+// that conversation *before* the current turn is written, so the AI
+// action sees only turns that precede the new one.
+//
+// If identity or conversation resolution fails (e.g. the API is
+// briefly unreachable) we log and fall back to an unscoped dispatch —
+// a degraded agent response is better than a dropped user message.
 func (s *Service) HandleInboundMessage(agentID string, message InboundMessage) error {
 	reg, err := s.db.GetAgentRegistration(agentID)
 	if err != nil {
@@ -139,8 +156,65 @@ func (s *Service) HandleInboundMessage(agentID string, message InboundMessage) e
 		}
 	}
 
-	// Store message via API
-	msgID, err := s.storeMessage(reg, message)
+	return s.handleInboundMessageForReg(reg, message)
+}
+
+// handleInboundMessageForReg is the post-registration-lookup orchestrator
+// for an inbound message. It runs the Phase 1 Agent Memory pipeline:
+// resolve identity → resolve conversation → fetch scoped history →
+// store inbound turn → dispatch execution, with each step's output
+// threaded into the next.
+//
+// This is separated from HandleInboundMessage so the end-to-end flow
+// can be exercised by tests that stub the API via httptest without
+// needing a real persistence.Service for the registration lookup.
+func (s *Service) handleInboundMessageForReg(reg *launch.AgentRegistration, message InboundMessage) error {
+	agentID := reg.AgentID
+
+	// Step 1: resolve the sender to a canonical agent_user via the
+	// stable channel-specific external id (e.g. Slack U-id, Telegram
+	// numeric sender id). Auto-creates user+identity on first contact.
+	var agentUserID *string
+	if id, err := s.resolveIdentity(reg, message); err != nil {
+		log.WithFields(log.Fields{
+			"agent_id": agentID,
+			"error":    err,
+		}).Warn("failed to resolve agent identity, continuing without user scoping")
+	} else if id != nil {
+		agentUserID = &id.User.ID
+	}
+
+	// Step 2: open/continue a conversation scoped to (agent, user,
+	// channel, thread). Slack threads each get their own conversation;
+	// a new DM (no thread_ts) reuses the same open conversation until
+	// it is explicitly closed.
+	var conversationID *string
+	channelID, threadID := deriveChannelScope(message)
+	if channelID != "" {
+		if conv, err := s.resolveConversation(reg, agentUserID, message.ChannelType, channelID, threadID); err != nil {
+			log.WithFields(log.Fields{
+				"agent_id": agentID,
+				"error":    err,
+			}).Warn("failed to resolve agent conversation, continuing without conversation scoping")
+		} else if conv != nil {
+			conversationID = &conv.ID
+		}
+	}
+
+	// Step 3: fetch conversation history BEFORE storing the current
+	// turn. If we stored first the AI action would see its own prompt
+	// echoed back and loop on it (this was the bug that motivated the
+	// Phase 1 work).
+	var conversationHistory []map[string]interface{}
+	if conversationID != nil {
+		conversationHistory = s.fetchConversationHistory(reg, *conversationID, defaultHistoryLimit)
+	}
+
+	// Step 4: store the inbound turn. When we have a conversation_id
+	// the message is written into that conversation with an
+	// auto-assigned sequence number; otherwise we fall back to the
+	// legacy agent-wide storage path.
+	msgID, err := s.storeMessage(reg, message, conversationID)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id": agentID,
@@ -149,9 +223,11 @@ func (s *Service) HandleInboundMessage(agentID string, message InboundMessage) e
 		// Continue to dispatch even if message storage fails
 	}
 
-	// Dispatch execution if orchestrator flow is configured
+	// Step 5: dispatch the orchestrator flow. Identity/conversation
+	// metadata flows through trigger data as new reserved keys that
+	// the executor must not auto-wire as action inputs.
 	if reg.OrchestratorFlowID != nil {
-		if err := s.dispatchExecution(reg, message, msgID); err != nil {
+		if err := s.dispatchExecution(reg, message, msgID, agentUserID, conversationID, conversationHistory); err != nil {
 			log.WithFields(log.Fields{
 				"agent_id": agentID,
 				"error":    err,
@@ -161,6 +237,69 @@ func (s *Service) HandleInboundMessage(agentID string, message InboundMessage) e
 	}
 
 	return nil
+}
+
+// deriveExternalID picks the stable external identifier and display
+// name for the message sender, per channel type. The external id
+// must be stable across renames (Slack U-ids, Telegram numeric ids)
+// because it is the lookup key for agent_identity.
+func deriveExternalID(msg InboundMessage) (externalID, displayName string) {
+	displayName = msg.Sender
+	if msg.Metadata == nil {
+		return msg.Sender, displayName
+	}
+	switch msg.ChannelType {
+	case "slack":
+		if v, ok := msg.Metadata["user_id"].(string); ok && v != "" {
+			externalID = v
+		}
+		if v, ok := msg.Metadata["user_name"].(string); ok && v != "" {
+			displayName = v
+		} else if v, ok := msg.Metadata["display_name"].(string); ok && v != "" {
+			displayName = v
+		}
+	case "telegram":
+		if v, ok := msg.Metadata["sender_id"].(string); ok && v != "" {
+			externalID = v
+		}
+		if v, ok := msg.Metadata["sender_name"].(string); ok && v != "" {
+			displayName = v
+		} else if v, ok := msg.Metadata["sender_username"].(string); ok && v != "" {
+			displayName = "@" + v
+		}
+	}
+	if externalID == "" {
+		// Fall back to sender string — not ideal (may rename) but
+		// keeps unknown channel types working.
+		externalID = msg.Sender
+	}
+	return externalID, displayName
+}
+
+// deriveChannelScope returns the conversation scoping key for a
+// message. Slack DMs scope to channel_id, threaded replies scope to
+// (channel_id, thread_ts). Telegram scopes to chat_id. Webhooks have
+// no stable channel identifier so the caller gets an empty channelID
+// and skips conversation resolution entirely.
+func deriveChannelScope(msg InboundMessage) (channelID string, threadID *string) {
+	if msg.Metadata == nil {
+		return "", nil
+	}
+	switch msg.ChannelType {
+	case "slack":
+		if v, ok := msg.Metadata["channel_id"].(string); ok {
+			channelID = v
+		}
+		if v, ok := msg.Metadata["thread_ts"].(string); ok && v != "" {
+			t := v
+			threadID = &t
+		}
+	case "telegram":
+		if v, ok := msg.Metadata["chat_id"].(string); ok {
+			channelID = v
+		}
+	}
+	return channelID, threadID
 }
 
 // startManaging begins lifecycle management for an agent on this instance.
@@ -313,8 +452,147 @@ func (s *Service) updateHeartbeat(agentID string) {
 	_ = ma
 }
 
-// storeMessage records an inbound message via the API.
-func (s *Service) storeMessage(reg *launch.AgentRegistration, msg InboundMessage) (*string, error) {
+// agentIdentityResponse mirrors the API's resolve-identity response.
+type agentIdentityResponse struct {
+	Identity struct {
+		ID string `json:"id"`
+	} `json:"identity"`
+	User struct {
+		ID string `json:"id"`
+	} `json:"user"`
+}
+
+// agentConversationResponse mirrors the API's resolve-conversation response.
+type agentConversationResponse struct {
+	ID string `json:"id"`
+}
+
+// resolveIdentity calls the API's internal resolve-identity endpoint to
+// look up (or auto-create on first contact) the AgentIdentity +
+// AgentUser for the sender of an inbound message.
+func (s *Service) resolveIdentity(reg *launch.AgentRegistration, msg InboundMessage) (*agentIdentityResponse, error) {
+	if reg.APIURL == "" {
+		return nil, fmt.Errorf("agent registration has no api_url")
+	}
+	externalID, displayName := deriveExternalID(msg)
+	if externalID == "" {
+		return nil, fmt.Errorf("could not derive external id for %s message", msg.ChannelType)
+	}
+
+	body := map[string]interface{}{
+		"channel_type":        msg.ChannelType,
+		"channel_external_id": externalID,
+	}
+	if displayName != "" {
+		body["display_name"] = displayName
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/resolve-identity", reg.APIURL, reg.AgentID)
+	client := http.Client{Timeout: apiTimeout}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("API returned %d resolving identity: %s", resp.StatusCode, string(rb))
+	}
+
+	var result agentIdentityResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// resolveConversation calls the API's internal resolve-conversation
+// endpoint to look up (or open) the conversation scoped to the given
+// (agent, user, channel, thread) tuple.
+func (s *Service) resolveConversation(reg *launch.AgentRegistration, agentUserID *string, channelType, channelID string, threadID *string) (*agentConversationResponse, error) {
+	if reg.APIURL == "" {
+		return nil, fmt.Errorf("agent registration has no api_url")
+	}
+
+	body := map[string]interface{}{
+		"channel_type": channelType,
+		"channel_id":   channelID,
+	}
+	if agentUserID != nil {
+		body["agent_user_id"] = *agentUserID
+	}
+	if threadID != nil {
+		body["thread_id"] = *threadID
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/conversation", reg.APIURL, reg.AgentID)
+	client := http.Client{Timeout: apiTimeout}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("API returned %d resolving conversation: %s", resp.StatusCode, string(rb))
+	}
+
+	var result agentConversationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// fetchConversationHistory pulls the last N turns for a conversation
+// from the API. Returns nil on any error — the caller treats an empty
+// history as "fresh conversation" rather than failing.
+func (s *Service) fetchConversationHistory(reg *launch.AgentRegistration, conversationID string, limit int) []map[string]interface{} {
+	if reg.APIURL == "" || conversationID == "" {
+		return nil
+	}
+
+	url := fmt.Sprintf("%s/api/v1/internal/conversation/%s/history?limit=%d", reg.APIURL, conversationID, limit)
+	client := http.Client{Timeout: apiTimeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"conversation_id": conversationID,
+			"error":           err,
+		}).Warn("failed to fetch conversation history")
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var messages []map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
+		return nil
+	}
+	return messages
+}
+
+// storeMessage records an inbound message via the API. When
+// conversationID is supplied the message is written into the
+// conversation-scoped endpoint (which assigns a sequence number);
+// otherwise it falls back to the legacy agent-wide endpoint so callers
+// with no resolvable channel scope (e.g. generic webhooks) still work.
+func (s *Service) storeMessage(reg *launch.AgentRegistration, msg InboundMessage, conversationID *string) (*string, error) {
 	payload, err := json.Marshal(map[string]interface{}{
 		"direction":    "inbound",
 		"channel_type": msg.ChannelType,
@@ -326,7 +604,12 @@ func (s *Service) storeMessage(reg *launch.AgentRegistration, msg InboundMessage
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/message", reg.APIURL, reg.AgentID)
+	var url string
+	if conversationID != nil {
+		url = fmt.Sprintf("%s/api/v1/internal/conversation/%s/message?agent_id=%s", reg.APIURL, *conversationID, reg.AgentID)
+	} else {
+		url = fmt.Sprintf("%s/api/v1/internal/agent/%s/message", reg.APIURL, reg.AgentID)
+	}
 	client := http.Client{Timeout: apiTimeout}
 	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
@@ -349,7 +632,18 @@ func (s *Service) storeMessage(reg *launch.AgentRegistration, msg InboundMessage
 }
 
 // dispatchExecution triggers the agent's orchestrator flow via the API.
-func (s *Service) dispatchExecution(reg *launch.AgentRegistration, msg InboundMessage, msgID *string) error {
+// Identity, conversation, and history metadata flow through trigger
+// data as reserved keys (agent_id, agent_user_id, conversation_id,
+// conversation_history, system_prompt) that the executor must not
+// auto-wire as raw action inputs.
+func (s *Service) dispatchExecution(
+	reg *launch.AgentRegistration,
+	msg InboundMessage,
+	msgID *string,
+	agentUserID *string,
+	conversationID *string,
+	conversationHistory []map[string]interface{},
+) error {
 	if reg.OrchestratorFlowID == nil {
 		return nil
 	}
@@ -367,6 +661,15 @@ func (s *Service) dispatchExecution(reg *launch.AgentRegistration, msg InboundMe
 	}
 	if msgID != nil {
 		data["message_id"] = *msgID
+	}
+	if agentUserID != nil {
+		data["agent_user_id"] = *agentUserID
+	}
+	if conversationID != nil {
+		data["conversation_id"] = *conversationID
+	}
+	if conversationHistory != nil {
+		data["conversation_history"] = conversationHistory
 	}
 	// Flatten metadata into trigger data for direct variable access
 	for k, v := range msg.Metadata {
