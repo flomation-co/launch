@@ -58,7 +58,7 @@ func (s *Service) RegisterWebhook(agentID string, botToken string) error {
 	if err != nil {
 		return fmt.Errorf("failed to call setWebhook: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result telegramResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -96,7 +96,7 @@ func (s *Service) DeregisterWebhook(agentID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to call deleteWebhook: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	s.mu.Lock()
 	delete(s.registered, agentID)
@@ -225,7 +225,7 @@ func SendMessage(botToken string, chatID int64, text string, parseMode string) (
 	if err != nil {
 		return 0, fmt.Errorf("failed to call sendMessage: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 

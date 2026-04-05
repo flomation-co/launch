@@ -166,7 +166,7 @@ func LookupUser(botToken string, userID string) (*UserInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		OK   bool `json:"ok"`
@@ -219,7 +219,7 @@ func SendMessage(botToken string, channelID string, text string, threadTS string
 	if err != nil {
 		return "", fmt.Errorf("failed to send message: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 
