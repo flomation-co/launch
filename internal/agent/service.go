@@ -236,6 +236,14 @@ func (s *Service) handleInboundMessageForReg(reg *launch.AgentRegistration, mess
 		}
 	}
 
+	// Step 6 (Phase 2d-γ): fire the extraction pipeline. This runs in
+	// parallel with (or after) the orchestrator flow and never blocks
+	// the reply path — any error here is logged and swallowed. The
+	// endpoint is a 204 no-op for agents without an extraction flow
+	// configured (Phase 2d-α's design), so calling it unconditionally
+	// is safe.
+	s.dispatchExtraction(reg, message, msgID, agentUserID, conversationID, "user")
+
 	return nil
 }
 
@@ -722,6 +730,99 @@ func (s *Service) dispatchExecution(
 	}).Info("agent execution dispatched")
 
 	return nil
+}
+
+// extractionHTTPTimeout is deliberately shorter than apiTimeout. The
+// extraction dispatch is a fire-and-forget call on the tail end of the
+// reply pipeline — it enqueues an execution via the API and returns
+// immediately, so it has no legitimate reason to take more than a few
+// seconds. A hung API must not be able to delay the next reply by the
+// full apiTimeout budget.
+const extractionHTTPTimeout = apiTimeout / 4
+
+// dispatchExtraction fires the extraction System Flow for this turn.
+// Phase 2d-γ: called from handleInboundMessageForReg after the main
+// orchestrator dispatch, and from Phase 2d-γ-executor on the
+// assistant-reply side via a sibling call in ai_common.
+//
+// The call is best-effort: any failure (network, non-2xx, malformed
+// response) logs a warning and returns. The reply path is never
+// blocked on extraction — the user gets their answer even when
+// extraction is degraded, and the next turn just doesn't see the
+// memories this turn might have produced. This matches the plan's
+// "latency on the main path is sacred" principle.
+//
+// When the agent has no extraction_flow_id configured (the default
+// state before the Phase 2d-γ-api seed migration backfills it), the
+// API responds with 204 No Content. That's the expected happy path
+// for un-bootstrapped agents — we log nothing and move on.
+func (s *Service) dispatchExtraction(
+	reg *launch.AgentRegistration,
+	msg InboundMessage,
+	msgID *string,
+	agentUserID *string,
+	conversationID *string,
+	role string,
+) {
+	if reg.APIURL == "" || reg.AgentID == "" {
+		return
+	}
+
+	body := map[string]interface{}{
+		"role":    role,
+		"content": msg.Content,
+	}
+	if msgID != nil {
+		body["message_id"] = *msgID
+	}
+	if agentUserID != nil {
+		body["agent_user_id"] = *agentUserID
+	}
+	if conversationID != nil {
+		body["conversation_id"] = *conversationID
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"agent_id": reg.AgentID,
+			"error":    err,
+		}).Warn("failed to marshal extraction payload")
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/extract", reg.APIURL, reg.AgentID)
+	client := http.Client{Timeout: extractionHTTPTimeout}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		log.WithFields(log.Fields{
+			"agent_id": reg.AgentID,
+			"error":    err,
+		}).Warn("failed to call extract endpoint")
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// 204 = no extraction flow configured (the common un-bootstrapped
+	// case); 202 = extraction dispatched; anything else is a warning.
+	switch resp.StatusCode {
+	case http.StatusNoContent:
+		// Silent success — agent has no extraction flow set yet.
+		return
+	case http.StatusAccepted:
+		log.WithFields(log.Fields{
+			"agent_id": reg.AgentID,
+			"role":     role,
+		}).Debug("extraction dispatched")
+		return
+	default:
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		log.WithFields(log.Fields{
+			"agent_id": reg.AgentID,
+			"status":   resp.StatusCode,
+			"body":     string(rb),
+		}).Warn("unexpected response from extract endpoint")
+	}
 }
 
 // activateChannels sets up external channel integrations for an agent.
