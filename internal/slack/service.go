@@ -93,14 +93,14 @@ func ParseEvent(body []byte) (*ParsedMessage, *URLVerification) {
 
 	var event struct {
 		Event struct {
-			Type      string `json:"type"`
-			SubType   string `json:"subtype"`
-			Text      string `json:"text"`
-			User      string `json:"user"`
-			Channel   string `json:"channel"`
-			TS        string `json:"ts"`
-			ThreadTS  string `json:"thread_ts,omitempty"`
-			BotID     string `json:"bot_id,omitempty"`
+			Type     string `json:"type"`
+			SubType  string `json:"subtype"`
+			Text     string `json:"text"`
+			User     string `json:"user"`
+			Channel  string `json:"channel"`
+			TS       string `json:"ts"`
+			ThreadTS string `json:"thread_ts,omitempty"`
+			BotID    string `json:"bot_id,omitempty"`
 		} `json:"event"`
 		TeamID    string `json:"team_id"`
 		EventID   string `json:"event_id"`
@@ -233,7 +233,7 @@ func SendMessage(botToken string, channelID string, text string, threadTS string
 	}
 
 	if !result.OK {
-		return "", fmt.Errorf("Slack API error: %s", result.Error)
+		return "", fmt.Errorf("slack API error: %s", result.Error)
 	}
 
 	log.WithFields(log.Fields{

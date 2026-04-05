@@ -24,7 +24,7 @@ const (
 // Service manages Telegram webhook registrations for agents.
 type Service struct {
 	mu          sync.RWMutex
-	webhookBase string // e.g. "https://launch.flomation.app"
+	webhookBase string            // e.g. "https://launch.flomation.app"
 	registered  map[string]string // agentID → bot token (for cleanup)
 	client      *http.Client
 }
@@ -45,8 +45,8 @@ func (s *Service) RegisterWebhook(agentID string, botToken string) error {
 	webhookURL := fmt.Sprintf("%s/webhook/telegram/%s", s.webhookBase, agentID)
 
 	payload, err := json.Marshal(map[string]interface{}{
-		"url":             webhookURL,
-		"allowed_updates": []string{"message"},
+		"url":                  webhookURL,
+		"allowed_updates":      []string{"message"},
 		"drop_pending_updates": true,
 	})
 	if err != nil {
@@ -182,11 +182,11 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int64        `json:"message_id"`
+	MessageID int64         `json:"message_id"`
 	From      *telegramUser `json:"from,omitempty"`
-	Chat      telegramChat `json:"chat"`
-	Date      int64        `json:"date"`
-	Text      string       `json:"text"`
+	Chat      telegramChat  `json:"chat"`
+	Date      int64         `json:"date"`
+	Text      string        `json:"text"`
 }
 
 type telegramUser struct {

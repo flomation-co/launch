@@ -26,13 +26,13 @@ const (
 
 // ScheduleConfig represents the configuration stored in a schedule trigger's Data field.
 type ScheduleConfig struct {
-	Mode                 string `json:"mode"`                            // "interval", "daily", "weekly"
-	Interval             string `json:"interval,omitempty"`              // e.g. "15"
-	Unit                 string `json:"unit,omitempty"`                  // "minutes", "hours", "days"
-	TimeOfDay            string `json:"time_of_day,omitempty"`           // "HH:MM" 24-hour format
-	DaysOfWeek           string `json:"days_of_week,omitempty"`          // "monday,wednesday"
-	Timezone             string `json:"timezone,omitempty"`              // IANA timezone e.g. "Europe/London"
-	ExcludeBankHolidays  string `json:"exclude_bank_holidays,omitempty"` // "true" to skip UK bank holidays
+	Mode                string `json:"mode"`                            // "interval", "daily", "weekly"
+	Interval            string `json:"interval,omitempty"`              // e.g. "15"
+	Unit                string `json:"unit,omitempty"`                  // "minutes", "hours", "days"
+	TimeOfDay           string `json:"time_of_day,omitempty"`           // "HH:MM" 24-hour format
+	DaysOfWeek          string `json:"days_of_week,omitempty"`          // "monday,wednesday"
+	Timezone            string `json:"timezone,omitempty"`              // IANA timezone e.g. "Europe/London"
+	ExcludeBankHolidays string `json:"exclude_bank_holidays,omitempty"` // "true" to skip UK bank holidays
 }
 
 // SchedulePayload is the payload sent when a schedule trigger fires.

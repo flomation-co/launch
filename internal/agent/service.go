@@ -45,9 +45,9 @@ type Service struct {
 
 // managedAgent tracks runtime state for an agent this instance is managing.
 type managedAgent struct {
-	reg      *launch.AgentRegistration
-	stopCh   chan struct{}
-	stopped  bool
+	reg     *launch.AgentRegistration
+	stopCh  chan struct{}
+	stopped bool
 }
 
 // NewService creates and starts the agent orchestration service.
@@ -498,7 +498,7 @@ func (s *Service) resolveIdentity(reg *launch.AgentRegistration, msg InboundMess
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -542,7 +542,7 @@ func (s *Service) resolveConversation(reg *launch.AgentRegistration, agentUserID
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -574,7 +574,7 @@ func (s *Service) fetchConversationHistory(reg *launch.AgentRegistration, conver
 		}).Warn("failed to fetch conversation history")
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil
@@ -615,7 +615,7 @@ func (s *Service) storeMessage(reg *launch.AgentRegistration, msg InboundMessage
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("API returned %d storing message", resp.StatusCode)
@@ -698,7 +698,7 @@ func (s *Service) dispatchExecution(
 	if err != nil {
 		return fmt.Errorf("failed to trigger execution: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -749,7 +749,7 @@ func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 					"error":    err,
 				}).Error("failed to register telegram webhook")
 			}
-		// Future: case "email" — start IMAP polling
+			// Future: case "email" — start IMAP polling
 		}
 	}
 }
