@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	backfillInterval = 15 * time.Second
-	backfillBatch    = 20
-	backfillTimeout  = 10 * time.Second
+	backfillInterval       = 15 * time.Second
+	backfillBatch          = 10
+	backfillPerItemTimeout = 10 * time.Second
 )
 
 // startEmbeddingBackfill launches the background backfill loop if
@@ -58,9 +58,6 @@ func (s *Service) backfillBatch() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), backfillTimeout)
-	defer cancel()
-
 	// 1. Fetch memories without embeddings.
 	endpoint := fmt.Sprintf("%s/api/v1/internal/memory/unembedded?limit=%d", apiURL, backfillBatch)
 	resp, err := http.Get(endpoint)
@@ -85,7 +82,7 @@ func (s *Service) backfillBatch() {
 
 	log.WithField("count", len(memories)).Debug("embedding backfill: processing batch")
 
-	// 2. Generate embeddings and patch each one.
+	// 2. Generate embeddings and patch each one with a per-item timeout.
 	for _, mem := range memories {
 		text := mem.Title
 		if mem.Body != "" {
@@ -98,8 +95,11 @@ func (s *Service) backfillBatch() {
 			continue
 		}
 
+		ctx, cancel := context.WithTimeout(context.Background(), backfillPerItemTimeout)
+
 		vec, err := s.embedding.Embed(ctx, text)
 		if err != nil {
+			cancel()
 			log.WithFields(log.Fields{
 				"memory_id": mem.ID,
 				"error":     err,
@@ -115,12 +115,14 @@ func (s *Service) backfillBatch() {
 		patchURL := fmt.Sprintf("%s/api/v1/internal/memory/%s/embedding", apiURL, mem.ID)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, patchURL, bytes.NewReader(payload))
 		if err != nil {
+			cancel()
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
 
 		patchResp, err := http.DefaultClient.Do(req)
 		if err != nil {
+			cancel()
 			log.WithFields(log.Fields{
 				"memory_id": mem.ID,
 				"error":     err,
@@ -128,5 +130,8 @@ func (s *Service) backfillBatch() {
 			continue
 		}
 		_ = patchResp.Body.Close()
+		cancel()
+
+		log.WithField("memory_id", mem.ID).Debug("embedding backfill: embedded")
 	}
 }

@@ -76,7 +76,7 @@ func main() {
 			region = "us-east-1"
 		}
 		var err error
-		embedProvider, err = embedding.NewBedrockProvider(region, cfg.Embedding.ModelID, cfg.Embedding.Dimensions)
+		embedProvider, err = embedding.NewBedrockProvider(region, cfg.Embedding.ModelID, cfg.Embedding.Dimensions, cfg.Embedding.AccessKeyID, cfg.Embedding.SecretKey)
 		if err != nil {
 			log.WithError(err).Warn("failed to initialise embedding provider — semantic retrieval disabled")
 		} else {

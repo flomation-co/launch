@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
@@ -17,7 +18,10 @@ type BedrockProvider struct {
 }
 
 // NewBedrockProvider creates a provider using the default AWS credential chain.
-func NewBedrockProvider(region, modelID string, dimensions int) (*BedrockProvider, error) {
+// NewBedrockProvider creates a provider using the default AWS credential
+// chain. If accessKeyID and secretKey are provided, they are used as
+// static credentials instead (useful for local development).
+func NewBedrockProvider(region, modelID string, dimensions int, accessKeyID, secretKey string) (*BedrockProvider, error) {
 	if modelID == "" {
 		modelID = "amazon.titan-embed-text-v2:0"
 	}
@@ -25,9 +29,16 @@ func NewBedrockProvider(region, modelID string, dimensions int) (*BedrockProvide
 		dimensions = 1024
 	}
 
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(region),
-	)
+	}
+	if accessKeyID != "" && secretKey != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(accessKeyID, secretKey, ""),
+		))
+	}
+
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("load AWS config: %w", err)
 	}
