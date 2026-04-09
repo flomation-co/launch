@@ -38,12 +38,21 @@ type GoogleConfig struct {
 	CredentialsFile *string `json:"credentials_file"`
 }
 
+type EmbeddingConfig struct {
+	Enabled    bool   `json:"enabled"`
+	Region     string `json:"region"`
+	ModelID    string `json:"model_id"`
+	Dimensions int    `json:"dimensions"`
+	TopK       int    `json:"top_k"`
+}
+
 type Config struct {
 	Database         DatabaseConfig   `json:"database"`
 	HttpListenConfig HttpListenConfig `json:"http"`
 	Automate         ServiceConfig    `json:"automate"`
 	Security         SecurityConfig   `json:"security"`
 	Google           *GoogleConfig    `json:"google"`
+	Embedding        *EmbeddingConfig `json:"embedding"`
 	PublicURL        string           `json:"public_url"` // e.g. "https://launch.flomation.app"
 }
 
