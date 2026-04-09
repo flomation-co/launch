@@ -126,6 +126,9 @@ func (s *Service) configure() error {
 	s.engine.POST("/webhook/telegram/:agent_id", s.handleTelegramWebhook)
 	s.engine.POST("/webhook/slack/:agent_id", s.handleSlackWebhook)
 
+	// Identity verification dispatch (internal, called by API)
+	s.engine.POST("/internal/agent/:agent_id/verify-identity", s.handleVerifyIdentity)
+
 	// Google token exchange (internal, called by executor tool actions)
 	s.engine.GET("/internal/google/tokens/trigger/:id", s.handleGoogleTokensTrigger)
 	s.engine.GET("/internal/google/tokens/:agent_user_id", s.handleGoogleTokens)
