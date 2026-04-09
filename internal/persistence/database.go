@@ -405,3 +405,23 @@ func (s *Service) ReleaseLease(triggerID, instanceID string) error {
 	})
 	return err
 }
+
+// --- Email poll state (agent email channel polling) ---
+
+func (s *Service) GetEmailPollState(scopeID, stateKey string) (json.RawMessage, error) {
+	var data json.RawMessage
+	err := s.conn.Get(&data, `SELECT state_data FROM email_poll_state WHERE scope_id = $1 AND state_key = $2`, scopeID, stateKey)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (s *Service) UpsertEmailPollState(scopeID, stateKey string, stateData json.RawMessage) error {
+	_, err := s.conn.Exec(`
+		INSERT INTO email_poll_state (scope_id, state_key, state_data, updated_at)
+		VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+		ON CONFLICT (scope_id, state_key) DO UPDATE SET state_data = $3, updated_at = CURRENT_TIMESTAMP
+	`, scopeID, stateKey, stateData)
+	return err
+}

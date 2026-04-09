@@ -401,16 +401,16 @@ func Test_LayerZeroHonestyDirective_IsNotEmpty(t *testing.T) {
 	// Phase 3 lands this test should be updated in lockstep with the new
 	// directive text.
 	if layerZeroHonestyDirective == "" {
-		t.Fatal("honesty directive must not be empty in Phase 2")
+		t.Fatal("honesty directive must not be empty")
 	}
-	if !strings.Contains(layerZeroHonestyDirective, "background") {
-		t.Fatal("honesty directive must mention the 'background' behavioural constraint")
+	if !strings.Contains(layerZeroHonestyDirective, "commitments") {
+		t.Fatal("honesty directive must mention commitments (Phase 3 behavioural rule)")
 	}
 	// Sanity check on apparent length — a one-liner is too weak to hold
 	// the model back; a ten-liner bloats every dispatch with tokens. The
 	// current phrasing is ~260 chars; the bounds are generous but will
 	// flag anyone who accidentally deletes half of it.
-	if l := len(layerZeroHonestyDirective); l < 100 || l > 500 {
+	if l := len(layerZeroHonestyDirective); l < 100 || l > 700 {
 		t.Errorf("honesty directive length %d outside sanity bounds [100, 500]; unexpected edit?", l)
 	}
 	_ = fmt.Sprintf // keep fmt import in scope for any future addition

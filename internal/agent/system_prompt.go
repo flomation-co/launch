@@ -38,6 +38,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"flomation.app/automate/launch"
 	log "github.com/sirupsen/logrus"
@@ -55,17 +56,56 @@ const assemblyHTTPTimeout = 3 * apiTimeoutQuarter
 // two constants in lockstep.
 const apiTimeoutQuarter = apiTimeout / 4
 
-// layerZeroHonestyDirective is the Phase 2 honesty rule: the model must
-// not make open-ended promises because the platform cannot yet act in
-// the background between turns. Phase 3 replaces this with a relaxed
-// version that allows time-bounded commitments once the two-clock
-// commitment poller ships. The constant lives in exactly one place so
-// that upgrade is a one-line change.
+// layerZeroHonestyDirective is the Phase 3 version of the honesty rule.
+// The platform can now honour time-bounded commitments via the commitment
+// poller, so the model is allowed to make them.
+// toolsDirective instructs the model to actually invoke its tools rather
+// than responding conversationally about capabilities it has.
+const toolsDirective = "" +
+	"CRITICAL: You have tools. You MUST use them. NEVER claim you have done something " +
+	"(created an event, checked a calendar, searched the web) without actually calling " +
+	"the tool. If you say 'Done' or 'I've added' without a tool call, you are lying to the user.\n\n" +
+	"When the user asks you to do something a tool can handle, respond ONLY with a tool " +
+	"call — do not add any text before the tool call. Let the tool result speak for itself.\n\n" +
+	"Tool selection guide:\n" +
+	"• calendar_read — read events, check availability, find free slots.\n" +
+	"• calendar_create — create a new event. YOU MUST CALL THIS TOOL to create events. " +
+	"Do not say 'Done' without calling it.\n" +
+	"• calendar_update — modify an existing event (call calendar_read first to get the event_id).\n" +
+	"• calendar_delete — remove an event (call calendar_read first to get the event_id).\n" +
+	"• google_accounts — manage ALL Google connections (calendar, email read, email send). Shows which " +
+	"accounts are connected and for which purposes, with OAuth links per purpose. Use when the user wants " +
+	"to connect, disconnect, or check their Google account status. NOT for reading events or emails.\n" +
+	"• email_read — search and read emails from connected Gmail accounts. Use Gmail search syntax " +
+	"(from:, subject:, is:unread, etc). Provide email_id to read full content.\n" +
+	"• email_send — send an email from a connected Gmail account. ALWAYS set sender_name to your full name " +
+	"(e.g. 'Ada Whitmore') so recipients see a proper display name, not just the email address.\n" +
+	"• email_reply — reply to a specific email (preserves thread). Requires email_id from email_read. " +
+	"ALWAYS set sender_name to your full name.\n" +
+	"• email_draft — create, list, update, or delete Gmail drafts.\n" +
+	"• web_search / web_fetch — search the internet or fetch a URL.\n\n" +
+	"Rules:\n" +
+	"• When the user says 'accounts', 'connections', 'linked', or 'connect my calendar' — use google_accounts.\n" +
+	"• When providing an OAuth link, present the full URL as a clickable link.\n" +
+	"• NEVER fabricate calendar content. Only report what a tool returned.\n" +
+	"• Use the current time to contextualise events — past events already happened, upcoming ones note time until.\n" +
+	"• For update/delete, ALWAYS call calendar_read first to get the event_id.\n" +
+	"• CHAIN TOOL CALLS IN ONE TURN. When a task requires multiple tools (e.g. read then delete), " +
+	"call them all sequentially within the same response. NEVER say 'give me a moment' or " +
+	"'let me check' and stop — you cannot come back later. Complete the entire task in one turn.\n" +
+	"• Do NOT proactively offer to connect calendars or set up tools. Wait for the user to ask. " +
+	"If the user's memories show calendars are already connected, use them directly."
+
 const layerZeroHonestyDirective = "" +
-	"You cannot currently act in the background between turns. " +
-	"Do not promise to 'check back in an hour', 'remind you tomorrow', or similar. " +
-	"You can only respond to messages you receive right now. " +
-	"This restriction will be lifted in a future platform upgrade."
+	"You may make time-bounded commitments to the user. Examples: " +
+	"'I'll get back to you in 30 minutes', 'remind me tomorrow at 9am', " +
+	"'I'll check on that in an hour', 'I'll remind you in 1 minute'. " +
+	"The platform will honour these automatically — you do not need to " +
+	"remember them yourself. Any duration is valid, including 1 minute " +
+	"or even 30 seconds. Never refuse or suggest a longer duration than " +
+	"the user requested. Always confirm the exact timeframe the user asked for. " +
+	"Do NOT make open-ended commitments without a specific time or condition " +
+	"(e.g. avoid 'I'll look into it' with no timeframe)."
 
 // assembleSystemPrompt builds the final system prompt string that gets
 // passed to the agent's orchestrator flow via `system_prompt` trigger
@@ -125,11 +165,21 @@ func buildSystemPrompt(
 		b.WriteString("\n\n")
 	}
 
+	// Current date/time so the model can reason about scheduling,
+	// deadlines, and time-relative references ("tomorrow", "next week").
+	b.WriteString("━━━ Current time ━━━\n")
+	b.WriteString(time.Now().Format("Monday, 2 January 2006 15:04 MST"))
+	b.WriteString("\n\n")
+
 	// Layer 0 honesty directive. Always included, regardless of whether
 	// there are memories or pending actions — it's a baseline rule about
 	// what the model can and cannot do, not a fact about the user.
 	b.WriteString("━━━ Layer 0 ━━━\n")
 	b.WriteString(layerZeroHonestyDirective)
+	b.WriteString("\n\n")
+
+	b.WriteString("━━━ Tools ━━━\n")
+	b.WriteString(toolsDirective)
 	b.WriteString("\n\n")
 
 	if len(pinnedMemories) > 0 {
@@ -191,7 +241,11 @@ func channelDirective(channelType string) string {
 	case "telegram":
 		return "Responding via Telegram — standard Markdown (**bold**, _italic_, `code`) is supported. Keep replies under 4096 characters."
 	case "email":
-		return "Responding via email — use plain text. Keep formatting minimal and professional."
+		return "Responding via email — use plain text. Keep formatting minimal and professional.\n" +
+			"IMPORTANT: When using tools, do NOT emit any intermediate text alongside tool calls. " +
+			"Email is not instant messaging — the user will receive a separate email for every text block you emit. " +
+			"Wait until all tool calls are complete, then respond with a single consolidated reply. " +
+			"Never include text blocks in a tool_use response on the email channel."
 	case "webhook":
 		return "Responding via webhook — the caller may be a machine. Respond concisely; use JSON only if the caller explicitly requests structured data."
 	default:
