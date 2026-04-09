@@ -17,6 +17,8 @@ import (
 	"flomation.app/automate/launch"
 
 	"flomation.app/automate/launch/internal/agent"
+	"flomation.app/automate/launch/internal/google"
+	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
 
 	"flomation.app/automate/launch/internal/config"
@@ -32,12 +34,16 @@ type Service struct {
 	engine  *gin.Engine
 	trigger *trigger.Service
 	agent   *agent.Service
+	google  *google.Service
+	db      *persistence.Service
 }
 
-func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service) (*Service, error) {
+func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, db *persistence.Service) (*Service, error) {
 	s := Service{
 		config:  config,
 		engine:  gin.New(),
+		google:  googleSvc,
+		db:      db,
 		trigger: trigger,
 		agent:   agentSvc,
 	}
@@ -119,6 +125,15 @@ func (s *Service) configure() error {
 	s.engine.POST("/webhook/agent/:agent_id", s.handleAgentWebhook)
 	s.engine.POST("/webhook/telegram/:agent_id", s.handleTelegramWebhook)
 	s.engine.POST("/webhook/slack/:agent_id", s.handleSlackWebhook)
+
+	// Google token exchange (internal, called by executor tool actions)
+	s.engine.GET("/internal/google/tokens/trigger/:id", s.handleGoogleTokensTrigger)
+	s.engine.GET("/internal/google/tokens/:agent_user_id", s.handleGoogleTokens)
+
+	// Google OAuth2 (public, browser-facing)
+	s.engine.GET("/auth/google/callback", s.handleGoogleAuthCallback)
+	s.engine.GET("/auth/google/trigger/:trigger_id", s.handleGoogleAuthInitiateTrigger)
+	s.engine.GET("/auth/google/:agent_user_id", s.handleGoogleAuthInitiate)
 
 	return nil
 }

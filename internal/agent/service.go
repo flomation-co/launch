@@ -275,6 +275,12 @@ func deriveExternalID(msg InboundMessage) (externalID, displayName string) {
 		} else if v, ok := msg.Metadata["sender_username"].(string); ok && v != "" {
 			displayName = "@" + v
 		}
+	case "email":
+		// Use the sender's email address as the stable external ID
+		if v, ok := msg.Metadata["from"].(string); ok && v != "" {
+			externalID = v
+			displayName = v
+		}
 	}
 	if externalID == "" {
 		// Fall back to sender string — not ideal (may rename) but
@@ -305,6 +311,17 @@ func deriveChannelScope(msg InboundMessage) (channelID string, threadID *string)
 	case "telegram":
 		if v, ok := msg.Metadata["chat_id"].(string); ok {
 			channelID = v
+		}
+	case "email":
+		// For conversation scoping, use the Gmail account email.
+		// channel_id in trigger data holds the email_id (for ${flow.channel_id}),
+		// so we use "account" for the conversation scope instead.
+		if v, ok := msg.Metadata["account"].(string); ok {
+			channelID = v
+		}
+		if v, ok := msg.Metadata["thread_id"].(string); ok && v != "" {
+			t := v
+			threadID = &t
 		}
 	}
 	return channelID, threadID
@@ -591,6 +608,22 @@ func (s *Service) fetchConversationHistory(reg *launch.AgentRegistration, conver
 	var messages []map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&messages); err != nil {
 		return nil
+	}
+	// Normalise direction → role so the AI action recognises entries
+	// as conversation turns. The API returns agent_message rows with
+	// direction=inbound/outbound, but the Anthropic/OpenAI actions
+	// expect role=user/assistant.
+	for _, msg := range messages {
+		if dir, ok := msg["direction"].(string); ok {
+			switch dir {
+			case "inbound":
+				msg["role"] = "user"
+			case "outbound":
+				msg["role"] = "assistant"
+			default:
+				msg["role"] = "user"
+			}
+		}
 	}
 	return messages
 }
@@ -879,4 +912,37 @@ type InboundMessage struct {
 	Sender      string                 `json:"sender"`
 	Content     string                 `json:"content"`
 	Metadata    map[string]interface{} `json:"metadata"`
+}
+
+// EmailAgentInfo holds the info needed by the email polling service to
+// dispatch inbound emails to agents with email channels.
+type EmailAgentInfo struct {
+	AgentID string
+}
+
+// GetAgentsWithEmailChannel returns all managed agents that have an
+// email channel configured. Called by the email polling service.
+func (s *Service) GetAgentsWithEmailChannel() []EmailAgentInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []EmailAgentInfo
+	for agentID, ma := range s.managedAgents {
+		if ma.stopped || ma.reg == nil || ma.reg.Channels == nil {
+			continue
+		}
+		var channels []struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(ma.reg.Channels, &channels); err != nil {
+			continue
+		}
+		for _, ch := range channels {
+			if ch.Type == "email" {
+				result = append(result, EmailAgentInfo{AgentID: agentID})
+				break
+			}
+		}
+	}
+	return result
 }

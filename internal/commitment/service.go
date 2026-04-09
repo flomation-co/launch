@@ -176,12 +176,13 @@ func (s *Service) processCommitment(c commitment) {
 			}
 		}
 
-		// Don't include conversation history for commitment wake-ups.
-		// The [SCHEDULED REMINDER] content framing plus the commitment
-		// description gives the AI everything it needs. Including history
-		// causes the AI to address old conversation topics instead of
-		// just delivering the reminder. History will be re-enabled once
-		// outbound messages are properly stored in conversations.
+		// Include recent conversation history so the AI has context for
+		// what the reminder is about. Limited to 5 turns to keep the
+		// response focused on the reminder rather than rehashing the
+		// entire conversation.
+		if history := s.fetchConversationHistory(reg.APIURL, *c.ConversationID, 5); history != nil {
+			triggerData["conversation_history"] = history
+		}
 	}
 	// Default channel_type if conversation lookup didn't set it
 	if _, has := triggerData["channel_type"]; !has {

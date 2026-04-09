@@ -43,3 +43,13 @@ type AgentRegistration struct {
 	RegisteredAt             time.Time       `json:"registered_at" db:"registered_at"`
 	DisabledAt               *time.Time      `json:"disabled_at" db:"disabled_at"`
 }
+
+// GoogleAuthState represents a pending OAuth flow linking a browser
+// consent redirect back to the agent_user who initiated it.
+type GoogleAuthState struct {
+	State       string
+	AgentID     string
+	AgentUserID string
+	TriggerID   string // non-empty for trigger-scoped connections
+	Purpose     string // "calendar", "email_read", "email_send"
+}
