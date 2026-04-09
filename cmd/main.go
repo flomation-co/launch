@@ -2,6 +2,7 @@ package main
 
 import (
 	"flomation.app/automate/launch/internal/agent"
+	"flomation.app/automate/launch/internal/commitment"
 	"flomation.app/automate/launch/internal/config"
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
 	"flomation.app/automate/launch/internal/http"
@@ -58,6 +59,9 @@ func main() {
 
 	telegramSvc := telegram.NewService(cfg.PublicURL)
 	log.Info("telegram service started")
+
+	_ = commitment.NewService(cfg, db)
+	log.Info("commitment poller started")
 
 	agentSvc := agent.NewService(cfg, db, t, telegramSvc)
 	log.Info("agent service started")

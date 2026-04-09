@@ -129,13 +129,19 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 		sender = fmt.Sprintf("user:%d", parsed.SenderID)
 	}
 
+	chatID := strconv.FormatInt(parsed.ChatID, 10)
 	msg := agent.InboundMessage{
 		ChannelType: "telegram",
 		Sender:      sender,
 		Content:     parsed.Text,
 		Metadata: map[string]interface{}{
+			// Canonical keys (consistent across all providers)
+			"channel_id": chatID,
+			"user_id":    fmt.Sprintf("%d", parsed.SenderID),
+			"user_name":  parsed.SenderName,
+			// Provider-specific keys (kept for backwards compatibility)
 			"message_id":      fmt.Sprintf("%d", parsed.MessageID),
-			"chat_id":         strconv.FormatInt(parsed.ChatID, 10),
+			"chat_id":         chatID,
 			"chat_type":       parsed.ChatType,
 			"chat_title":      parsed.ChatTitle,
 			"sender_id":       fmt.Sprintf("%d", parsed.SenderID),
@@ -210,15 +216,21 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 		Sender:      senderDisplay,
 		Content:     parsed.Text,
 		Metadata: map[string]interface{}{
-			"user_id":      parsed.UserID,
-			"user_name":    senderReal,
+			// Canonical keys (consistent across all providers)
+			"channel_id": parsed.ChannelID,
+			"thread_id":  parsed.ThreadTS,
+			"user_id":    parsed.UserID,
+			"user_name":  senderDisplay,
+			// Provider-specific keys (kept for backwards compatibility)
 			"display_name": senderDisplay,
-			"channel_id":   parsed.ChannelID,
+			"real_name":    senderReal,
 			"timestamp":    parsed.Timestamp,
 			"thread_ts":    parsed.ThreadTS,
 			"team_id":      parsed.TeamID,
 			"event_id":     parsed.EventID,
 			"event_type":   parsed.EventType,
+			// Alias: Telegram flows that use chat_id will also work
+			"chat_id": parsed.ChannelID,
 		},
 	}
 

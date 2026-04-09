@@ -659,10 +659,11 @@ func (s *Service) dispatchExecution(
 	// Build trigger data with message content.
 	// Promote metadata fields to top level so they're accessible as ${trigger.chat_id} etc.
 	data := map[string]interface{}{
-		"agent_id":     reg.AgentID,
-		"channel_type": msg.ChannelType,
-		"sender":       msg.Sender,
-		"content":      msg.Content,
+		"agent_id":       reg.AgentID,
+		"channel_type":   msg.ChannelType,
+		"sender":         msg.Sender,
+		"content":        msg.Content,
+		"trigger_source": "channel",
 	}
 	// Phase 2b: system_prompt is now the server-assembled view
 	// (persona + honesty directive + pinned memories + channel directive

@@ -38,6 +38,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"flomation.app/automate/launch"
 	log "github.com/sirupsen/logrus"
@@ -55,17 +56,19 @@ const assemblyHTTPTimeout = 3 * apiTimeoutQuarter
 // two constants in lockstep.
 const apiTimeoutQuarter = apiTimeout / 4
 
-// layerZeroHonestyDirective is the Phase 2 honesty rule: the model must
-// not make open-ended promises because the platform cannot yet act in
-// the background between turns. Phase 3 replaces this with a relaxed
-// version that allows time-bounded commitments once the two-clock
-// commitment poller ships. The constant lives in exactly one place so
-// that upgrade is a one-line change.
+// layerZeroHonestyDirective is the Phase 3 version of the honesty rule.
+// The platform can now honour time-bounded commitments via the commitment
+// poller, so the model is allowed to make them.
 const layerZeroHonestyDirective = "" +
-	"You cannot currently act in the background between turns. " +
-	"Do not promise to 'check back in an hour', 'remind you tomorrow', or similar. " +
-	"You can only respond to messages you receive right now. " +
-	"This restriction will be lifted in a future platform upgrade."
+	"You may make time-bounded commitments to the user. Examples: " +
+	"'I'll get back to you in 30 minutes', 'remind me tomorrow at 9am', " +
+	"'I'll check on that in an hour', 'I'll remind you in 1 minute'. " +
+	"The platform will honour these automatically — you do not need to " +
+	"remember them yourself. Any duration is valid, including 1 minute " +
+	"or even 30 seconds. Never refuse or suggest a longer duration than " +
+	"the user requested. Always confirm the exact timeframe the user asked for. " +
+	"Do NOT make open-ended commitments without a specific time or condition " +
+	"(e.g. avoid 'I'll look into it' with no timeframe)."
 
 // assembleSystemPrompt builds the final system prompt string that gets
 // passed to the agent's orchestrator flow via `system_prompt` trigger
@@ -124,6 +127,12 @@ func buildSystemPrompt(
 		b.WriteString(persona)
 		b.WriteString("\n\n")
 	}
+
+	// Current date/time so the model can reason about scheduling,
+	// deadlines, and time-relative references ("tomorrow", "next week").
+	b.WriteString("━━━ Current time ━━━\n")
+	b.WriteString(time.Now().Format("Monday, 2 January 2006 15:04 MST"))
+	b.WriteString("\n\n")
 
 	// Layer 0 honesty directive. Always included, regardless of whether
 	// there are memories or pending actions — it's a baseline rule about
