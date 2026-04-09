@@ -33,11 +33,15 @@ package agent
 //     working memory when it composes a reply.
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"flomation.app/automate/launch"
@@ -127,13 +131,38 @@ func (s *Service) assembleSystemPrompt(
 	// path that covers unresolved webhooks and first-contact messages
 	// where identity resolution failed.
 	if agentUserID == nil || *agentUserID == "" {
-		return buildSystemPrompt(persona, nil, nil, msg.ChannelType)
+		return buildSystemPrompt(persona, nil, nil, nil, msg.ChannelType)
 	}
 
-	memories := s.fetchPinnedMemories(reg, *agentUserID)
-	pending := s.fetchOpenPendingActions(reg, *agentUserID)
+	// Parallel fetch: pinned memories, pending actions, and (if embeddings
+	// are enabled) semantic search. All three run concurrently to minimise
+	// latency — the embedding call (up to 3s) overlaps with the two API fetches.
+	var wg sync.WaitGroup
+	var pinnedMem []assembledMemory
+	var pending []assembledPendingAction
+	var relevantMem []assembledMemory
 
-	return buildSystemPrompt(persona, memories, pending, msg.ChannelType)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		pinnedMem = s.fetchPinnedMemories(reg, *agentUserID)
+	}()
+	go func() {
+		defer wg.Done()
+		pending = s.fetchOpenPendingActions(reg, *agentUserID)
+	}()
+
+	if s.embedding != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			relevantMem = s.fetchRelevantMemories(reg, msg, *agentUserID)
+		}()
+	}
+
+	wg.Wait()
+
+	return buildSystemPrompt(persona, pinnedMem, relevantMem, pending, msg.ChannelType)
 }
 
 // buildSystemPrompt is the pure-function core of the assembler. Given
@@ -155,6 +184,7 @@ func (s *Service) assembleSystemPrompt(
 func buildSystemPrompt(
 	persona string,
 	pinnedMemories []assembledMemory,
+	relevantMemories []assembledMemory,
 	pendingActions []assembledPendingAction,
 	channelType string,
 ) string {
@@ -189,6 +219,23 @@ func buildSystemPrompt(
 			// "• <title>: <body>" for readability, falling back to just
 			// the body when the title is empty or is a trivial duplicate
 			// of the body.
+			if mem.Title != "" && mem.Title != mem.Body {
+				b.WriteString("• ")
+				b.WriteString(mem.Title)
+				b.WriteString(": ")
+				b.WriteString(mem.Body)
+			} else {
+				b.WriteString("• ")
+				b.WriteString(mem.Body)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(relevantMemories) > 0 {
+		b.WriteString("━━━ Relevant context ━━━\n")
+		for _, mem := range relevantMemories {
 			if mem.Title != "" && mem.Title != mem.Body {
 				b.WriteString("• ")
 				b.WriteString(mem.Title)
@@ -348,6 +395,76 @@ func (s *Service) fetchOpenPendingActions(reg *launch.AgentRegistration, agentUs
 
 	var result []assembledPendingAction
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil
+	}
+	return result
+}
+
+// fetchRelevantMemories generates an embedding of the current message and
+// performs a semantic search against the API. Returns nil on any error —
+// the assembler treats nil as "no relevant context" and gracefully degrades.
+func (s *Service) fetchRelevantMemories(reg *launch.AgentRegistration, msg InboundMessage, agentUserID string) []assembledMemory {
+	if s.embedding == nil || reg.APIURL == "" || reg.AgentID == "" || agentUserID == "" {
+		return nil
+	}
+
+	// Generate embedding from the current inbound message.
+	ctx, cancel := context.WithTimeout(context.Background(), assemblyHTTPTimeout)
+	defer cancel()
+
+	queryText := msg.Content
+	if queryText == "" {
+		return nil
+	}
+
+	vec, err := s.embedding.Embed(ctx, queryText)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"agent_id": reg.AgentID,
+			"error":    err,
+		}).Warn("failed to generate embedding for semantic search")
+		return nil
+	}
+
+	// Determine top_k from config.
+	topK := 10
+	if s.config.Embedding != nil && s.config.Embedding.TopK > 0 {
+		topK = s.config.Embedding.TopK
+	}
+
+	// POST the embedding to the API's search endpoint.
+	payload, _ := json.Marshal(map[string]interface{}{
+		"agent_user_id": agentUserID,
+		"embedding":     vec,
+		"top_k":         topK,
+		"exclude_pinned": true,
+	})
+
+	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/memory/search", reg.APIURL, reg.AgentID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := http.Client{Timeout: assemblyHTTPTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"agent_id": reg.AgentID,
+			"error":    err,
+		}).Warn("failed to search memories by embedding")
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var result []assembledMemory
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
 		return nil
 	}
 	return result

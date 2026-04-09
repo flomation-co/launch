@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"context"
+
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/config"
 	"flomation.app/automate/launch/internal/persistence"
@@ -37,10 +39,18 @@ type Service struct {
 	db         *persistence.Service
 	trigger    *trigger.Service
 	telegram   *telegram.Service
+	embedding  embeddingProvider // nil when embeddings are disabled
 	instanceID string
 
 	mu            sync.RWMutex
 	managedAgents map[string]*managedAgent // agentID → active management state
+}
+
+// embeddingProvider is the subset of embedding.Provider that the agent
+// service needs. Defined as a local interface to avoid importing the
+// embedding package in the service struct (keeps test mocking simple).
+type embeddingProvider interface {
+	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
 // managedAgent tracks runtime state for an agent this instance is managing.
@@ -51,18 +61,20 @@ type managedAgent struct {
 }
 
 // NewService creates and starts the agent orchestration service.
-func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, telegramSvc *telegram.Service) *Service {
+func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, telegramSvc *telegram.Service, embed embeddingProvider) *Service {
 	s := &Service{
 		config:        config,
 		db:            db,
 		trigger:       trigger,
 		telegram:      telegramSvc,
+		embedding:     embed,
 		instanceID:    uuid.New().String(),
 		managedAgents: make(map[string]*managedAgent),
 	}
 
 	go s.watchdog()
 	go s.heartbeatLoop()
+	s.startEmbeddingBackfill()
 
 	log.WithFields(log.Fields{
 		"instance_id": s.instanceID,

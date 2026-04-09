@@ -4,6 +4,7 @@ import (
 	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/commitment"
 	"flomation.app/automate/launch/internal/config"
+	"flomation.app/automate/launch/internal/embedding"
 	emailtrigger "flomation.app/automate/launch/internal/email"
 	"flomation.app/automate/launch/internal/google"
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
@@ -68,7 +69,22 @@ func main() {
 	_ = commitment.NewService(cfg, db)
 	log.Info("commitment poller started")
 
-	agentSvc := agent.NewService(cfg, db, t, telegramSvc)
+	var embedProvider embedding.Provider
+	if cfg.Embedding != nil && cfg.Embedding.Enabled {
+		region := cfg.Embedding.Region
+		if region == "" {
+			region = "us-east-1"
+		}
+		var err error
+		embedProvider, err = embedding.NewBedrockProvider(region, cfg.Embedding.ModelID, cfg.Embedding.Dimensions, cfg.Embedding.AccessKeyID, cfg.Embedding.SecretKey)
+		if err != nil {
+			log.WithError(err).Warn("failed to initialise embedding provider — semantic retrieval disabled")
+		} else {
+			log.Info("embedding provider started (Bedrock Titan)")
+		}
+	}
+
+	agentSvc := agent.NewService(cfg, db, t, telegramSvc, embedProvider)
 	log.Info("agent service started")
 
 	emailSvc = emailtrigger.NewService(cfg, db, t, agentSvc)
