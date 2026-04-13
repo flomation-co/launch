@@ -111,15 +111,27 @@ const layerZeroHonestyDirective = "" +
 	"Do NOT make open-ended commitments without a specific time or condition " +
 	"(e.g. avoid 'I'll look into it' with no timeframe)."
 
-// assembleSystemPrompt builds the final system prompt string that gets
-// passed to the agent's orchestrator flow via `system_prompt` trigger
-// data. Returns the original persona (or empty string) if fetches fail
-// or if there's no agent_user_id to scope memories against.
+// assembleSystemPrompt builds the final system prompt string. Delegates
+// to assembleSystemPromptWithPendingFlag and discards the flag.
 func (s *Service) assembleSystemPrompt(
 	reg *launch.AgentRegistration,
 	msg InboundMessage,
 	agentUserID *string,
 ) string {
+	prompt, _ := s.assembleSystemPromptWithPendingFlag(reg, msg, agentUserID)
+	return prompt
+}
+
+// assembleSystemPromptWithPendingFlag builds the final system prompt string
+// that gets passed to the agent's orchestrator flow via `system_prompt`
+// trigger data. Returns the prompt and whether pending actions were included.
+// Returns the original persona (or empty string) if fetches fail
+// or if there's no agent_user_id to scope memories against.
+func (s *Service) assembleSystemPromptWithPendingFlag(
+	reg *launch.AgentRegistration,
+	msg InboundMessage,
+	agentUserID *string,
+) (string, bool) {
 	persona := ""
 	if reg.SystemPrompt != nil {
 		persona = *reg.SystemPrompt
@@ -130,13 +142,16 @@ func (s *Service) assembleSystemPrompt(
 	// directive + channel directive. This is the graceful-degradation
 	// path that covers unresolved webhooks and first-contact messages
 	// where identity resolution failed.
+	// Always fetch the tool summary (lightweight, cached by the API).
+	toolSummary := s.fetchToolSummary(reg)
+
 	if agentUserID == nil || *agentUserID == "" {
-		return buildSystemPrompt(persona, nil, nil, nil, msg.ChannelType)
+		return buildSystemPrompt(persona, nil, nil, nil, toolSummary, msg.ChannelType), false
 	}
 
 	// Parallel fetch: pinned memories, pending actions, and (if embeddings
-	// are enabled) semantic search. All three run concurrently to minimise
-	// latency — the embedding call (up to 3s) overlaps with the two API fetches.
+	// are enabled) semantic search. All run concurrently to minimise
+	// latency — the embedding call (up to 3s) overlaps with the API fetches.
 	var wg sync.WaitGroup
 	var pinnedMem []assembledMemory
 	var pending []assembledPendingAction
@@ -162,7 +177,23 @@ func (s *Service) assembleSystemPrompt(
 
 	wg.Wait()
 
-	return buildSystemPrompt(persona, pinnedMem, relevantMem, pending, msg.ChannelType)
+	log.WithFields(log.Fields{
+		"agent_id":        reg.AgentID,
+		"agent_user_id":   *agentUserID,
+		"pinned_memories":  len(pinnedMem),
+		"relevant_memories": len(relevantMem),
+		"pending_actions":  len(pending),
+		"tools":           len(toolSummary),
+	}).Info("system prompt assembly complete")
+
+	prompt := buildSystemPrompt(persona, pinnedMem, relevantMem, pending, toolSummary, msg.ChannelType)
+
+	// Temporary debug: log full system prompt to diagnose pending action visibility
+	if len(pending) > 0 {
+		log.WithField("system_prompt", prompt).Debug("system prompt with pending actions")
+	}
+
+	return prompt, len(pending) > 0
 }
 
 // buildSystemPrompt is the pure-function core of the assembler. Given
@@ -181,11 +212,19 @@ func (s *Service) assembleSystemPrompt(
 //     would just be noise).
 //   - Sections are separated by the ━ divider pattern from the plan
 //     document so the model sees a visually unambiguous boundary.
+// assembledTool is a tool available in the agent's orchestrator flow.
+type assembledTool struct {
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 func buildSystemPrompt(
 	persona string,
 	pinnedMemories []assembledMemory,
 	relevantMemories []assembledMemory,
 	pendingActions []assembledPendingAction,
+	tools []assembledTool,
 	channelType string,
 ) string {
 	var b strings.Builder
@@ -208,9 +247,26 @@ func buildSystemPrompt(
 	b.WriteString(layerZeroHonestyDirective)
 	b.WriteString("\n\n")
 
-	b.WriteString("━━━ Tools ━━━\n")
-	b.WriteString(toolsDirective)
-	b.WriteString("\n\n")
+	if len(tools) > 0 {
+		b.WriteString("━━━ Tools ━━━\n")
+		b.WriteString("CRITICAL: You have tools. You MUST use them. NEVER claim you have done something " +
+			"without actually calling the tool. If you say 'Done' without a tool call, you are lying to the user.\n\n" +
+			"Available tools:\n")
+		for _, tool := range tools {
+			b.WriteString("• ")
+			b.WriteString(tool.Name)
+			if tool.Description != "" {
+				b.WriteString(" — ")
+				b.WriteString(tool.Description)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\nRules:\n" +
+			"• NEVER fabricate tool results. Only report what a tool returned.\n" +
+			"• CHAIN TOOL CALLS IN ONE TURN. When a task requires multiple tools, call them all sequentially within the same response.\n" +
+			"• Do NOT proactively offer to set up tools. Wait for the user to ask.\n")
+		b.WriteString("\n")
+	}
 
 	if len(pinnedMemories) > 0 {
 		b.WriteString("━━━ What you know about this user ━━━\n")
@@ -257,13 +313,21 @@ func buildSystemPrompt(
 	}
 
 	if len(pendingActions) > 0 {
-		b.WriteString("━━━ Pending confirmation ━━━\n")
+		b.WriteString("━━━ ACTION REQUIRED ━━━\n")
+		b.WriteString("CRITICAL: You MUST address the items below in your VERY NEXT reply. Do NOT ignore them. Do NOT just answer the user's question without also addressing these items. Weave them naturally into your response.\n")
+		b.WriteString("When the user responds affirmatively (e.g. \"yes\", \"link them\", \"go ahead\"), treat it as confirmation of these items — NOT as a request to use a tool.\n")
 		for _, pa := range pendingActions {
-			// The extraction pipeline wrote the verbatim user utterance
-			// into Evidence, so surfacing it back gives the model a
-			// concrete anchor for the confirmation wording.
-			fmt.Fprintf(&b, "A %s was inferred from: %q. Naturally confirm this with the user in your reply.\n",
-				pa.Type, pa.Evidence)
+			switch pa.Type {
+			case "identity_link":
+				fmt.Fprintf(&b, "• IDENTITY LINK PENDING: The user previously said: %q. You have not yet asked them to confirm this. You MUST ask: \"I noticed you mentioned [identity] — would you like me to link your accounts so I can recognise you as the same person across channels?\" Do this NOW, in this reply.\n",
+					pa.Evidence)
+			case "identity_link_verification":
+				fmt.Fprintf(&b, "• IDENTITY VERIFICATION PENDING: Someone on another channel claims to also be this user: %q. You MUST ask them to confirm or deny: \"Someone on [channel] says they're also you — is that right?\" Do this NOW.\n",
+					pa.Evidence)
+			default:
+				fmt.Fprintf(&b, "• %s was inferred from: %q. You MUST confirm this with the user in your reply.\n",
+					pa.Type, pa.Evidence)
+			}
 		}
 		b.WriteString("\n")
 	}
@@ -394,6 +458,38 @@ func (s *Service) fetchOpenPendingActions(reg *launch.AgentRegistration, agentUs
 	}
 
 	var result []assembledPendingAction
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil
+	}
+	return result
+}
+
+// fetchToolSummary retrieves the list of tools available in the agent's
+// orchestrator flow from the API. Returns nil on error — the tools
+// section is omitted from the system prompt rather than blocking the reply.
+func (s *Service) fetchToolSummary(reg *launch.AgentRegistration) []assembledTool {
+	if reg.APIURL == "" || reg.AgentID == "" {
+		return nil
+	}
+
+	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/tool-summary", reg.APIURL, reg.AgentID)
+
+	client := http.Client{Timeout: assemblyHTTPTimeout}
+	resp, err := client.Get(endpoint)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"agent_id": reg.AgentID,
+			"error":    err,
+		}).Warn("failed to fetch tool summary for system prompt assembly")
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var result []assembledTool
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil
 	}

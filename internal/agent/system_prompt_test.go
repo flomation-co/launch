@@ -32,7 +32,7 @@ func Test_BuildSystemPrompt_EmptyEverything_StillRendersHonestyDirective(t *test
 	// contain — it's the Layer 0 rule that holds the model back from
 	// making promises the platform cannot honour yet. Dropping it
 	// silently would regress the core Phase 2 contract.
-	out := buildSystemPrompt("", nil, nil, nil, "")
+	out := buildSystemPrompt("", nil, nil, nil, nil, "")
 	if !strings.Contains(out, layerZeroHonestyDirective) {
 		t.Fatalf("expected honesty directive in output, got:\n%s", out)
 	}
@@ -47,7 +47,7 @@ func Test_BuildSystemPrompt_EmptyEverything_StillRendersHonestyDirective(t *test
 
 func Test_BuildSystemPrompt_PersonaFirst_HonestySecond(t *testing.T) {
 	persona := "You are Atlas, a helpful assistant."
-	out := buildSystemPrompt(persona, nil, nil, nil, "")
+	out := buildSystemPrompt(persona, nil, nil, nil, nil, "")
 
 	personaIdx := strings.Index(out, persona)
 	honestyIdx := strings.Index(out, layerZeroHonestyDirective)
@@ -65,7 +65,7 @@ func Test_BuildSystemPrompt_MemoriesRenderedAsTitleColonBody(t *testing.T) {
 		{Title: "Preferred name", Body: "Prefers Andy over Andrew"},
 		{Title: "Timezone", Body: "Europe/London"},
 	}
-	out := buildSystemPrompt("P", mems, nil, nil, "")
+	out := buildSystemPrompt("P", mems, nil, nil, nil, "")
 
 	if !strings.Contains(out, "What you know about this user") {
 		t.Fatalf("missing memory section header:\n%s", out)
@@ -82,7 +82,7 @@ func Test_BuildSystemPrompt_MemoryWithEmptyTitleRendersBodyOnly(t *testing.T) {
 	mems := []assembledMemory{
 		{Title: "", Body: "User mentioned they are visually impaired"},
 	}
-	out := buildSystemPrompt("P", mems, nil, nil, "")
+	out := buildSystemPrompt("P", mems, nil, nil, nil, "")
 	if !strings.Contains(out, "• User mentioned they are visually impaired") {
 		t.Fatalf("empty-title memory should render as body-only bullet, got:\n%s", out)
 	}
@@ -94,19 +94,19 @@ func Test_BuildSystemPrompt_MemoryWithEmptyTitleRendersBodyOnly(t *testing.T) {
 }
 
 func Test_BuildSystemPrompt_NoMemories_OmitsSectionEntirely(t *testing.T) {
-	out := buildSystemPrompt("P", nil, nil, nil, "")
+	out := buildSystemPrompt("P", nil, nil, nil, nil, "")
 	if strings.Contains(out, "What you know about this user") {
 		t.Fatalf("empty memories should omit the section entirely, got:\n%s", out)
 	}
 	// Empty slice (not nil) should also omit.
-	out2 := buildSystemPrompt("P", []assembledMemory{}, nil, nil, "")
+	out2 := buildSystemPrompt("P", []assembledMemory{}, nil, nil, nil, "")
 	if strings.Contains(out2, "What you know about this user") {
 		t.Fatalf("empty slice should omit the section entirely, got:\n%s", out2)
 	}
 }
 
 func Test_BuildSystemPrompt_SlackChannelDirective(t *testing.T) {
-	out := buildSystemPrompt("P", nil, nil, nil, "slack")
+	out := buildSystemPrompt("P", nil, nil, nil, nil, "slack")
 	if !strings.Contains(out, "mrkdwn") {
 		t.Fatalf("slack directive must mention mrkdwn, got:\n%s", out)
 	}
@@ -116,7 +116,7 @@ func Test_BuildSystemPrompt_SlackChannelDirective(t *testing.T) {
 }
 
 func Test_BuildSystemPrompt_UnknownChannelType_NoDirectiveSection(t *testing.T) {
-	out := buildSystemPrompt("P", nil, nil, nil, "made-up-channel")
+	out := buildSystemPrompt("P", nil, nil, nil, nil, "made-up-channel")
 	if strings.Contains(out, "Current channel") {
 		t.Fatalf("unknown channel type should not render the directive section, got:\n%s", out)
 	}
@@ -126,18 +126,18 @@ func Test_BuildSystemPrompt_PendingActionRendersEvidenceAndInstruction(t *testin
 	pas := []assembledPendingAction{
 		{Type: "identity_link", Evidence: "btw I'm also @andyesser on Slack"},
 	}
-	out := buildSystemPrompt("P", nil, nil, pas, "")
-	if !strings.Contains(out, "Pending confirmation") {
-		t.Fatalf("missing pending confirmation header:\n%s", out)
+	out := buildSystemPrompt("P", nil, nil, pas, nil, "")
+	if !strings.Contains(out, "ACTION REQUIRED") {
+		t.Fatalf("missing ACTION REQUIRED header:\n%s", out)
 	}
-	if !strings.Contains(out, "identity_link") {
-		t.Fatalf("pending action type must appear in the instruction, got:\n%s", out)
+	if !strings.Contains(out, "IDENTITY LINK PENDING") {
+		t.Fatalf("identity_link type must render as IDENTITY LINK PENDING, got:\n%s", out)
 	}
 	if !strings.Contains(out, "btw I'm also @andyesser on Slack") {
 		t.Fatalf("evidence utterance must be surfaced to the model, got:\n%s", out)
 	}
-	if !strings.Contains(out, "Naturally confirm") {
-		t.Fatalf("must instruct the model to confirm, got:\n%s", out)
+	if !strings.Contains(out, "link your accounts") {
+		t.Fatalf("must instruct the model to ask about linking, got:\n%s", out)
 	}
 }
 
@@ -147,7 +147,7 @@ func Test_BuildSystemPrompt_SectionOrdering(t *testing.T) {
 	mems := []assembledMemory{{Title: "Name", Body: "Andy"}}
 	pas := []assembledPendingAction{{Type: "forget_memory", Evidence: "forget Python"}}
 
-	out := buildSystemPrompt(persona, mems, nil, pas, "slack")
+	out := buildSystemPrompt(persona, mems, nil, pas, nil, "slack")
 
 	markers := []struct {
 		name    string
@@ -158,7 +158,7 @@ func Test_BuildSystemPrompt_SectionOrdering(t *testing.T) {
 		{"honesty", "Layer 0", -1},
 		{"memories", "What you know about this user", -1},
 		{"channel", "Current channel", -1},
-		{"pending", "Pending confirmation", -1},
+		{"pending", "ACTION REQUIRED", -1},
 	}
 	for i := range markers {
 		markers[i].wantPos = strings.Index(out, markers[i].needle)
@@ -175,7 +175,7 @@ func Test_BuildSystemPrompt_SectionOrdering(t *testing.T) {
 }
 
 func Test_BuildSystemPrompt_TrailingWhitespaceTrimmed(t *testing.T) {
-	out := buildSystemPrompt("P", nil, nil, nil, "")
+	out := buildSystemPrompt("P", nil, nil, nil, nil, "")
 	// Exactly one trailing newline, no double newline.
 	if !strings.HasSuffix(out, "\n") {
 		t.Fatalf("output must end with a newline, got:\n%q", out)
@@ -272,7 +272,7 @@ func Test_AssembleSystemPrompt_HappyPath_FetchesAndComposes(t *testing.T) {
 	if !strings.Contains(out, "Preferred name: Andy") {
 		t.Errorf("memory missing: %s", out)
 	}
-	if !strings.Contains(out, "identity_link") {
+	if !strings.Contains(out, "IDENTITY LINK PENDING") {
 		t.Errorf("pending action missing: %s", out)
 	}
 	if !strings.Contains(out, "mrkdwn") {
