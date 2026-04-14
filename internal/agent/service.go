@@ -623,21 +623,39 @@ func (s *Service) fetchConversationHistory(reg *launch.AgentRegistration, conver
 	}
 	// Normalise direction → role so the AI action recognises entries
 	// as conversation turns. The API returns agent_message rows with
-	// direction=inbound/outbound, but the Anthropic/OpenAI actions
-	// expect role=user/assistant.
+	// direction=inbound/outbound/tool_use/tool_result, but the
+	// Anthropic/OpenAI actions expect role=user/assistant.
+	//
+	// Tool messages are converted to text summaries that
+	// ParseConversationHistory can pass through. The AI sees a
+	// human-readable record of what it called and what came back,
+	// which gives it continuity across turns.
+	var normalised []map[string]interface{}
 	for _, msg := range messages {
-		if dir, ok := msg["direction"].(string); ok {
-			switch dir {
-			case "inbound":
-				msg["role"] = "user"
-			case "outbound":
-				msg["role"] = "assistant"
-			default:
-				msg["role"] = "user"
-			}
+		dir, _ := msg["direction"].(string)
+		switch dir {
+		case "inbound":
+			msg["role"] = "user"
+			normalised = append(normalised, msg)
+		case "outbound":
+			msg["role"] = "assistant"
+			normalised = append(normalised, msg)
+		case "tool_use":
+			// Tool calls are presented as assistant context so the
+			// model knows what it previously invoked.
+			msg["role"] = "assistant"
+			normalised = append(normalised, msg)
+		case "tool_result":
+			// Tool results are presented as user turns (matching
+			// the Anthropic format where tool_result has role=user).
+			msg["role"] = "user"
+			normalised = append(normalised, msg)
+		default:
+			msg["role"] = "user"
+			normalised = append(normalised, msg)
 		}
 	}
-	return messages
+	return normalised
 }
 
 // storeMessage records an inbound message via the API. When
