@@ -129,6 +129,9 @@ func (s *Service) configure() error {
 	// Identity verification dispatch (internal, called by API)
 	s.engine.POST("/internal/agent/:agent_id/verify-identity", s.handleVerifyIdentity)
 
+	// Channel actions — typing indicators, etc. (internal, called by executor)
+	s.engine.POST("/internal/agent/:agent_id/channel-action", s.handleChannelAction)
+
 	// Google token exchange (internal, called by executor tool actions)
 	s.engine.GET("/internal/google/tokens/trigger/:id", s.handleGoogleTokensTrigger)
 	s.engine.GET("/internal/google/tokens/:agent_user_id", s.handleGoogleTokens)

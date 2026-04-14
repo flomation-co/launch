@@ -18,7 +18,9 @@ import (
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/config"
 	"flomation.app/automate/launch/internal/persistence"
-	"flomation.app/automate/launch/internal/telegram"
+	"strconv"
+
+	telegramPkg "flomation.app/automate/launch/internal/telegram"
 	"flomation.app/automate/launch/internal/trigger"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -39,7 +41,7 @@ type Service struct {
 	config     *config.Config
 	db         *persistence.Service
 	trigger    *trigger.Service
-	telegram   *telegram.Service
+	telegram   *telegramPkg.Service
 	embedding  embeddingProvider // nil when embeddings are disabled
 	instanceID string
 
@@ -62,7 +64,7 @@ type managedAgent struct {
 }
 
 // NewService creates and starts the agent orchestration service.
-func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, telegramSvc *telegram.Service, embed embeddingProvider) *Service {
+func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, telegramSvc *telegramPkg.Service, embed embeddingProvider) *Service {
 	s := &Service{
 		config:        config,
 		db:            db,
@@ -211,6 +213,13 @@ func (s *Service) handleInboundMessageForReg(reg *launch.AgentRegistration, mess
 			}).Warn("failed to resolve agent conversation, continuing without conversation scoping")
 		} else if conv != nil {
 			conversationID = &conv.ID
+
+			// If a stale conversation was closed, generate a session
+			// summary in the background. This captures the context of
+			// the previous conversation as a memory before starting fresh.
+			if conv.ClosedConversationID != nil {
+				go s.generateSessionSummary(reg, *conv.ClosedConversationID, agentUserID)
+			}
 		}
 	}
 
@@ -234,6 +243,14 @@ func (s *Service) handleInboundMessageForReg(reg *launch.AgentRegistration, mess
 			"error":    err,
 		}).Error("failed to store agent message")
 		// Continue to dispatch even if message storage fails
+	}
+
+	// Step 4b: send typing indicator for channels that support it.
+	// Fires synchronously before orchestrator dispatch so the user sees
+	// feedback while the AI processes their message. Must be blocking
+	// to ensure it arrives before the orchestrator starts.
+	if message.ChannelType == "telegram" {
+		s.sendTypingIndicator(reg, message)
 	}
 
 	// Step 5: dispatch the orchestrator flow. Identity/conversation
@@ -514,7 +531,8 @@ type agentIdentityResponse struct {
 
 // agentConversationResponse mirrors the API's resolve-conversation response.
 type agentConversationResponse struct {
-	ID string `json:"id"`
+	ID                     string  `json:"id"`
+	ClosedConversationID   *string `json:"closed_conversation_id,omitempty"`
 }
 
 // resolveIdentity calls the API's internal resolve-identity endpoint to
@@ -827,11 +845,12 @@ func (s *Service) dispatchExtraction(
 		return
 	}
 
-	// Build enriched content: for short messages (under 20 chars), include
-	// recent conversation history directly in the content so the extraction
-	// AI can determine if "yes"/"no" is a confirmation of a pending action.
+	// Build enriched content: for messages under 80 chars, include recent
+	// conversation history so the extraction AI can determine context.
+	// This covers confirmations ("yes"/"no"), task completions ("never mind,
+	// I've done it"), and other short replies that need conversational context.
 	enrichedContent := msg.Content
-	if conversationID != nil && len(msg.Content) < 20 {
+	if conversationID != nil && len(msg.Content) < 80 {
 		if history := s.fetchConversationHistory(reg, *conversationID, 4); len(history) > 0 {
 			var sb strings.Builder
 			sb.WriteString("Recent conversation:\n")
@@ -993,7 +1012,123 @@ func (s *Service) GetAgentsWithEmailChannel() []EmailAgentInfo {
 	return result
 }
 
+// sendTypingIndicator sends a typing action to the channel. Runs in a
+// goroutine — failures are logged and swallowed.
+func (s *Service) sendTypingIndicator(reg *launch.AgentRegistration, msg InboundMessage) {
+	l := log.WithFields(log.Fields{
+		"agent_id":     reg.AgentID,
+		"channel_type": msg.ChannelType,
+	})
+
+	chatID := ""
+	if msg.Metadata != nil {
+		if v, ok := msg.Metadata["chat_id"].(string); ok {
+			chatID = v
+		}
+	}
+	if chatID == "" {
+		l.Warn("typing indicator: no chat_id in metadata")
+		return
+	}
+	l = l.WithField("chat_id", chatID)
+
+	// Extract bot token from agent channel config.
+	var channels []struct {
+		Type   string `json:"type"`
+		Config struct {
+			BotToken string `json:"bot_token"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(reg.Channels, &channels); err != nil {
+		l.WithError(err).Warn("typing indicator: failed to parse channels config")
+		return
+	}
+	botToken := ""
+	for _, ch := range channels {
+		if ch.Type == "telegram" && ch.Config.BotToken != "" {
+			botToken = ch.Config.BotToken
+			break
+		}
+	}
+	if botToken == "" {
+		l.Warn("typing indicator: no telegram bot token found in channels config")
+		return
+	}
+
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		l.WithError(err).Warn("typing indicator: failed to parse chat_id as int64")
+		return
+	}
+
+	l.Info("typing indicator: sending typing action")
+	if err := telegramPkg.SendChatAction(botToken, chatIDInt, "typing"); err != nil {
+		l.WithError(err).Warn("typing indicator: Telegram API call failed")
+	} else {
+		l.Info("typing indicator: sent successfully")
+	}
+}
+
 // extractBareEmail extracts the bare email address from a "Name <address>"
+// generateSessionSummary fetches the full history of a closed conversation
+// and dispatches a summary extraction. The extraction pipeline creates a
+// session_summary memory with valid_until set to 30 days (temporal decay).
+func (s *Service) generateSessionSummary(reg *launch.AgentRegistration, closedConvID string, agentUserID *string) {
+	l := log.WithFields(log.Fields{
+		"agent_id":        reg.AgentID,
+		"conversation_id": closedConvID,
+	})
+
+	// Fetch full conversation history (up to 50 turns).
+	history := s.fetchConversationHistory(reg, closedConvID, 50)
+	if len(history) == 0 {
+		l.Debug("no history for closed conversation, skipping summary")
+		return
+	}
+
+	// Build a summary prompt from the conversation.
+	var sb strings.Builder
+	sb.WriteString("Summarise this completed conversation in 2-3 sentences. ")
+	sb.WriteString("Focus on: what the user asked for, what was accomplished, ")
+	sb.WriteString("and any outstanding items. Write as a factual summary, not as a message.\n\n")
+	for _, turn := range history {
+		role, _ := turn["role"].(string)
+		content, _ := turn["content"].(string)
+		if role != "" && content != "" {
+			sb.WriteString(fmt.Sprintf("[%s]: %s\n", role, content))
+		}
+	}
+
+	// Dispatch to the extraction pipeline with role=summary.
+	// The extraction prompt handles this by creating a session_summary memory.
+	body := map[string]interface{}{
+		"role":    "summary",
+		"content": sb.String(),
+	}
+	if agentUserID != nil {
+		body["agent_user_id"] = *agentUserID
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		l.WithError(err).Warn("failed to marshal summary extraction")
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/extract", reg.APIURL, reg.AgentID)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		l.WithError(err).Warn("failed to dispatch session summary extraction")
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusAccepted {
+		l.Info("session summary extraction dispatched for closed conversation")
+	}
+}
+
 // format string. If the input doesn't contain angle brackets, it's returned
 // as-is (assumed to already be a bare address).
 func extractBareEmail(from string) string {

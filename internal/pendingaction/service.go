@@ -94,12 +94,30 @@ func (s *Service) poll() {
 	}
 }
 
+// pollerActionTypes is the set of pending action types the poller should
+// dispatch proactive messages for. Other types (correct_memory, forget_memory)
+// are handled internally by the extraction pipeline and should not trigger
+// user-facing messages.
+var pollerActionTypes = map[string]bool{
+	"identity_link":              true,
+	"identity_link_verification": true,
+}
+
 func (s *Service) processAction(pa pendingAction) {
 	l := log.WithFields(log.Fields{
 		"pending_action_id": pa.ID,
 		"agent_id":          pa.AgentID,
 		"type":              pa.Type,
 	})
+
+	// Only dispatch user-facing messages for identity linking types.
+	// Other types are handled internally and should not trigger messages.
+	if !pollerActionTypes[pa.Type] {
+		// Mark as notified so we don't re-check it every cycle.
+		_ = s.markNotified(pa.ID)
+		l.Debug("skipping non-identity pending action type")
+		return
+	}
 
 	// Look up the agent registration.
 	reg, err := s.db.GetAgentRegistration(pa.AgentID)

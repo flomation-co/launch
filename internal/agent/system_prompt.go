@@ -265,6 +265,20 @@ func buildSystemPrompt(
 			"• NEVER fabricate tool results. Only report what a tool returned.\n" +
 			"• CHAIN TOOL CALLS IN ONE TURN. When a task requires multiple tools, call them all sequentially within the same response.\n" +
 			"• Do NOT proactively offer to set up tools. Wait for the user to ask.\n")
+
+		// Check if Channel Action tool exists and channel supports typing.
+		hasChannelAction := false
+		for _, tool := range tools {
+			if tool.Type == "tools/channel_action" {
+				hasChannelAction = true
+				break
+			}
+		}
+		if hasChannelAction && (channelType == "telegram") {
+			b.WriteString("• TYPING INDICATOR: When you are about to use any tool (search, email, calendar, etc.), " +
+				"call Channel_Action with action=\"typing\" FIRST, before calling the other tool. " +
+				"This shows the user you are working on their request. Always do this on Telegram.\n")
+		}
 		b.WriteString("\n")
 	}
 
@@ -300,6 +314,47 @@ func buildSystemPrompt(
 			} else {
 				b.WriteString("• ")
 				b.WriteString(mem.Body)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Surface active task memories so the agent can check in on them.
+	var activeTasks []assembledMemory
+	for _, mem := range pinnedMemories {
+		if mem.Type == "task" {
+			activeTasks = append(activeTasks, mem)
+		}
+	}
+	for _, mem := range relevantMemories {
+		if mem.Type == "task" {
+			// Avoid duplicates if already in pinned.
+			found := false
+			for _, t := range activeTasks {
+				if t.Title == mem.Title {
+					found = true
+					break
+				}
+			}
+			if !found {
+				activeTasks = append(activeTasks, mem)
+			}
+		}
+	}
+	if len(activeTasks) > 0 {
+		b.WriteString("━━━ Active tasks ━━━\n")
+		b.WriteString("These are tasks the user has asked about. If a task seems stale or you're unsure if it's still needed, ask the user: \"Did you still need help with [task]?\" Do NOT assume a task is complete just because the user changed topic.\n")
+		for _, task := range activeTasks {
+			b.WriteString("• ")
+			if task.Title != "" {
+				b.WriteString(task.Title)
+				if task.Body != "" && task.Body != task.Title {
+					b.WriteString(": ")
+					b.WriteString(task.Body)
+				}
+			} else {
+				b.WriteString(task.Body)
 			}
 			b.WriteString("\n")
 		}
@@ -372,6 +427,7 @@ func channelDirective(channelType string) string {
 type assembledMemory struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
+	Type  string `json:"memory_type"`
 }
 
 // assembledPendingAction is the subset of api.AgentPendingAction the
