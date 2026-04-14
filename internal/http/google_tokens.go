@@ -41,7 +41,7 @@ func (s *Service) handleGoogleTokens(c *gin.Context) {
 // exchanges each for an access token, and returns the results as JSON.
 // Shared by both agent-user and trigger-scoped token handlers.
 func (s *Service) refreshAndRespond(c *gin.Context, apiURL string) {
-	apiResp, err := http.Get(apiURL)
+	apiResp, err := http.Get(apiURL) // #nosec G107 — internal service-to-service call
 	if err != nil {
 		log.WithError(err).Error("failed to fetch Google tokens from API")
 		c.AbortWithStatus(http.StatusInternalServerError)

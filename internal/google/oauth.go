@@ -18,7 +18,7 @@ import (
 
 const (
 	GoogleAuthURL  = "https://accounts.google.com/o/oauth2/v2/auth"
-	GoogleTokenURL = "https://oauth2.googleapis.com/token"
+	GoogleTokenURL = "https://oauth2.googleapis.com/token" // #nosec G101 — not a credential, it's a public Google endpoint
 	GoogleUserInfo = "https://www.googleapis.com/oauth2/v2/userinfo"
 )
 

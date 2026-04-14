@@ -744,7 +744,7 @@ func extractEmailAddr(s string) string {
 	return s
 }
 
-const googleTokenURL = "https://oauth2.googleapis.com/token"
+const googleTokenURL = "https://oauth2.googleapis.com/token" // #nosec G101 — not a credential, it's a public Google endpoint
 
 func refreshGoogleToken(refreshToken, clientID, clientSecret string) (string, error) {
 	data := url.Values{

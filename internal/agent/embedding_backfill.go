@@ -60,7 +60,7 @@ func (s *Service) backfillBatch() {
 
 	// 1. Fetch memories without embeddings.
 	endpoint := fmt.Sprintf("%s/api/v1/internal/memory/unembedded?limit=%d", apiURL, backfillBatch)
-	resp, err := http.Get(endpoint)
+	resp, err := http.Get(endpoint) // #nosec G107 — internal service-to-service call
 	if err != nil {
 		log.WithError(err).Debug("embedding backfill: failed to fetch unembedded memories")
 		return
