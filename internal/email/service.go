@@ -508,7 +508,7 @@ func getHistory(accessToken, startHistoryID, query string) ([]emailMessage, stri
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, "", fmt.Errorf("Gmail History API returned %d: %s", resp.StatusCode, string(body))
+		return nil, "", fmt.Errorf("gmail history API returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
@@ -744,7 +744,7 @@ func extractEmailAddr(s string) string {
 	return s
 }
 
-const googleTokenURL = "https://oauth2.googleapis.com/token"
+const googleTokenURL = "https://oauth2.googleapis.com/token" // #nosec G101 — not a credential, it's a public Google endpoint
 
 func refreshGoogleToken(refreshToken, clientID, clientSecret string) (string, error) {
 	data := url.Values{
@@ -764,7 +764,7 @@ func refreshGoogleToken(refreshToken, clientID, clientSecret string) (string, er
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Google returned %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("google returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {

@@ -141,7 +141,7 @@ func (s *Service) handleGoogleAuthCallback(c *gin.Context) {
 			s.config.Automate.URL, authState.AgentUserID)
 	}
 
-	apiResp, err := http.Post(apiURL, "application/json", bytes.NewReader(payload))
+	apiResp, err := http.Post(apiURL, "application/json", bytes.NewReader(payload)) // #nosec G107 — internal service-to-service call
 	if err != nil {
 		log.WithError(err).Error("failed to store Google token via API")
 		c.String(http.StatusInternalServerError, "Failed to save connection")

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,7 +18,9 @@ import (
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/config"
 	"flomation.app/automate/launch/internal/persistence"
-	"flomation.app/automate/launch/internal/telegram"
+	"strconv"
+
+	telegramPkg "flomation.app/automate/launch/internal/telegram"
 	"flomation.app/automate/launch/internal/trigger"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -38,7 +41,7 @@ type Service struct {
 	config     *config.Config
 	db         *persistence.Service
 	trigger    *trigger.Service
-	telegram   *telegram.Service
+	telegram   *telegramPkg.Service
 	embedding  embeddingProvider // nil when embeddings are disabled
 	instanceID string
 
@@ -61,7 +64,7 @@ type managedAgent struct {
 }
 
 // NewService creates and starts the agent orchestration service.
-func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, telegramSvc *telegram.Service, embed embeddingProvider) *Service {
+func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, telegramSvc *telegramPkg.Service, embed embeddingProvider) *Service {
 	s := &Service{
 		config:        config,
 		db:            db,
@@ -210,6 +213,13 @@ func (s *Service) handleInboundMessageForReg(reg *launch.AgentRegistration, mess
 			}).Warn("failed to resolve agent conversation, continuing without conversation scoping")
 		} else if conv != nil {
 			conversationID = &conv.ID
+
+			// If a stale conversation was closed, generate a session
+			// summary in the background. This captures the context of
+			// the previous conversation as a memory before starting fresh.
+			if conv.ClosedConversationID != nil {
+				go s.generateSessionSummary(reg, *conv.ClosedConversationID, agentUserID)
+			}
 		}
 	}
 
@@ -235,6 +245,14 @@ func (s *Service) handleInboundMessageForReg(reg *launch.AgentRegistration, mess
 		// Continue to dispatch even if message storage fails
 	}
 
+	// Step 4b: send typing indicator for channels that support it.
+	// Fires synchronously before orchestrator dispatch so the user sees
+	// feedback while the AI processes their message. Must be blocking
+	// to ensure it arrives before the orchestrator starts.
+	if message.ChannelType == "telegram" {
+		s.sendTypingIndicator(reg, message)
+	}
+
 	// Step 5: dispatch the orchestrator flow. Identity/conversation
 	// metadata flows through trigger data as new reserved keys that
 	// the executor must not auto-wire as action inputs.
@@ -255,6 +273,16 @@ func (s *Service) handleInboundMessageForReg(reg *launch.AgentRegistration, mess
 	// configured (Phase 2d-α's design), so calling it unconditionally
 	// is safe.
 	s.dispatchExtraction(reg, message, msgID, agentUserID, conversationID, "user")
+
+	// Step 7 (Phase 5): check if this message is an affirmative reply
+	// to a pending action confirmation. When the pending action poller
+	// dispatches a confirmation prompt, the user may reply with a short
+	// "yes"/"sure"/"go ahead". Rather than relying on extraction to
+	// detect this, we check directly: if the user has an open, notified
+	// pending action and their message is affirmative, transition it.
+	if agentUserID != nil && *agentUserID != "" {
+		s.checkPendingActionConfirmation(reg, message, *agentUserID)
+	}
 
 	return nil
 }
@@ -288,9 +316,11 @@ func deriveExternalID(msg InboundMessage) (externalID, displayName string) {
 			displayName = "@" + v
 		}
 	case "email":
-		// Use the sender's email address as the stable external ID
+		// Use the bare email address as the stable external ID.
+		// The "from" field often includes a display name in the format
+		// "Name <address>" — extract just the address part.
 		if v, ok := msg.Metadata["from"].(string); ok && v != "" {
-			externalID = v
+			externalID = extractBareEmail(v)
 			displayName = v
 		}
 	}
@@ -501,7 +531,8 @@ type agentIdentityResponse struct {
 
 // agentConversationResponse mirrors the API's resolve-conversation response.
 type agentConversationResponse struct {
-	ID string `json:"id"`
+	ID                     string  `json:"id"`
+	ClosedConversationID   *string `json:"closed_conversation_id,omitempty"`
 }
 
 // resolveIdentity calls the API's internal resolve-identity endpoint to
@@ -814,9 +845,31 @@ func (s *Service) dispatchExtraction(
 		return
 	}
 
+	// Build enriched content: for messages under 80 chars, include recent
+	// conversation history so the extraction AI can determine context.
+	// This covers confirmations ("yes"/"no"), task completions ("never mind,
+	// I've done it"), and other short replies that need conversational context.
+	enrichedContent := msg.Content
+	if conversationID != nil && len(msg.Content) < 80 {
+		if history := s.fetchConversationHistory(reg, *conversationID, 4); len(history) > 0 {
+			var sb strings.Builder
+			sb.WriteString("Recent conversation:\n")
+			for _, turn := range history {
+				r, _ := turn["role"].(string)
+				c, _ := turn["content"].(string)
+				if r != "" && c != "" {
+					fmt.Fprintf(&sb, "[%s]: %s\n", r, c)
+				}
+			}
+			sb.WriteString("\nCurrent message: ")
+			sb.WriteString(msg.Content)
+			enrichedContent = sb.String()
+		}
+	}
+
 	body := map[string]interface{}{
 		"role":    role,
-		"content": msg.Content,
+		"content": enrichedContent,
 	}
 	if msgID != nil {
 		body["message_id"] = *msgID
@@ -957,4 +1010,440 @@ func (s *Service) GetAgentsWithEmailChannel() []EmailAgentInfo {
 		}
 	}
 	return result
+}
+
+// sendTypingIndicator sends a typing action to the channel. Runs in a
+// goroutine — failures are logged and swallowed.
+func (s *Service) sendTypingIndicator(reg *launch.AgentRegistration, msg InboundMessage) {
+	l := log.WithFields(log.Fields{
+		"agent_id":     reg.AgentID,
+		"channel_type": msg.ChannelType,
+	})
+
+	chatID := ""
+	if msg.Metadata != nil {
+		if v, ok := msg.Metadata["chat_id"].(string); ok {
+			chatID = v
+		}
+	}
+	if chatID == "" {
+		l.Warn("typing indicator: no chat_id in metadata")
+		return
+	}
+	l = l.WithField("chat_id", chatID)
+
+	// Extract bot token from agent channel config.
+	var channels []struct {
+		Type   string `json:"type"`
+		Config struct {
+			BotToken string `json:"bot_token"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(reg.Channels, &channels); err != nil {
+		l.WithError(err).Warn("typing indicator: failed to parse channels config")
+		return
+	}
+	botToken := ""
+	for _, ch := range channels {
+		if ch.Type == "telegram" && ch.Config.BotToken != "" {
+			botToken = ch.Config.BotToken
+			break
+		}
+	}
+	if botToken == "" {
+		l.Warn("typing indicator: no telegram bot token found in channels config")
+		return
+	}
+
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		l.WithError(err).Warn("typing indicator: failed to parse chat_id as int64")
+		return
+	}
+
+	l.Info("typing indicator: sending typing action")
+	if err := telegramPkg.SendChatAction(botToken, chatIDInt, "typing"); err != nil {
+		l.WithError(err).Warn("typing indicator: Telegram API call failed")
+	} else {
+		l.Info("typing indicator: sent successfully")
+	}
+}
+
+// extractBareEmail extracts the bare email address from a "Name <address>"
+// generateSessionSummary fetches the full history of a closed conversation
+// and dispatches a summary extraction. The extraction pipeline creates a
+// session_summary memory with valid_until set to 30 days (temporal decay).
+func (s *Service) generateSessionSummary(reg *launch.AgentRegistration, closedConvID string, agentUserID *string) {
+	l := log.WithFields(log.Fields{
+		"agent_id":        reg.AgentID,
+		"conversation_id": closedConvID,
+	})
+
+	// Fetch full conversation history (up to 50 turns).
+	history := s.fetchConversationHistory(reg, closedConvID, 50)
+	if len(history) == 0 {
+		l.Debug("no history for closed conversation, skipping summary")
+		return
+	}
+
+	// Build a summary prompt from the conversation.
+	var sb strings.Builder
+	sb.WriteString("Summarise this completed conversation in 2-3 sentences. ")
+	sb.WriteString("Focus on: what the user asked for, what was accomplished, ")
+	sb.WriteString("and any outstanding items. Write as a factual summary, not as a message.\n\n")
+	for _, turn := range history {
+		role, _ := turn["role"].(string)
+		content, _ := turn["content"].(string)
+		if role != "" && content != "" {
+			fmt.Fprintf(&sb, "[%s]: %s\n", role, content)
+		}
+	}
+
+	// Dispatch to the extraction pipeline with role=summary.
+	// The extraction prompt handles this by creating a session_summary memory.
+	body := map[string]interface{}{
+		"role":    "summary",
+		"content": sb.String(),
+	}
+	if agentUserID != nil {
+		body["agent_user_id"] = *agentUserID
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		l.WithError(err).Warn("failed to marshal summary extraction")
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/extract", reg.APIURL, reg.AgentID)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		l.WithError(err).Warn("failed to dispatch session summary extraction")
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusAccepted {
+		l.Info("session summary extraction dispatched for closed conversation")
+	}
+}
+
+// format string. If the input doesn't contain angle brackets, it's returned
+// as-is (assumed to already be a bare address).
+func extractBareEmail(from string) string {
+	start := strings.Index(from, "<")
+	end := strings.Index(from, ">")
+	if start >= 0 && end > start {
+		return strings.TrimSpace(from[start+1 : end])
+	}
+	return strings.TrimSpace(from)
+}
+
+// extractEmailBody strips email headers and quoted reply text, returning
+// just the new body content. Handles the format:
+// "New email from Name <addr>\nSubject: ...\n\nBody\r\n\r\nOn ... wrote:\r\n> quoted"
+func extractEmailBody(content string) string {
+	// Find the first blank line (separates headers from body).
+	// Headers are "New email from...", "Subject: ...", etc.
+	body := content
+	if idx := strings.Index(content, "\n\n"); idx >= 0 {
+		body = content[idx+2:]
+	} else if idx := strings.Index(content, "\r\n\r\n"); idx >= 0 {
+		body = content[idx+4:]
+	}
+
+	// Strip quoted reply (lines starting with > or "On ... wrote:")
+	lines := strings.Split(body, "\n")
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Stop at quoted text marker
+		if strings.HasPrefix(trimmed, "On ") && strings.Contains(trimmed, " wrote:") {
+			break
+		}
+		if strings.HasPrefix(trimmed, ">") {
+			break
+		}
+		if trimmed != "" {
+			// Strip trailing \r
+			result = append(result, strings.TrimRight(trimmed, "\r"))
+		}
+	}
+
+	return strings.Join(result, " ")
+}
+
+// affirmatives is a set of short replies that indicate confirmation.
+var affirmatives = map[string]bool{
+	"yes":        true,
+	"yes please": true,
+	"yep":        true,
+	"yeah":       true,
+	"sure":       true,
+	"go ahead":   true,
+	"confirm":    true,
+	"confirmed":  true,
+	"do it":      true,
+	"link them":  true,
+	"link it":    true,
+	"ok":         true,
+	"okay":       true,
+	"y":          true,
+}
+
+// decliners is a set of short replies that indicate declining.
+var decliners = map[string]bool{
+	"no":       true,
+	"nope":     true,
+	"nah":      true,
+	"don't":    true,
+	"cancel":   true,
+	"decline":  true,
+	"declined": true,
+	"n":        true,
+}
+
+// checkPendingActionConfirmation checks if the user's message is a short
+// affirmative/negative reply to a pending action that has been notified.
+// If so, it updates the pending action status directly — bypassing the
+// extraction pipeline which is unreliable for short replies.
+func (s *Service) checkPendingActionConfirmation(
+	reg *launch.AgentRegistration,
+	msg InboundMessage,
+	agentUserID string,
+) {
+	// For email messages, extract just the body text (strip headers,
+	// quoted replies, and signatures). Email content arrives as:
+	// "New email from Name <addr>\nSubject: ...\n\nBody\r\n\r\nOn ... wrote:\r\n> quoted"
+	content := msg.Content
+	if msg.ChannelType == "email" {
+		content = extractEmailBody(content)
+	}
+
+	// Only check short messages — long messages are unlikely to be
+	// simple confirmations.
+	normalised := strings.TrimSpace(strings.ToLower(content))
+	if len(normalised) > 30 {
+		return
+	}
+
+	isConfirm := affirmatives[normalised]
+	isDecline := decliners[normalised]
+	if !isConfirm && !isDecline {
+		return
+	}
+
+	// Fetch open pending actions for this user.
+	endpoint := fmt.Sprintf(
+		"%s/api/v1/internal/agent/%s/pending-action?agent_user_id=%s",
+		reg.APIURL, reg.AgentID, agentUserID,
+	)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(endpoint)
+	if err != nil {
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var actions []struct {
+		ID         string     `json:"id"`
+		Type       string     `json:"type"`
+		Status     string     `json:"status"`
+		NotifiedAt *time.Time `json:"notified_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&actions); err != nil {
+		return
+	}
+
+	// Find the most recent notified pending action.
+	for _, pa := range actions {
+		if pa.NotifiedAt == nil {
+			continue // Only match actions that the poller has asked about.
+		}
+		if pa.Status != "awaiting_confirmation" {
+			continue
+		}
+
+		newStatus := "declined"
+		if isConfirm {
+			newStatus = "confirmed_here_awaiting_other_side"
+		}
+
+		// PATCH the status.
+		body, _ := json.Marshal(map[string]string{"status": newStatus})
+		patchURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", reg.APIURL, pa.ID)
+		req, err := http.NewRequest(http.MethodPatch, patchURL, bytes.NewReader(body))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		patchResp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		_ = patchResp.Body.Close()
+
+		l := log.WithFields(log.Fields{
+			"agent_id":          reg.AgentID,
+			"pending_action_id": pa.ID,
+			"type":              pa.Type,
+			"resolution":        newStatus,
+		})
+
+		if patchResp.StatusCode == http.StatusNoContent {
+			l.Info("pending action resolved via short reply detection")
+
+			if isConfirm {
+				switch pa.Type {
+				case "identity_link":
+					// First-side confirmed — trigger cross-channel verification.
+					go s.triggerCrossChannelVerification(reg, pa.ID, agentUserID)
+				case "identity_link_verification":
+					// Second-side confirmed — trigger the identity merge.
+					go s.triggerIdentityMerge(reg, pa.ID)
+				}
+			}
+		} else {
+			l.Warn("failed to update pending action status")
+		}
+
+		// Only process the first matching pending action.
+		break
+	}
+}
+
+// triggerCrossChannelVerification dispatches the identity verification
+// request to the API, which in turn creates a target-side pending action
+// and dispatches to Launch for cross-channel confirmation.
+func (s *Service) triggerCrossChannelVerification(
+	reg *launch.AgentRegistration,
+	pendingActionID string,
+	agentUserID string,
+) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"pending_action_id":   pendingActionID,
+		"source_user_id":      agentUserID,
+		"source_channel_type": "unknown",
+	})
+
+	endpoint := fmt.Sprintf(
+		"%s/api/v1/internal/agent/%s/identity/request-verification",
+		reg.APIURL, reg.AgentID,
+	)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(body))
+	if err != nil {
+		log.WithFields(log.Fields{
+			"agent_id":          reg.AgentID,
+			"pending_action_id": pendingActionID,
+			"error":             err,
+		}).Warn("failed to trigger cross-channel verification")
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	log.WithFields(log.Fields{
+		"agent_id":          reg.AgentID,
+		"pending_action_id": pendingActionID,
+		"status_code":       resp.StatusCode,
+	}).Info("cross-channel verification triggered")
+}
+
+// triggerIdentityMerge is called when the second side of an identity link
+// confirms. It fetches the verification PA's payload to get the source and
+// target user IDs, marks the original PA as executed, and calls the merge
+// endpoint to unify the two agent_user records.
+func (s *Service) triggerIdentityMerge(reg *launch.AgentRegistration, verificationPAID string) {
+	l := log.WithFields(log.Fields{
+		"agent_id":          reg.AgentID,
+		"verification_pa_id": verificationPAID,
+	})
+
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	// Fetch the verification PA to get payload (source_user_id, target_user_id, original_pa_id).
+	paURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", reg.APIURL, verificationPAID)
+	resp, err := client.Get(paURL)
+	if err != nil {
+		l.WithError(err).Warn("failed to fetch verification PA for merge")
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		l.Warn("verification PA not found")
+		return
+	}
+
+	var pa struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pa); err != nil {
+		l.WithError(err).Warn("failed to decode verification PA")
+		return
+	}
+
+	var payload struct {
+		SourceUserID string `json:"source_user_id"`
+		TargetUserID string `json:"target_user_id"`
+		OriginalPAID string `json:"original_pa_id"`
+	}
+	if err := json.Unmarshal(pa.Payload, &payload); err != nil {
+		l.WithError(err).Warn("failed to decode verification PA payload")
+		return
+	}
+
+	if payload.SourceUserID == "" || payload.TargetUserID == "" {
+		l.Warn("verification PA payload missing user IDs")
+		return
+	}
+
+	// Mark the original PA as executed.
+	if payload.OriginalPAID != "" {
+		statusBody, _ := json.Marshal(map[string]string{"status": "executed"})
+		patchURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", reg.APIURL, payload.OriginalPAID)
+		req, _ := http.NewRequest(http.MethodPatch, patchURL, bytes.NewReader(statusBody))
+		if req != nil {
+			req.Header.Set("Content-Type", "application/json")
+			r, err := client.Do(req)
+			if err == nil {
+				_ = r.Body.Close()
+			}
+		}
+	}
+
+	// Mark the verification PA as executed.
+	statusBody, _ := json.Marshal(map[string]string{"status": "executed"})
+	patchURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", reg.APIURL, verificationPAID)
+	req, _ := http.NewRequest(http.MethodPatch, patchURL, bytes.NewReader(statusBody))
+	if req != nil {
+		req.Header.Set("Content-Type", "application/json")
+		r, err := client.Do(req)
+		if err == nil {
+			_ = r.Body.Close()
+		}
+	}
+
+	// Call the merge endpoint.
+	mergeBody, _ := json.Marshal(map[string]string{
+		"source_user_id": payload.SourceUserID,
+		"target_user_id": payload.TargetUserID,
+	})
+	mergeURL := fmt.Sprintf("%s/api/v1/internal/agent/%s/identity/merge", reg.APIURL, reg.AgentID)
+	mergeResp, err := client.Post(mergeURL, "application/json", bytes.NewReader(mergeBody))
+	if err != nil {
+		l.WithError(err).Warn("failed to call identity merge")
+		return
+	}
+	defer func() { _ = mergeResp.Body.Close() }()
+
+	if mergeResp.StatusCode == http.StatusOK {
+		l.Info("identity merge completed successfully")
+	} else {
+		l.WithField("status_code", mergeResp.StatusCode).Warn("identity merge returned non-200")
+	}
 }

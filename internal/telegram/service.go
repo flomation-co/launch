@@ -205,6 +205,45 @@ type telegramChat struct {
 
 // SendMessage sends a text message via the Telegram Bot API.
 // Used by the agent service to deliver outbound messages.
+// SendChatAction sends a chat action (e.g. "typing") to a Telegram chat.
+// Valid actions: typing, upload_photo, record_video, upload_video,
+// record_voice, upload_voice, upload_document, choose_sticker,
+// find_location, record_video_note, upload_video_note.
+func SendChatAction(botToken string, chatID int64, action string) error {
+	payload := map[string]interface{}{
+		"chat_id": chatID,
+		"action":  action,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal sendChatAction payload: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/bot%s/sendChatAction", telegramAPIBase, botToken)
+	client := &http.Client{Timeout: httpTimeout}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to call sendChatAction: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("failed to decode sendChatAction response: %w", err)
+	}
+
+	if !result.OK {
+		return fmt.Errorf("sendChatAction failed: %s", result.Description)
+	}
+	return nil
+}
+
 func SendMessage(botToken string, chatID int64, text string, parseMode string) (int64, error) {
 	payload := map[string]interface{}{
 		"chat_id": chatID,

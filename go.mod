@@ -1,6 +1,6 @@
 module flomation.app/automate/launch
 
-go 1.26.1
+go 1.26.2
 
 require (
 	github.com/flomation-co/sentinel-client v0.0.0-20260218162458-6cab108165b5

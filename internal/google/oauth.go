@@ -18,7 +18,7 @@ import (
 
 const (
 	GoogleAuthURL  = "https://accounts.google.com/o/oauth2/v2/auth"
-	GoogleTokenURL = "https://oauth2.googleapis.com/token"
+	GoogleTokenURL = "https://oauth2.googleapis.com/token" // #nosec G101 — not a credential, it's a public Google endpoint
 	GoogleUserInfo = "https://www.googleapis.com/oauth2/v2/userinfo"
 )
 
@@ -93,7 +93,7 @@ func (s *Service) ExchangeCode(code string) (*TokenResponse, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Google returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("google returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result TokenResponse
