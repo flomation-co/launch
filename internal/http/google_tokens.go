@@ -151,7 +151,7 @@ func refreshGoogleToken(refreshToken, clientID, clientSecret string) (string, er
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Google returned %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("google returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {

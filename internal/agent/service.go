@@ -1095,7 +1095,7 @@ func (s *Service) generateSessionSummary(reg *launch.AgentRegistration, closedCo
 		role, _ := turn["role"].(string)
 		content, _ := turn["content"].(string)
 		if role != "" && content != "" {
-			sb.WriteString(fmt.Sprintf("[%s]: %s\n", role, content))
+			fmt.Fprintf(&sb, "[%s]: %s\n", role, content)
 		}
 	}
 
