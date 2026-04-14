@@ -858,7 +858,7 @@ func (s *Service) dispatchExtraction(
 				r, _ := turn["role"].(string)
 				c, _ := turn["content"].(string)
 				if r != "" && c != "" {
-					sb.WriteString(fmt.Sprintf("[%s]: %s\n", r, c))
+					fmt.Fprintf(&sb, "[%s]: %s\n", r, c)
 				}
 			}
 			sb.WriteString("\nCurrent message: ")

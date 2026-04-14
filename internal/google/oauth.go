@@ -93,7 +93,7 @@ func (s *Service) ExchangeCode(code string) (*TokenResponse, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Google returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("google returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result TokenResponse
