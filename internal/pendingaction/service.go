@@ -136,13 +136,14 @@ func (s *Service) processAction(pa pendingAction) {
 		}
 
 		content = fmt.Sprintf(
-			"[SYSTEM: IDENTITY VERIFICATION — SEND A NEW EMAIL] "+
-				"A user on %s claims to also be this person. "+
-				"You MUST send a NEW email (use email_send, NOT email_reply) to this user asking them to confirm. "+
-				"The email subject should be: \"Identity Verification — Flomation\". "+
-				"The email body should ask: \"Someone on %s says they're also you. "+
-				"Please reply 'yes' to confirm this link, or 'no' to deny it.\" "+
-				"Keep it brief and professional.",
+			"[SYSTEM: IDENTITY VERIFICATION — SEND A NEW MESSAGE] "+
+				"You need to verify this user's identity. They were linked from %s. "+
+				"Send them a natural, friendly message — NOT a robotic verification. "+
+				"For email: use email_send (NOT email_reply). "+
+				"Write something like: \"Hey, just checking — is this the right email for you? "+
+				"Someone on %s mentioned this address. Just reply yes if that's you.\" "+
+				"Keep your own voice and personality. Don't mention 'identity verification' "+
+				"or 'claims to be you' — just confirm it's them naturally.",
 			sourceChannel, sourceChannel)
 	default:
 		content = fmt.Sprintf(
@@ -175,15 +176,15 @@ func (s *Service) processAction(pa pendingAction) {
 			switch identity.ChannelType {
 			case "email":
 				triggerData["from"] = identity.ChannelExternalID
-				// Override content to include explicit recipient
+				// Override content for email: include recipient and natural tone
 				content = fmt.Sprintf(
-					"[SYSTEM: SEND VERIFICATION EMAIL] "+
-						"Send a NEW email to %s (use email_send tool, NOT email_reply). "+
-						"Subject: \"Identity Verification\". "+
-						"Body: \"Hi, someone on another messaging channel claims to also be you. "+
-						"If this is correct, please reply with 'yes' to link your accounts. "+
-						"If not, reply 'no' and we'll cancel the request.\" "+
-						"Recipient address: %s",
+					"[SYSTEM: SEND VERIFICATION EMAIL to %s] "+
+						"Use email_send (NOT email_reply). Recipient: %s. "+
+						"Subject: something casual like \"Quick check\" or \"Is this you?\". "+
+						"Body: Write a natural, friendly message checking this is the right email. "+
+						"Something like: \"Hey, just wanted to check this is the right email for you — "+
+						"I've got you on another channel and want to make sure I recognise you across both. "+
+						"Just reply yes if that's you!\" Keep your personality. Don't be robotic.",
 					identity.ChannelExternalID, identity.ChannelExternalID)
 				triggerData["content"] = content
 			case "telegram":

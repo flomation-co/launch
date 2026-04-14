@@ -4,6 +4,7 @@ import (
 	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/commitment"
 	"flomation.app/automate/launch/internal/pendingaction"
+	"flomation.app/automate/launch/internal/retention"
 	"flomation.app/automate/launch/internal/config"
 	"flomation.app/automate/launch/internal/embedding"
 	emailtrigger "flomation.app/automate/launch/internal/email"
@@ -72,6 +73,9 @@ func main() {
 
 	_ = pendingaction.NewService(cfg, db)
 	log.Info("pending action poller started")
+
+	_ = retention.NewService(cfg)
+	log.Info("retention poller started")
 
 	var embedProvider embedding.Provider
 	if cfg.Embedding != nil && cfg.Embedding.Enabled {
