@@ -126,6 +126,10 @@ func (s *Service) configure() error {
 	s.engine.POST("/webhook/telegram/:agent_id", s.handleTelegramWebhook)
 	s.engine.POST("/webhook/slack/:agent_id", s.handleSlackWebhook)
 
+	// Slack interactivity — Block Kit button clicks, select menus, etc.
+	// Configure in Slack App Settings → Interactivity & Shortcuts → Request URL.
+	s.engine.POST("/webhook/slack/:agent_id/interact", s.handleSlackInteraction)
+
 	// Identity verification dispatch (internal, called by API)
 	s.engine.POST("/internal/agent/:agent_id/verify-identity", s.handleVerifyIdentity)
 
