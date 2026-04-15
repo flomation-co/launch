@@ -171,7 +171,56 @@ func (s *Service) HandleInboundMessage(agentID string, message InboundMessage) e
 		}
 	}
 
-	return s.handleInboundMessageForReg(reg, message)
+	// Send typing indicator BEFORE dispatching to API — it must arrive
+	// before the orchestrator starts processing. This is the one thing
+	// that stays in Launch because it needs the Telegram SDK.
+	if message.ChannelType == "telegram" {
+		s.sendTypingIndicator(reg, message)
+	}
+
+	// Phase 3: try the new single API endpoint first. Falls back to
+	// the legacy 7-step pipeline on any error.
+	if err := s.handleInboundViaAPI(reg, message); err != nil {
+		log.WithFields(log.Fields{
+			"agent_id": agentID,
+			"error":    err,
+		}).Warn("API inbound endpoint failed — falling back to legacy pipeline")
+		return s.handleInboundMessageForReg(reg, message)
+	}
+	return nil
+}
+
+// handleInboundViaAPI calls the API's single inbound-message endpoint.
+func (s *Service) handleInboundViaAPI(reg *launch.AgentRegistration, msg InboundMessage) error {
+	if reg.APIURL == "" {
+		return fmt.Errorf("no api_url configured")
+	}
+
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/inbound-message",
+		reg.APIURL, reg.AgentID)
+
+	client := http.Client{Timeout: apiTimeout}
+	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(payload)) // #nosec G107
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("API returned %d: %s", resp.StatusCode, string(rb))
+	}
+
+	log.WithFields(log.Fields{
+		"agent_id": reg.AgentID,
+		"sender":   msg.Sender,
+	}).Info("inbound message processed via API endpoint")
+	return nil
 }
 
 // handleInboundMessageForReg is the post-registration-lookup orchestrator
@@ -245,13 +294,9 @@ func (s *Service) handleInboundMessageForReg(reg *launch.AgentRegistration, mess
 		// Continue to dispatch even if message storage fails
 	}
 
-	// Step 4b: send typing indicator for channels that support it.
-	// Fires synchronously before orchestrator dispatch so the user sees
-	// feedback while the AI processes their message. Must be blocking
-	// to ensure it arrives before the orchestrator starts.
-	if message.ChannelType == "telegram" {
-		s.sendTypingIndicator(reg, message)
-	}
+	// Step 4b: typing indicator is now sent in HandleInboundMessage
+	// before either the API or legacy path, so we skip it here to
+	// avoid sending it twice on the fallback path.
 
 	// Step 5: dispatch the orchestrator flow. Identity/conversation
 	// metadata flows through trigger data as new reserved keys that
