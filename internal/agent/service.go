@@ -716,16 +716,13 @@ func (s *Service) fetchConversationHistory(reg *launch.AgentRegistration, conver
 		case "outbound":
 			msg["role"] = "assistant"
 			normalised = append(normalised, msg)
-		case "tool_use":
-			// Tool calls are presented as assistant context so the
-			// model knows what it previously invoked.
-			msg["role"] = "assistant"
-			normalised = append(normalised, msg)
-		case "tool_result":
-			// Tool results are presented as user turns (matching
-			// the Anthropic format where tool_result has role=user).
-			msg["role"] = "user"
-			normalised = append(normalised, msg)
+		case "tool_use", "tool_result":
+			// Skip tool exchange messages from conversation history.
+			// These are internal mechanics within a single AI turn —
+			// the final outbound message already summarises what
+			// happened. Including them as user/assistant text confuses
+			// the model into thinking the user said tool results.
+			continue
 		default:
 			msg["role"] = "user"
 			normalised = append(normalised, msg)
