@@ -192,6 +192,114 @@ func LookupUser(botToken string, userID string) (*UserInfo, error) {
 	}, nil
 }
 
+// InteractionPayload represents a Slack interaction (button click, select
+// menu, etc.) from Block Kit interactive components.
+type InteractionPayload struct {
+	Type    string `json:"type"` // block_actions, view_submission, etc.
+	User    struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+		Name     string `json:"name"`
+	} `json:"user"`
+	Channel struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"channel"`
+	Message struct {
+		TS   string `json:"ts"`
+		Text string `json:"text"`
+	} `json:"message"`
+	Actions []InteractionAction `json:"actions"`
+	// ResponseURL allows posting a follow-up message to the same channel.
+	ResponseURL string `json:"response_url"`
+	TriggerID   string `json:"trigger_id"`
+	ThreadTS    string `json:"-"` // derived from message context
+}
+
+// InteractionAction is a single action the user took (button press, menu select).
+type InteractionAction struct {
+	Type     string `json:"type"`      // button, static_select, overflow, etc.
+	ActionID string `json:"action_id"` // developer-defined ID
+	BlockID  string `json:"block_id"`
+	Text     struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"text"`
+	Value          string `json:"value,omitempty"`           // button value
+	SelectedOption *struct {
+		Text  struct{ Text string } `json:"text"`
+		Value string                `json:"value"`
+	} `json:"selected_option,omitempty"` // select menu choice
+}
+
+// ParseInteraction parses a Slack interaction payload from a form-encoded request.
+// Slack sends interactions as application/x-www-form-urlencoded with a "payload" field.
+func ParseInteraction(body []byte) (*InteractionPayload, error) {
+	var payload InteractionPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse interaction payload: %w", err)
+	}
+	return &payload, nil
+}
+
+// DescribeInteraction returns a human-readable summary of the interaction
+// suitable for passing to the agent as an inbound message.
+func DescribeInteraction(p *InteractionPayload) string {
+	if len(p.Actions) == 0 {
+		return "[User interacted with a message but no specific action was captured]"
+	}
+
+	action := p.Actions[0]
+	switch action.Type {
+	case "button":
+		label := action.Text.Text
+		if label == "" {
+			label = action.Value
+		}
+		return fmt.Sprintf("[User clicked button: \"%s\" (value: %s)]", label, action.Value)
+	case "static_select", "external_select":
+		if action.SelectedOption != nil {
+			return fmt.Sprintf("[User selected: \"%s\" (value: %s)]", action.SelectedOption.Text.Text, action.SelectedOption.Value)
+		}
+		return "[User made a selection]"
+	case "overflow":
+		if action.SelectedOption != nil {
+			return fmt.Sprintf("[User chose overflow option: \"%s\"]", action.SelectedOption.Text.Text)
+		}
+		return "[User used overflow menu]"
+	case "datepicker":
+		return fmt.Sprintf("[User selected date: %s]", action.Value)
+	default:
+		return fmt.Sprintf("[User performed action: %s (value: %s)]", action.Type, action.Value)
+	}
+}
+
+// RespondToInteraction sends a response via the response_url provided
+// in the interaction payload. This updates or replaces the original message.
+func RespondToInteraction(responseURL, text string, replaceOriginal bool) error {
+	payload := map[string]interface{}{
+		"text":             text,
+		"replace_original": replaceOriginal,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	client := &http.Client{Timeout: httpTimeout}
+	resp, err := client.Post(responseURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to respond to interaction: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("interaction response returned %d: %s", resp.StatusCode, string(rb))
+	}
+	return nil
+}
+
 // SendMessage sends a message to a Slack channel via the Bot API.
 // Text is sent with mrkdwn enabled by default. Optional blocks and
 // attachments can be provided as pre-marshalled JSON arrays.
