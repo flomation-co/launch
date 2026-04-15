@@ -766,7 +766,7 @@ func (s *Service) dispatchExecution(
 	// The assembler fails open — on any fetch error the assembled string
 	// degrades to persona + directives with no memory context, so the
 	// reply path is never blocked on memory I/O.
-	if assembled := s.assembleSystemPrompt(reg, msg, agentUserID); assembled != "" {
+	if assembled := s.assembleSystemPromptViaAPI(reg, msg, agentUserID); assembled != "" {
 		data["system_prompt"] = assembled
 	}
 	if msgID != nil {

@@ -74,6 +74,75 @@ const layerZeroHonestyDirective = "" +
 	"Do NOT make open-ended commitments without a specific time or condition " +
 	"(e.g. avoid 'I'll look into it' with no timeframe)."
 
+// assembleSystemPromptViaAPI calls the API's assemble-system-prompt
+// endpoint, which does all DB fetches locally (no HTTP round-trips).
+// Falls back to the legacy local assembly if the API call fails.
+func (s *Service) assembleSystemPromptViaAPI(
+	reg *launch.AgentRegistration,
+	msg InboundMessage,
+	agentUserID *string,
+) string {
+	if reg.APIURL == "" || reg.AgentID == "" {
+		return s.assembleSystemPromptLegacy(reg, msg, agentUserID)
+	}
+
+	userID := ""
+	if agentUserID != nil {
+		userID = *agentUserID
+	}
+
+	body, err := json.Marshal(map[string]string{
+		"channel_type":  msg.ChannelType,
+		"agent_user_id": userID,
+		"content":       msg.Content,
+	})
+	if err != nil {
+		return s.assembleSystemPromptLegacy(reg, msg, agentUserID)
+	}
+
+	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/assemble-system-prompt",
+		reg.APIURL, reg.AgentID)
+
+	client := http.Client{Timeout: assemblyHTTPTimeout}
+	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(body)) // #nosec G107 — internal service URL
+	if err != nil {
+		log.WithFields(log.Fields{
+			"agent_id": reg.AgentID,
+			"error":    err,
+		}).Warn("API prompt assembly failed — falling back to legacy")
+		return s.assembleSystemPromptLegacy(reg, msg, agentUserID)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		log.WithFields(log.Fields{
+			"agent_id": reg.AgentID,
+			"status":   resp.StatusCode,
+		}).Warn("API prompt assembly returned non-200 — falling back to legacy")
+		return s.assembleSystemPromptLegacy(reg, msg, agentUserID)
+	}
+
+	var result struct {
+		Prompt string `json:"system_prompt"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+		return s.assembleSystemPromptLegacy(reg, msg, agentUserID)
+	}
+
+	return result.Prompt
+}
+
+// assembleSystemPromptLegacy is the original local assembly path.
+// Kept as a fallback during the migration period.
+func (s *Service) assembleSystemPromptLegacy(
+	reg *launch.AgentRegistration,
+	msg InboundMessage,
+	agentUserID *string,
+) string {
+	prompt, _ := s.assembleSystemPromptWithPendingFlag(reg, msg, agentUserID)
+	return prompt
+}
+
 // assembleSystemPrompt builds the final system prompt string. Delegates
 // to assembleSystemPromptWithPendingFlag and discards the flag.
 func (s *Service) assembleSystemPrompt(
