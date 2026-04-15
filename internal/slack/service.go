@@ -192,14 +192,28 @@ func LookupUser(botToken string, userID string) (*UserInfo, error) {
 	}, nil
 }
 
-// SendMessage sends a text message to a Slack channel via the Bot API.
-func SendMessage(botToken string, channelID string, text string, threadTS string) (string, error) {
+// SendMessage sends a message to a Slack channel via the Bot API.
+// Text is sent with mrkdwn enabled by default. Optional blocks and
+// attachments can be provided as pre-marshalled JSON arrays.
+func SendMessage(botToken string, channelID string, text string, threadTS string, opts ...MessageOption) (string, error) {
+	cfg := &messageConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	payload := map[string]interface{}{
 		"channel": channelID,
 		"text":    text,
+		"mrkdwn":  true,
 	}
 	if threadTS != "" {
 		payload["thread_ts"] = threadTS
+	}
+	if cfg.blocks != nil {
+		payload["blocks"] = cfg.blocks
+	}
+	if cfg.attachments != nil {
+		payload["attachments"] = cfg.attachments
 	}
 
 	body, err := json.Marshal(payload)
@@ -242,4 +256,23 @@ func SendMessage(botToken string, channelID string, text string, threadTS string
 	}).Debug("slack message sent")
 
 	return result.TS, nil
+}
+
+// messageConfig holds optional message parameters.
+type messageConfig struct {
+	blocks      interface{}
+	attachments interface{}
+}
+
+// MessageOption configures optional fields on a Slack message.
+type MessageOption func(*messageConfig)
+
+// WithBlocks sets Block Kit blocks on the message.
+func WithBlocks(blocks interface{}) MessageOption {
+	return func(c *messageConfig) { c.blocks = blocks }
+}
+
+// WithAttachments sets attachments on the message.
+func WithAttachments(attachments interface{}) MessageOption {
+	return func(c *messageConfig) { c.attachments = attachments }
 }
