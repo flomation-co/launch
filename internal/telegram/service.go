@@ -221,7 +221,7 @@ func SendChatAction(botToken string, chatID int64, action string) error {
 	}
 
 	url := fmt.Sprintf("%s/bot%s/sendChatAction", telegramAPIBase, botToken)
-	client := &http.Client{Timeout: httpTimeout}
+	client := &http.Client{Timeout: 3 * time.Second} // Typing indicators are best-effort, short timeout
 	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to call sendChatAction: %w", err)
