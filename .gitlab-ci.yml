@@ -70,6 +70,8 @@ generate-docs:
 
 build-rpm-8:
   extends: .build-rpm-template
+  only:
+    - main
   image: rockylinux/rockylinux:8
   variables:
     EL_VERSION: "8"
@@ -86,6 +88,8 @@ build-rpm-8:
 
 build-rpm-9:
   extends: .build-rpm-template
+  only:
+    - main
   image: rockylinux/rockylinux:9
   variables:
     EL_VERSION: "9"
@@ -102,6 +106,8 @@ build-rpm-9:
 
 build-rpm-8-arm64:
   extends: .build-rpm-template
+  only:
+    - main
   image: rockylinux/rockylinux:8
   variables:
     EL_VERSION: "8"
@@ -118,6 +124,8 @@ build-rpm-8-arm64:
 
 build-rpm-9-arm64:
   extends: .build-rpm-template
+  only:
+    - main
   image: rockylinux/rockylinux:9
   variables:
     EL_VERSION: "9"
@@ -134,6 +142,8 @@ build-rpm-9-arm64:
 
 build-deb:
   extends: .build-deb-template
+  only:
+    - main
   variables:
     CI_TEMPLATES_REF: "main"
     APPLICATION_BINARY: "${PACKAGE_NAME}-amd64-linux*"
@@ -148,6 +158,8 @@ build-deb:
 
 build-deb-arm64:
   extends: .build-deb-template
+  only:
+    - main
   variables:
     CI_TEMPLATES_REF: "main"
     APPLICATION_BINARY: "${PACKAGE_NAME}-arm64-linux*"
@@ -162,6 +174,8 @@ build-deb-arm64:
 
 build-msi:
   extends: .build-msi-template
+  only:
+    - main
   variables:
     CI_TEMPLATES_REF: "main"
     APPLICATION_BINARY: "${PACKAGE_NAME}-amd64-windows*"
