@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -130,25 +131,63 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 	}
 
 	chatID := strconv.FormatInt(parsed.ChatID, 10)
+	metadata := map[string]interface{}{
+		// Canonical keys (consistent across all providers)
+		"channel_id": chatID,
+		"user_id":    fmt.Sprintf("%d", parsed.SenderID),
+		"user_name":  parsed.SenderName,
+		// Provider-specific keys (kept for backwards compatibility)
+		"message_id":      fmt.Sprintf("%d", parsed.MessageID),
+		"chat_id":         chatID,
+		"chat_type":       parsed.ChatType,
+		"chat_title":      parsed.ChatTitle,
+		"sender_id":       fmt.Sprintf("%d", parsed.SenderID),
+		"sender_username": parsed.SenderUsername,
+		"sender_name":     parsed.SenderName,
+		"date":            parsed.Date.Format("2006-01-02T15:04:05Z"),
+	}
+
+	// Voice message handling: download the audio file and include as base64
+	if parsed.IsVoice && parsed.VoiceFileID != "" {
+		metadata["is_voice"] = true
+		metadata["voice_duration"] = parsed.VoiceDuration
+		metadata["voice_mime_type"] = parsed.VoiceMimeType
+
+		reg, regErr := s.agent.GetRegistration(agentID)
+		botToken := ""
+		if regErr == nil && reg != nil && reg.Channels != nil {
+			botToken = extractTelegramBotToken(reg.Channels)
+		}
+		if botToken != "" {
+			audioData, err := telegram.DownloadFile(botToken, parsed.VoiceFileID)
+			if err != nil {
+				log.WithFields(log.Fields{
+					"agent_id": agentID,
+					"error":    err,
+					"file_id":  parsed.VoiceFileID,
+				}).Warn("failed to download telegram voice file")
+			} else {
+				metadata["voice_audio_base64"] = base64.StdEncoding.EncodeToString(audioData)
+				metadata["voice_audio_size"] = len(audioData)
+				log.WithFields(log.Fields{
+					"agent_id":   agentID,
+					"duration_s": parsed.VoiceDuration,
+					"size_bytes": len(audioData),
+				}).Info("downloaded telegram voice message")
+			}
+		}
+	}
+
+	channelType := "telegram"
+	if parsed.IsVoice {
+		channelType = "telegram_voice"
+	}
+
 	msg := agent.InboundMessage{
-		ChannelType: "telegram",
+		ChannelType: channelType,
 		Sender:      sender,
 		Content:     parsed.Text,
-		Metadata: map[string]interface{}{
-			// Canonical keys (consistent across all providers)
-			"channel_id": chatID,
-			"user_id":    fmt.Sprintf("%d", parsed.SenderID),
-			"user_name":  parsed.SenderName,
-			// Provider-specific keys (kept for backwards compatibility)
-			"message_id":      fmt.Sprintf("%d", parsed.MessageID),
-			"chat_id":         chatID,
-			"chat_type":       parsed.ChatType,
-			"chat_title":      parsed.ChatTitle,
-			"sender_id":       fmt.Sprintf("%d", parsed.SenderID),
-			"sender_username": parsed.SenderUsername,
-			"sender_name":     parsed.SenderName,
-			"date":            parsed.Date.Format("2006-01-02T15:04:05Z"),
-		},
+		Metadata:    metadata,
 	}
 
 	// Dispatch asynchronously — Telegram expects a quick 200 response

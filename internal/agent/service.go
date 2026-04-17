@@ -174,7 +174,7 @@ func (s *Service) HandleInboundMessage(agentID string, message InboundMessage) e
 	// Send typing indicator BEFORE dispatching to API — it must arrive
 	// before the orchestrator starts processing. This is the one thing
 	// that stays in Launch because it needs the Telegram SDK.
-	if message.ChannelType == "telegram" {
+	if message.ChannelType == "telegram" || message.ChannelType == "telegram_voice" {
 		s.sendTypingIndicator(reg, message)
 	}
 
