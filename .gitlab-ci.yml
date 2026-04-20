@@ -69,7 +69,7 @@ generate-docs:
     expire_in: 30 days
 
 build-rpm-8:
-  extends: .publish-rpm-s3sync-template
+  extends: .build-rpm-template
   only:
     - main
   image: rockylinux/rockylinux:8
@@ -87,7 +87,7 @@ build-rpm-8:
     expire_in: 30 days
 
 build-rpm-9:
-  extends: .publish-rpm-s3sync-template
+  extends: .build-rpm-template
   only:
     - main
   image: rockylinux/rockylinux:9
@@ -105,7 +105,7 @@ build-rpm-9:
     expire_in: 30 days
 
 build-rpm-8-arm64:
-  extends: .publish-rpm-s3sync-template
+  extends: .build-rpm-template
   only:
     - main
   image: rockylinux/rockylinux:8
@@ -123,7 +123,7 @@ build-rpm-8-arm64:
     expire_in: 30 days
 
 build-rpm-9-arm64:
-  extends: .publish-rpm-s3sync-template
+  extends: .build-rpm-template
   only:
     - main
   image: rockylinux/rockylinux:9
@@ -209,7 +209,7 @@ publish-msi:
     - build-msi
 
 publish-rpm-8:
-  extends: .publish-rpm-template
+  extends: .publish-rpm-s3sync-template
   only:
     - main
   variables:
@@ -224,7 +224,7 @@ publish-rpm-8:
     - build-rpm-8
 
 publish-rpm-9:
-  extends: .publish-rpm-template
+  extends: .publish-rpm-s3sync-template
   only:
     - main
   variables:
@@ -239,7 +239,7 @@ publish-rpm-9:
     - build-rpm-9
 
 publish-rpm-8-arm64:
-  extends: .publish-rpm-template
+  extends: .publish-rpm-s3sync-template
   only:
     - main
   variables:
@@ -254,7 +254,7 @@ publish-rpm-8-arm64:
     - build-rpm-8-arm64
 
 publish-rpm-9-arm64:
-  extends: .publish-rpm-template
+  extends: .publish-rpm-s3sync-template
   only:
     - main
   variables:
@@ -297,7 +297,7 @@ publish-deb-arm64:
     - build-deb-arm64
 
 publish-rpm-9-live:
-  extends: .publish-rpm-template
+  extends: .publish-rpm-s3sync-template
   only:
     - main
   variables:
@@ -313,7 +313,7 @@ publish-rpm-9-live:
     - build-rpm-9
 
 publish-rpm-8-arm64-live:
-  extends: .publish-rpm-template
+  extends: .publish-rpm-s3sync-template
   only:
     - main
   variables:
@@ -329,7 +329,7 @@ publish-rpm-8-arm64-live:
     - build-rpm-8-arm64
 
 publish-rpm-9-arm64-live:
-  extends: .publish-rpm-template
+  extends: .publish-rpm-s3sync-template
   only:
     - main
   variables:
