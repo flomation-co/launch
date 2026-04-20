@@ -55,6 +55,7 @@ func (s *Service) handleVerifyIdentity(c *gin.Context) {
 	case "telegram":
 		metadata["sender_id"] = body.TargetExternal
 		metadata["chat_id"] = body.TargetChannelID
+		metadata["channel_id"] = body.TargetChannelID
 	case "email":
 		metadata["from"] = body.TargetExternal
 	}
