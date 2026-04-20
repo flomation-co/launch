@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"sync"
 	"time"
@@ -151,6 +152,25 @@ func ParseUpdate(body []byte) *ParsedMessage {
 		parsed.ChatTitle = msg.Chat.Title
 	}
 
+	// Voice message detection — voice notes and audio files
+	if msg.Voice != nil {
+		parsed.IsVoice = true
+		parsed.VoiceFileID = msg.Voice.FileID
+		parsed.VoiceDuration = msg.Voice.Duration
+		parsed.VoiceMimeType = msg.Voice.MimeType
+		if parsed.Text == "" {
+			parsed.Text = msg.Caption // voice notes may have a caption
+		}
+	} else if msg.Audio != nil {
+		parsed.IsVoice = true
+		parsed.VoiceFileID = msg.Audio.FileID
+		parsed.VoiceDuration = msg.Audio.Duration
+		parsed.VoiceMimeType = msg.Audio.MimeType
+		if parsed.Text == "" {
+			parsed.Text = msg.Caption
+		}
+	}
+
 	return parsed
 }
 
@@ -165,6 +185,10 @@ type ParsedMessage struct {
 	SenderUsername string    `json:"sender_username,omitempty"`
 	SenderName     string    `json:"sender_name,omitempty"`
 	Date           time.Time `json:"date"`
+	IsVoice        bool      `json:"is_voice,omitempty"`
+	VoiceFileID    string    `json:"voice_file_id,omitempty"`
+	VoiceDuration  int       `json:"voice_duration,omitempty"`
+	VoiceMimeType  string    `json:"voice_mime_type,omitempty"`
 }
 
 // --- Telegram API types (minimal subset) ---
@@ -182,11 +206,32 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int64         `json:"message_id"`
-	From      *telegramUser `json:"from,omitempty"`
-	Chat      telegramChat  `json:"chat"`
-	Date      int64         `json:"date"`
-	Text      string        `json:"text"`
+	MessageID int64            `json:"message_id"`
+	From      *telegramUser    `json:"from,omitempty"`
+	Chat      telegramChat     `json:"chat"`
+	Date      int64            `json:"date"`
+	Text      string           `json:"text"`
+	Voice     *telegramVoice   `json:"voice,omitempty"`
+	Audio     *telegramAudio   `json:"audio,omitempty"`
+	Caption   string           `json:"caption,omitempty"`
+}
+
+type telegramVoice struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Duration     int    `json:"duration"`
+	MimeType     string `json:"mime_type,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+}
+
+type telegramAudio struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Duration     int    `json:"duration"`
+	MimeType     string `json:"mime_type,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+	Title        string `json:"title,omitempty"`
+	Performer    string `json:"performer,omitempty"`
 }
 
 type telegramUser struct {
@@ -281,6 +326,111 @@ func SendMessage(botToken string, chatID int64, text string, parseMode string) (
 
 	if !result.OK {
 		return 0, fmt.Errorf("sendMessage failed: %s", result.Description)
+	}
+
+	return result.Result.MessageID, nil
+}
+
+// DownloadFile downloads a file from Telegram by file_id.
+// Uses getFile to get the file path, then downloads the raw bytes.
+func DownloadFile(botToken, fileID string) ([]byte, error) {
+	// Step 1: getFile to get the file_path
+	getURL := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", telegramAPIBase, botToken, fileID)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(getURL) // #nosec G107 — constructed from known base + bot token
+	if err != nil {
+		return nil, fmt.Errorf("getFile failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+
+	var fileResp struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			FilePath string `json:"file_path"`
+			FileSize int64  `json:"file_size"`
+		} `json:"result"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &fileResp); err != nil {
+		return nil, fmt.Errorf("failed to parse getFile response: %w", err)
+	}
+	if !fileResp.OK {
+		return nil, fmt.Errorf("getFile error: %s", fileResp.Description)
+	}
+
+	// Step 2: download the file
+	downloadURL := fmt.Sprintf("%s/file/bot%s/%s", telegramAPIBase, botToken, fileResp.Result.FilePath)
+	dlResp, err := client.Get(downloadURL) // #nosec G107 — Telegram file download URL
+	if err != nil {
+		return nil, fmt.Errorf("file download failed: %w", err)
+	}
+	defer func() { _ = dlResp.Body.Close() }()
+
+	if dlResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("file download returned %d", dlResp.StatusCode)
+	}
+
+	// Limit to 20MB (Telegram's max file size)
+	data, err := io.ReadAll(io.LimitReader(dlResp.Body, 20<<20))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	return data, nil
+}
+
+// SendVoice sends a voice message (OGG/OPUS) via the Telegram Bot API.
+// audioData should be OGG-encoded audio bytes.
+func SendVoice(botToken string, chatID int64, audioData []byte, caption string) (int64, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	_ = writer.WriteField("chat_id", fmt.Sprintf("%d", chatID))
+	if caption != "" {
+		_ = writer.WriteField("caption", caption)
+	}
+
+	part, err := writer.CreateFormFile("voice", "voice.ogg")
+	if err != nil {
+		return 0, fmt.Errorf("failed to create form file: %w", err)
+	}
+	if _, err := part.Write(audioData); err != nil {
+		return 0, fmt.Errorf("failed to write audio data: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return 0, fmt.Errorf("failed to close multipart writer: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/bot%s/sendVoice", telegramAPIBase, botToken)
+	req, err := http.NewRequest(http.MethodPost, url, &body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to build request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("sendVoice failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
+	var result struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return 0, fmt.Errorf("failed to decode sendVoice response: %w", err)
+	}
+	if !result.OK {
+		return 0, fmt.Errorf("sendVoice failed: %s", result.Description)
 	}
 
 	return result.Result.MessageID, nil
