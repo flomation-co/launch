@@ -508,7 +508,13 @@ func (s *Service) renewLeases() {
 func (s *Service) watchdog() {
 	time.Sleep(startupDelay)
 
-	// On startup, claim any orphaned agents
+	// On startup, expire all leases so this instance can claim agents
+	// immediately rather than waiting for the previous instance's lease
+	// to time out. Safe because no agents are managed yet at this point.
+	if err := s.db.ExpireAllAgentLeases(); err != nil {
+		log.WithError(err).Warn("watchdog: failed to expire leases on startup")
+	}
+
 	s.claimOrphanedAgents()
 
 	for {

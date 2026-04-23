@@ -182,7 +182,7 @@ func (c *SocketClient) presenceLoop(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		return
-	case <-time.After(3 * time.Second):
+	case <-time.After(5 * time.Second):
 	}
 
 	setPresence := func() {
