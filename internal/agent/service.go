@@ -1029,11 +1029,9 @@ func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 			}
 		case "slack":
 			var cfg struct {
-				BotToken    string `json:"bot_token"`
-				AppToken    string `json:"app_token"`
-				Mode        string `json:"mode"` // "socket" or "events_api" (default)
-				StatusText  string `json:"status_text"`
-				StatusEmoji string `json:"status_emoji"`
+				BotToken string `json:"bot_token"`
+				AppToken string `json:"app_token"`
+				Mode     string `json:"mode"` // "socket" or "events_api" (default)
 			}
 			if err := json.Unmarshal(ch.Config, &cfg); err != nil {
 				continue
@@ -1046,20 +1044,7 @@ func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 				onInteract := func(payload *slackPkg.InteractionPayload) {
 					s.handleSlackSocketInteraction(agentID, cfg.BotToken, payload)
 				}
-				var status *slackPkg.StatusConfig
-				if cfg.StatusText != "" {
-					status = &slackPkg.StatusConfig{
-						Text:  cfg.StatusText,
-						Emoji: cfg.StatusEmoji,
-					}
-				} else {
-					// Default status when none configured
-					status = &slackPkg.StatusConfig{
-						Text:  "Online",
-						Emoji: ":large_green_circle:",
-					}
-				}
-				if err := s.slackSockets.Connect(agentID, cfg.AppToken, cfg.BotToken, status, onMessage, onInteract); err != nil {
+				if err := s.slackSockets.Connect(agentID, cfg.AppToken, cfg.BotToken, onMessage, onInteract); err != nil {
 					log.WithFields(log.Fields{
 						"agent_id": reg.AgentID,
 						"error":    err,
