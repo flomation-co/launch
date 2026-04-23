@@ -104,6 +104,14 @@ func (s *Service) ReleaseAgentLease(agentID, instanceID string) error {
 	return err
 }
 
+// ExpireAllAgentLeases removes all agent leases. Used on startup so this
+// instance can immediately claim agents without waiting for the previous
+// instance's leases to time out.
+func (s *Service) ExpireAllAgentLeases() error {
+	_, err := s.conn.Exec("DELETE FROM agent_lease")
+	return err
+}
+
 // GetExpiredAgentLeases returns agent registrations that are active but have no lease or an expired lease.
 // These are candidates for another instance to claim.
 func (s *Service) GetExpiredAgentLeases() ([]*launch.AgentRegistration, error) {

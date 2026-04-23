@@ -20,6 +20,7 @@ import (
 	"flomation.app/automate/launch/internal/persistence"
 	"strconv"
 
+	slackPkg "flomation.app/automate/launch/internal/slack"
 	telegramPkg "flomation.app/automate/launch/internal/telegram"
 	"flomation.app/automate/launch/internal/trigger"
 	"github.com/google/uuid"
@@ -27,10 +28,10 @@ import (
 )
 
 const (
-	leaseDuration     = 2 * time.Minute
-	heartbeatInterval = 30 * time.Second
-	watchdogInterval  = 60 * time.Second
-	startupDelay      = 5 * time.Second
+	leaseDuration     = 30 * time.Second
+	heartbeatInterval = 10 * time.Second
+	watchdogInterval  = 15 * time.Second
+	startupDelay      = 2 * time.Second
 	apiTimeout        = 30 * time.Second
 )
 
@@ -38,12 +39,13 @@ const (
 // Each Launch instance generates a unique instanceID and uses lease-based
 // ownership to coordinate with other instances.
 type Service struct {
-	config     *config.Config
-	db         *persistence.Service
-	trigger    *trigger.Service
-	telegram   *telegramPkg.Service
-	embedding  embeddingProvider // nil when embeddings are disabled
-	instanceID string
+	config       *config.Config
+	db           *persistence.Service
+	trigger      *trigger.Service
+	telegram     *telegramPkg.Service
+	slackSockets *slackPkg.SocketManager
+	embedding    embeddingProvider // nil when embeddings are disabled
+	instanceID   string
 
 	mu            sync.RWMutex
 	managedAgents map[string]*managedAgent // agentID → active management state
@@ -70,6 +72,7 @@ func NewService(config *config.Config, db *persistence.Service, trigger *trigger
 		db:            db,
 		trigger:       trigger,
 		telegram:      telegramSvc,
+		slackSockets:  slackPkg.NewSocketManager(),
 		embedding:     embed,
 		instanceID:    uuid.New().String(),
 		managedAgents: make(map[string]*managedAgent),
@@ -505,7 +508,13 @@ func (s *Service) renewLeases() {
 func (s *Service) watchdog() {
 	time.Sleep(startupDelay)
 
-	// On startup, claim any orphaned agents
+	// On startup, expire all leases so this instance can claim agents
+	// immediately rather than waiting for the previous instance's lease
+	// to time out. Safe because no agents are managed yet at this point.
+	if err := s.db.ExpireAllAgentLeases(); err != nil {
+		log.WithError(err).Warn("watchdog: failed to expire leases on startup")
+	}
+
 	s.claimOrphanedAgents()
 
 	for {
@@ -545,6 +554,8 @@ func (s *Service) claimOrphanedAgents() {
 				stopCh: make(chan struct{}),
 			}
 			s.mu.Unlock()
+
+			s.activateChannels(reg)
 		}
 	}
 }
@@ -1016,7 +1027,30 @@ func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 					"error":    err,
 				}).Error("failed to register telegram webhook")
 			}
-			// Future: case "email" — start IMAP polling
+		case "slack":
+			var cfg struct {
+				BotToken string `json:"bot_token"`
+				AppToken string `json:"app_token"`
+				Mode     string `json:"mode"` // "socket" or "events_api" (default)
+			}
+			if err := json.Unmarshal(ch.Config, &cfg); err != nil {
+				continue
+			}
+			if cfg.Mode == "socket" && cfg.AppToken != "" && cfg.BotToken != "" {
+				agentID := reg.AgentID
+				onMessage := func(msg *slackPkg.ParsedMessage) {
+					s.handleSlackSocketMessage(agentID, cfg.BotToken, msg)
+				}
+				onInteract := func(payload *slackPkg.InteractionPayload) {
+					s.handleSlackSocketInteraction(agentID, cfg.BotToken, payload)
+				}
+				if err := s.slackSockets.Connect(agentID, cfg.AppToken, cfg.BotToken, onMessage, onInteract); err != nil {
+					log.WithFields(log.Fields{
+						"agent_id": reg.AgentID,
+						"error":    err,
+					}).Error("failed to start slack socket mode")
+				}
+			}
 		}
 	}
 }
@@ -1029,6 +1063,7 @@ func (s *Service) deactivateChannels(agentID string) {
 			"error":    err,
 		}).Warn("failed to deregister telegram webhook")
 	}
+	s.slackSockets.Disconnect(agentID)
 }
 
 // InboundMessage represents a message received from an external channel.

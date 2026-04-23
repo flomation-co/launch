@@ -39,6 +39,8 @@ type Service struct {
 }
 
 func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, db *persistence.Service) (*Service, error) {
+	gin.SetMode(gin.ReleaseMode)
+
 	s := Service{
 		config:  config,
 		engine:  gin.New(),
