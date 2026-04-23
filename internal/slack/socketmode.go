@@ -179,7 +179,7 @@ func (c *SocketClient) processEvent(ctx context.Context, evt socketmode.Event) {
 // presenceLoop sets the bot to active and refreshes every 15 minutes.
 func (c *SocketClient) presenceLoop(ctx context.Context) {
 	setPresence := func() bool {
-		if err := c.api.SetUserPresence("active"); err != nil {
+		if err := c.api.SetUserPresence("auto"); err != nil {
 			log.WithFields(log.Fields{
 				"agent_id": c.agentID,
 				"error":    err,
@@ -198,7 +198,7 @@ func (c *SocketClient) presenceLoop(ctx context.Context) {
 		case <-time.After(3 * time.Second):
 		}
 		if setPresence() {
-			log.WithField("agent_id", c.agentID).Info("slack bot presence set to active")
+			log.WithField("agent_id", c.agentID).Info("slack bot presence set to auto")
 			break
 		}
 	}
