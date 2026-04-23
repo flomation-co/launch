@@ -22,12 +22,13 @@ type InteractionHandler func(payload *InteractionPayload)
 
 // SocketClient manages a Socket Mode WebSocket connection for a single agent.
 type SocketClient struct {
-	agentID    string
-	api        *slack.Client
-	sm         *socketmode.Client
-	cancel     context.CancelFunc
-	onMessage  MessageHandler
-	onInteract InteractionHandler
+	agentID        string
+	api            *slack.Client
+	sm             *socketmode.Client
+	cancel         context.CancelFunc
+	onMessage      MessageHandler
+	onInteract     InteractionHandler
+	presenceOnce   sync.Once
 }
 
 // SocketManager tracks active Socket Mode connections across agents.
@@ -77,35 +78,7 @@ func (m *SocketManager) Connect(agentID, appToken, botToken string, onMessage Me
 
 	m.clients[agentID] = client
 
-	// Set bot presence to active and refresh every 15 minutes.
-	// Slack resets "active" presence after ~30 min of inactivity.
-	go func() {
-		setPresence := func() {
-			if err := api.SetUserPresence("active"); err != nil {
-				log.WithFields(log.Fields{
-					"agent_id": agentID,
-					"error":    err,
-				}).Warn("failed to set bot presence to active")
-			} else {
-				log.WithField("agent_id", agentID).Debug("slack bot presence refreshed")
-			}
-		}
-		setPresence()
-		log.WithField("agent_id", agentID).Info("slack bot presence set to active")
-
-		ticker := time.NewTicker(15 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				setPresence()
-			}
-		}
-	}()
-
-	// Start event handler in background
+	// Start event handler in background (also manages presence)
 	go client.handleEvents(ctx)
 
 	// Start Socket Mode connection in background
@@ -175,12 +148,12 @@ func (c *SocketClient) handleEvents(ctx context.Context) {
 			if !ok {
 				return
 			}
-			c.processEvent(evt)
+			c.processEvent(ctx, evt)
 		}
 	}
 }
 
-func (c *SocketClient) processEvent(evt socketmode.Event) {
+func (c *SocketClient) processEvent(ctx context.Context, evt socketmode.Event) {
 	switch evt.Type {
 	case socketmode.EventTypeEventsAPI:
 		c.handleEventsAPI(evt)
@@ -190,6 +163,7 @@ func (c *SocketClient) processEvent(evt socketmode.Event) {
 		log.WithField("agent_id", c.agentID).Debug("slack socket mode connecting...")
 	case socketmode.EventTypeConnected:
 		log.WithField("agent_id", c.agentID).Info("slack socket mode connected")
+		c.presenceOnce.Do(func() { go c.presenceLoop(ctx) })
 	case socketmode.EventTypeConnectionError:
 		log.WithField("agent_id", c.agentID).Warn("slack socket mode connection error")
 	case socketmode.EventTypeHello:
@@ -199,6 +173,34 @@ func (c *SocketClient) processEvent(evt socketmode.Event) {
 			"agent_id":   c.agentID,
 			"event_type": evt.Type,
 		}).Debug("socket mode: unhandled event type")
+	}
+}
+
+// presenceLoop sets the bot to active and refreshes every 15 minutes.
+func (c *SocketClient) presenceLoop(ctx context.Context) {
+	setPresence := func() {
+		if err := c.api.SetUserPresence("active"); err != nil {
+			log.WithFields(log.Fields{
+				"agent_id": c.agentID,
+				"error":    err,
+			}).Warn("failed to set bot presence to active")
+		} else {
+			log.WithField("agent_id", c.agentID).Debug("slack bot presence refreshed")
+		}
+	}
+
+	setPresence()
+	log.WithField("agent_id", c.agentID).Info("slack bot presence set to active")
+
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			setPresence()
+		}
 	}
 }
 
