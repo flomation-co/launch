@@ -20,6 +20,12 @@ type MessageHandler func(msg *ParsedMessage)
 // InteractionHandler is called when a Socket Mode connection receives an interaction event.
 type InteractionHandler func(payload *InteractionPayload)
 
+// StatusConfig holds the bot's custom Slack status to set on connection.
+type StatusConfig struct {
+	Text  string // e.g. "Online"
+	Emoji string // e.g. ":large_green_circle:"
+}
+
 // SocketClient manages a Socket Mode WebSocket connection for a single agent.
 type SocketClient struct {
 	agentID        string
@@ -28,6 +34,7 @@ type SocketClient struct {
 	cancel         context.CancelFunc
 	onMessage      MessageHandler
 	onInteract     InteractionHandler
+	status         *StatusConfig
 	presenceOnce   sync.Once
 }
 
@@ -47,7 +54,7 @@ func NewSocketManager() *SocketManager {
 // Connect starts a Socket Mode connection for an agent. Requires an app-level
 // token (xapp-...) for the WebSocket and a bot token (xoxb-...) for API calls.
 // The connection sets the bot's presence to "auto" so it shows as online.
-func (m *SocketManager) Connect(agentID, appToken, botToken string, onMessage MessageHandler, onInteract InteractionHandler) error {
+func (m *SocketManager) Connect(agentID, appToken, botToken string, status *StatusConfig, onMessage MessageHandler, onInteract InteractionHandler) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -74,6 +81,7 @@ func (m *SocketManager) Connect(agentID, appToken, botToken string, onMessage Me
 		cancel:     cancel,
 		onMessage:  onMessage,
 		onInteract: onInteract,
+		status:     status,
 	}
 
 	m.clients[agentID] = client
@@ -105,7 +113,8 @@ func (m *SocketManager) Disconnect(agentID string) {
 		return
 	}
 
-	// Set presence to away before disconnecting
+	// Clear status and set presence to away before disconnecting
+	_ = client.api.SetUserCustomStatus("", "", 0)
 	if err := client.api.SetUserPresence("away"); err != nil {
 		log.WithFields(log.Fields{
 			"agent_id": agentID,
@@ -199,6 +208,25 @@ func (c *SocketClient) presenceLoop(ctx context.Context) {
 		}
 		if setPresence() {
 			log.WithField("agent_id", c.agentID).Info("slack bot presence set to auto")
+
+			// Set custom status (e.g. "🟢 Online")
+			if c.status != nil && c.status.Text != "" {
+				emoji := c.status.Emoji
+				if emoji == "" {
+					emoji = ":large_green_circle:"
+				}
+				if err := c.api.SetUserCustomStatus(c.status.Text, emoji, 0); err != nil {
+					log.WithFields(log.Fields{
+						"agent_id": c.agentID,
+						"error":    err,
+					}).Warn("failed to set bot custom status")
+				} else {
+					log.WithFields(log.Fields{
+						"agent_id": c.agentID,
+						"status":   c.status.Text,
+					}).Info("slack bot custom status set")
+				}
+			}
 			break
 		}
 	}
