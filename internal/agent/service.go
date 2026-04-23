@@ -20,6 +20,7 @@ import (
 	"flomation.app/automate/launch/internal/persistence"
 	"strconv"
 
+	slackPkg "flomation.app/automate/launch/internal/slack"
 	telegramPkg "flomation.app/automate/launch/internal/telegram"
 	"flomation.app/automate/launch/internal/trigger"
 	"github.com/google/uuid"
@@ -38,12 +39,13 @@ const (
 // Each Launch instance generates a unique instanceID and uses lease-based
 // ownership to coordinate with other instances.
 type Service struct {
-	config     *config.Config
-	db         *persistence.Service
-	trigger    *trigger.Service
-	telegram   *telegramPkg.Service
-	embedding  embeddingProvider // nil when embeddings are disabled
-	instanceID string
+	config       *config.Config
+	db           *persistence.Service
+	trigger      *trigger.Service
+	telegram     *telegramPkg.Service
+	slackSockets *slackPkg.SocketManager
+	embedding    embeddingProvider // nil when embeddings are disabled
+	instanceID   string
 
 	mu            sync.RWMutex
 	managedAgents map[string]*managedAgent // agentID → active management state
@@ -70,6 +72,7 @@ func NewService(config *config.Config, db *persistence.Service, trigger *trigger
 		db:            db,
 		trigger:       trigger,
 		telegram:      telegramSvc,
+		slackSockets:  slackPkg.NewSocketManager(),
 		embedding:     embed,
 		instanceID:    uuid.New().String(),
 		managedAgents: make(map[string]*managedAgent),
@@ -1016,7 +1019,30 @@ func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 					"error":    err,
 				}).Error("failed to register telegram webhook")
 			}
-			// Future: case "email" — start IMAP polling
+		case "slack":
+			var cfg struct {
+				BotToken string `json:"bot_token"`
+				AppToken string `json:"app_token"`
+				Mode     string `json:"mode"` // "socket" or "events_api" (default)
+			}
+			if err := json.Unmarshal(ch.Config, &cfg); err != nil {
+				continue
+			}
+			if cfg.Mode == "socket" && cfg.AppToken != "" && cfg.BotToken != "" {
+				agentID := reg.AgentID
+				onMessage := func(msg *slackPkg.ParsedMessage) {
+					s.handleSlackSocketMessage(agentID, cfg.BotToken, msg)
+				}
+				onInteract := func(payload *slackPkg.InteractionPayload) {
+					s.handleSlackSocketInteraction(agentID, cfg.BotToken, payload)
+				}
+				if err := s.slackSockets.Connect(agentID, cfg.AppToken, cfg.BotToken, onMessage, onInteract); err != nil {
+					log.WithFields(log.Fields{
+						"agent_id": reg.AgentID,
+						"error":    err,
+					}).Error("failed to start slack socket mode")
+				}
+			}
 		}
 	}
 }
@@ -1029,6 +1055,7 @@ func (s *Service) deactivateChannels(agentID string) {
 			"error":    err,
 		}).Warn("failed to deregister telegram webhook")
 	}
+	s.slackSockets.Disconnect(agentID)
 }
 
 // InboundMessage represents a message received from an external channel.
