@@ -48,7 +48,7 @@ func (s *Service) handleSlackSocketMessage(agentID, botToken string, msg *slackP
 	}
 
 	l.Info("dispatching socket mode message")
-	go s.HandleInboundMessage(agentID, inbound)
+	go func() { _ = s.HandleInboundMessage(agentID, inbound) }()
 }
 
 // handleSlackSocketInteraction converts a Socket Mode interaction event
@@ -86,5 +86,5 @@ func (s *Service) handleSlackSocketInteraction(agentID, botToken string, payload
 	}
 
 	l.Info("dispatching socket mode interaction")
-	go s.HandleInboundMessage(agentID, inbound)
+	go func() { _ = s.HandleInboundMessage(agentID, inbound) }()
 }

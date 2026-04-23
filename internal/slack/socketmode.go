@@ -223,7 +223,7 @@ func (c *SocketClient) handleEventsAPI(evt socketmode.Event) {
 	}
 
 	// Always acknowledge the event
-	c.sm.Ack(*evt.Request)
+	_ = c.sm.Ack(*evt.Request)
 
 	log.WithFields(log.Fields{
 		"agent_id":   c.agentID,
@@ -287,7 +287,7 @@ func (c *SocketClient) handleInteractive(evt socketmode.Event) {
 	}
 
 	// Acknowledge the interaction
-	c.sm.Ack(*evt.Request)
+	_ = c.sm.Ack(*evt.Request)
 
 	payload := &InteractionPayload{
 		Type:        string(callback.Type),
@@ -299,9 +299,9 @@ func (c *SocketClient) handleInteractive(evt socketmode.Event) {
 	payload.User.Name = callback.User.RealName
 	payload.Channel.ID = callback.Channel.ID
 	payload.Channel.Name = callback.Channel.Name
-	if callback.Message.Msg.Timestamp != "" {
-		payload.Message.TS = callback.Message.Msg.Timestamp
-		payload.Message.Text = callback.Message.Msg.Text
+	if callback.Message.Timestamp != "" {
+		payload.Message.TS = callback.Message.Timestamp
+		payload.Message.Text = callback.Message.Text
 	}
 
 	for _, action := range callback.ActionCallback.BlockActions {
