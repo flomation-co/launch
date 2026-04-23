@@ -6,6 +6,7 @@ import (
 	stdlog "log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -76,15 +77,31 @@ func (m *SocketManager) Connect(agentID, appToken, botToken string, onMessage Me
 
 	m.clients[agentID] = client
 
-	// Set bot presence to auto (shows as online when connected)
+	// Set bot presence to active and refresh every 15 minutes.
+	// Slack resets "active" presence after ~30 min of inactivity.
 	go func() {
-		if err := api.SetUserPresence("auto"); err != nil {
-			log.WithFields(log.Fields{
-				"agent_id": agentID,
-				"error":    err,
-			}).Warn("failed to set bot presence to auto")
-		} else {
-			log.WithField("agent_id", agentID).Info("slack bot presence set to auto")
+		setPresence := func() {
+			if err := api.SetUserPresence("active"); err != nil {
+				log.WithFields(log.Fields{
+					"agent_id": agentID,
+					"error":    err,
+				}).Warn("failed to set bot presence to active")
+			} else {
+				log.WithField("agent_id", agentID).Debug("slack bot presence refreshed")
+			}
+		}
+		setPresence()
+		log.WithField("agent_id", agentID).Info("slack bot presence set to active")
+
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				setPresence()
+			}
 		}
 	}()
 
