@@ -548,6 +548,8 @@ func (s *Service) claimOrphanedAgents() {
 				stopCh: make(chan struct{}),
 			}
 			s.mu.Unlock()
+
+			s.activateChannels(reg)
 		}
 	}
 }
