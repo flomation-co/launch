@@ -178,6 +178,13 @@ func (c *SocketClient) processEvent(ctx context.Context, evt socketmode.Event) {
 
 // presenceLoop sets the bot to active and refreshes every 15 minutes.
 func (c *SocketClient) presenceLoop(ctx context.Context) {
+	// Wait for the connection to fully stabilise before first presence call
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(3 * time.Second):
+	}
+
 	setPresence := func() {
 		if err := c.api.SetUserPresence("active"); err != nil {
 			log.WithFields(log.Fields{
