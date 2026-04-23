@@ -177,17 +177,29 @@ func (c *SocketClient) processEvent(evt socketmode.Event) {
 		log.WithField("agent_id", c.agentID).Warn("slack socket mode connection error")
 	case socketmode.EventTypeHello:
 		log.WithField("agent_id", c.agentID).Debug("slack socket mode hello received")
+	default:
+		log.WithFields(log.Fields{
+			"agent_id":   c.agentID,
+			"event_type": evt.Type,
+		}).Debug("socket mode: unhandled event type")
 	}
 }
 
 func (c *SocketClient) handleEventsAPI(evt socketmode.Event) {
 	eventsAPI, ok := evt.Data.(slackevents.EventsAPIEvent)
 	if !ok {
+		log.WithField("agent_id", c.agentID).Debug("socket mode: event data is not EventsAPIEvent")
 		return
 	}
 
 	// Always acknowledge the event
 	c.sm.Ack(*evt.Request)
+
+	log.WithFields(log.Fields{
+		"agent_id":   c.agentID,
+		"event_type": eventsAPI.Type,
+		"inner_type": eventsAPI.InnerEvent.Type,
+	}).Debug("socket mode: received events API event")
 
 	if eventsAPI.Type != slackevents.CallbackEvent {
 		return
@@ -197,6 +209,11 @@ func (c *SocketClient) handleEventsAPI(evt socketmode.Event) {
 	case *slackevents.MessageEvent:
 		// Skip bot messages and subtypes
 		if ev.SubType != "" || ev.BotID != "" {
+			log.WithFields(log.Fields{
+				"agent_id": c.agentID,
+				"subtype":  ev.SubType,
+				"bot_id":   ev.BotID,
+			}).Debug("socket mode: skipping bot/subtype message")
 			return
 		}
 
