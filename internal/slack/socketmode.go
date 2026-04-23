@@ -180,17 +180,22 @@ func (c *SocketClient) processEvent(ctx context.Context, evt socketmode.Event) {
 func (c *SocketClient) presenceLoop(ctx context.Context) {
 	setPresence := func() bool {
 		if err := c.api.SetUserPresence("active"); err != nil {
+			log.WithFields(log.Fields{
+				"agent_id": c.agentID,
+				"error":    err,
+				"attempt":  "presence",
+			}).Warn("failed to set bot presence")
 			return false
 		}
 		return true
 	}
 
 	// Retry until presence is accepted (connection needs time to stabilise)
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 10; i++ {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(2 * time.Second):
+		case <-time.After(3 * time.Second):
 		}
 		if setPresence() {
 			log.WithField("agent_id", c.agentID).Info("slack bot presence set to active")
