@@ -28,10 +28,10 @@ import (
 )
 
 const (
-	leaseDuration     = 2 * time.Minute
-	heartbeatInterval = 30 * time.Second
-	watchdogInterval  = 60 * time.Second
-	startupDelay      = 5 * time.Second
+	leaseDuration     = 30 * time.Second
+	heartbeatInterval = 10 * time.Second
+	watchdogInterval  = 15 * time.Second
+	startupDelay      = 2 * time.Second
 	apiTimeout        = 30 * time.Second
 )
 
