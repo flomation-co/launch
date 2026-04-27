@@ -14,8 +14,10 @@ const (
 	TriggerTypeTelegram  = "telegram"
 	TriggerTypeForm      = "form"
 	TriggerTypeWebhook   = "webhook"
-	TriggerTypeGitPoll   = "git-poll"
-	TriggerTypeS3        = "s3"
+	TriggerTypeGitPoll        = "git-poll"
+	TriggerTypeS3             = "s3"
+	TriggerTypeGitLabWebhook = "gitlab-webhook"
+	TriggerTypeGitHubWebhook = "github-webhook"
 )
 
 type Trigger struct {

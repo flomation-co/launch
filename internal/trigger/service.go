@@ -152,7 +152,7 @@ func (s *Service) Trigger(trigger *launch.Trigger, data interface{}) error {
 		"data": data,
 	}).Info("invoking trigger")
 
-	url := fmt.Sprintf("%v/api/v1/flo/%v/trigger/%v/execute", s.config.Automate.URL, trigger.FlowID, trigger.ID)
+	url := fmt.Sprintf("%v/api/v1/internal/flo/%v/trigger/%v/execute", s.config.Automate.URL, trigger.FlowID, trigger.ID)
 
 	client := http.Client{
 		Timeout: time.Second * 30,
