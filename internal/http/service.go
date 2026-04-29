@@ -126,11 +126,6 @@ func (s *Service) configure() error {
 	s.engine.POST("/form/:id", s.submitForm)
 	s.engine.GET("/image/:id", s.handleImageLoad)
 
-	admin := s.engine.Group("/trigger")
-	admin.Use(s.jwtMiddleware)
-	admin.POST("/:id", s.createTrigger)
-	admin.DELETE("/:id", s.deleteTrigger)
-
 	// Internal routes — service-to-service calls from the API.
 	// When mTLS is enabled, these register on a separate Gin engine
 	// served on the internal port with client certificate verification.
@@ -140,6 +135,11 @@ func (s *Service) configure() error {
 		s.internalEngine = gin.New()
 		internalRouter = s.internalEngine
 	}
+
+	// Trigger management (internal, called by API service)
+	triggerAdmin := internalRouter.Group("/trigger")
+	triggerAdmin.POST("/:id", s.createTrigger)
+	triggerAdmin.DELETE("/:id", s.deleteTrigger)
 
 	// Agent registration (internal, called by API service)
 	agentAdmin := internalRouter.Group("/agent")

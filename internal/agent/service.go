@@ -203,7 +203,7 @@ func (s *Service) HandleInboundMessage(agentID string, message InboundMessage) e
 
 // handleInboundViaAPI calls the API's single inbound-message endpoint.
 func (s *Service) handleInboundViaAPI(reg *launch.AgentRegistration, msg InboundMessage) error {
-	if reg.APIURL == "" {
+	if s.config.InternalAPIURL() == "" {
 		return fmt.Errorf("no api_url configured")
 	}
 
@@ -213,7 +213,7 @@ func (s *Service) handleInboundViaAPI(reg *launch.AgentRegistration, msg Inbound
 	}
 
 	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/inbound-message",
-		reg.APIURL, reg.AgentID)
+		s.config.InternalAPIURL(), reg.AgentID)
 
 	resp, err := s.apiClient.Post(endpoint, "application/json", bytes.NewReader(payload)) // #nosec G107
 	if err != nil {
@@ -572,7 +572,7 @@ func (s *Service) updateHeartbeat(agentID string) {
 	s.mu.RLock()
 	ma, ok := s.managedAgents[agentID]
 	s.mu.RUnlock()
-	if !ok || ma.reg.APIURL == "" {
+	if !ok || s.config.InternalAPIURL() == "" {
 		return
 	}
 
@@ -602,7 +602,7 @@ type agentConversationResponse struct {
 // look up (or auto-create on first contact) the AgentIdentity +
 // AgentUser for the sender of an inbound message.
 func (s *Service) resolveIdentity(reg *launch.AgentRegistration, msg InboundMessage) (*agentIdentityResponse, error) {
-	if reg.APIURL == "" {
+	if s.config.InternalAPIURL() == "" {
 		return nil, fmt.Errorf("agent registration has no api_url")
 	}
 	externalID, displayName := deriveExternalID(msg)
@@ -623,7 +623,7 @@ func (s *Service) resolveIdentity(reg *launch.AgentRegistration, msg InboundMess
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/resolve-identity", reg.APIURL, reg.AgentID)
+	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/resolve-identity", s.config.InternalAPIURL(), reg.AgentID)
 	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -646,7 +646,7 @@ func (s *Service) resolveIdentity(reg *launch.AgentRegistration, msg InboundMess
 // endpoint to look up (or open) the conversation scoped to the given
 // (agent, user, channel, thread) tuple.
 func (s *Service) resolveConversation(reg *launch.AgentRegistration, agentUserID *string, channelType, channelID string, threadID *string) (*agentConversationResponse, error) {
-	if reg.APIURL == "" {
+	if s.config.InternalAPIURL() == "" {
 		return nil, fmt.Errorf("agent registration has no api_url")
 	}
 
@@ -666,7 +666,7 @@ func (s *Service) resolveConversation(reg *launch.AgentRegistration, agentUserID
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/conversation", reg.APIURL, reg.AgentID)
+	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/conversation", s.config.InternalAPIURL(), reg.AgentID)
 	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -689,11 +689,11 @@ func (s *Service) resolveConversation(reg *launch.AgentRegistration, agentUserID
 // from the API. Returns nil on any error — the caller treats an empty
 // history as "fresh conversation" rather than failing.
 func (s *Service) fetchConversationHistory(reg *launch.AgentRegistration, conversationID string, limit int) []map[string]interface{} {
-	if reg.APIURL == "" || conversationID == "" {
+	if s.config.InternalAPIURL() == "" || conversationID == "" {
 		return nil
 	}
 
-	url := fmt.Sprintf("%s/api/v1/internal/conversation/%s/history?limit=%d", reg.APIURL, conversationID, limit)
+	url := fmt.Sprintf("%s/api/v1/internal/conversation/%s/history?limit=%d", s.config.InternalAPIURL(), conversationID, limit)
 	resp, err := s.apiClient.Get(url)
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -765,9 +765,9 @@ func (s *Service) storeMessage(reg *launch.AgentRegistration, msg InboundMessage
 
 	var url string
 	if conversationID != nil {
-		url = fmt.Sprintf("%s/api/v1/internal/conversation/%s/message?agent_id=%s", reg.APIURL, *conversationID, reg.AgentID)
+		url = fmt.Sprintf("%s/api/v1/internal/conversation/%s/message?agent_id=%s", s.config.InternalAPIURL(), *conversationID, reg.AgentID)
 	} else {
-		url = fmt.Sprintf("%s/api/v1/internal/agent/%s/message", reg.APIURL, reg.AgentID)
+		url = fmt.Sprintf("%s/api/v1/internal/agent/%s/message", s.config.InternalAPIURL(), reg.AgentID)
 	}
 	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
@@ -853,10 +853,10 @@ func (s *Service) dispatchExecution(
 	var url string
 	if reg.TriggerID != nil {
 		url = fmt.Sprintf("%s/api/v1/internal/flo/%s/trigger/%s/execute",
-			reg.APIURL, *reg.OrchestratorFlowID, *reg.TriggerID)
+			s.config.InternalAPIURL(), *reg.OrchestratorFlowID, *reg.TriggerID)
 	} else {
 		url = fmt.Sprintf("%s/api/v1/internal/flo/%s/execute",
-			reg.APIURL, *reg.OrchestratorFlowID)
+			s.config.InternalAPIURL(), *reg.OrchestratorFlowID)
 	}
 
 	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
@@ -914,7 +914,7 @@ func (s *Service) dispatchExtraction(
 	conversationID *string,
 	role string,
 ) {
-	if reg.APIURL == "" || reg.AgentID == "" {
+	if s.config.InternalAPIURL() == "" || reg.AgentID == "" {
 		return
 	}
 
@@ -963,7 +963,7 @@ func (s *Service) dispatchExtraction(
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/extract", reg.APIURL, reg.AgentID)
+	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/extract", s.config.InternalAPIURL(), reg.AgentID)
 	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -1211,7 +1211,7 @@ func (s *Service) generateSessionSummary(reg *launch.AgentRegistration, closedCo
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/extract", reg.APIURL, reg.AgentID)
+	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/extract", s.config.InternalAPIURL(), reg.AgentID)
 	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		l.WithError(err).Warn("failed to dispatch session summary extraction")
@@ -1332,7 +1332,7 @@ func (s *Service) checkPendingActionConfirmation(
 	// Fetch open pending actions for this user.
 	endpoint := fmt.Sprintf(
 		"%s/api/v1/internal/agent/%s/pending-action?agent_user_id=%s",
-		reg.APIURL, reg.AgentID, agentUserID,
+		s.config.InternalAPIURL(), reg.AgentID, agentUserID,
 	)
 	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
@@ -1369,7 +1369,7 @@ func (s *Service) checkPendingActionConfirmation(
 
 		// PATCH the status.
 		body, _ := json.Marshal(map[string]string{"status": newStatus})
-		patchURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", reg.APIURL, pa.ID)
+		patchURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", s.config.InternalAPIURL(), pa.ID)
 		req, err := http.NewRequest(http.MethodPatch, patchURL, bytes.NewReader(body))
 		if err != nil {
 			continue
@@ -1426,7 +1426,7 @@ func (s *Service) triggerCrossChannelVerification(
 
 	endpoint := fmt.Sprintf(
 		"%s/api/v1/internal/agent/%s/identity/request-verification",
-		reg.APIURL, reg.AgentID,
+		s.config.InternalAPIURL(), reg.AgentID,
 	)
 
 	resp, err := s.apiClient.Post(endpoint, "application/json", bytes.NewReader(body))
@@ -1458,7 +1458,7 @@ func (s *Service) triggerIdentityMerge(reg *launch.AgentRegistration, verificati
 	})
 
 	// Fetch the verification PA to get payload (source_user_id, target_user_id, original_pa_id).
-	paURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", reg.APIURL, verificationPAID)
+	paURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", s.config.InternalAPIURL(), verificationPAID)
 	resp, err := s.apiClient.Get(paURL)
 	if err != nil {
 		l.WithError(err).Warn("failed to fetch verification PA for merge")
@@ -1496,7 +1496,7 @@ func (s *Service) triggerIdentityMerge(reg *launch.AgentRegistration, verificati
 	// Mark the original PA as executed.
 	if payload.OriginalPAID != "" {
 		statusBody, _ := json.Marshal(map[string]string{"status": "executed"})
-		patchURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", reg.APIURL, payload.OriginalPAID)
+		patchURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", s.config.InternalAPIURL(), payload.OriginalPAID)
 		req, _ := http.NewRequest(http.MethodPatch, patchURL, bytes.NewReader(statusBody))
 		if req != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -1509,7 +1509,7 @@ func (s *Service) triggerIdentityMerge(reg *launch.AgentRegistration, verificati
 
 	// Mark the verification PA as executed.
 	statusBody, _ := json.Marshal(map[string]string{"status": "executed"})
-	patchURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", reg.APIURL, verificationPAID)
+	patchURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", s.config.InternalAPIURL(), verificationPAID)
 	req, _ := http.NewRequest(http.MethodPatch, patchURL, bytes.NewReader(statusBody))
 	if req != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -1524,7 +1524,7 @@ func (s *Service) triggerIdentityMerge(reg *launch.AgentRegistration, verificati
 		"source_user_id": payload.SourceUserID,
 		"target_user_id": payload.TargetUserID,
 	})
-	mergeURL := fmt.Sprintf("%s/api/v1/internal/agent/%s/identity/merge", reg.APIURL, reg.AgentID)
+	mergeURL := fmt.Sprintf("%s/api/v1/internal/agent/%s/identity/merge", s.config.InternalAPIURL(), reg.AgentID)
 	mergeResp, err := s.apiClient.Post(mergeURL, "application/json", bytes.NewReader(mergeBody))
 	if err != nil {
 		l.WithError(err).Warn("failed to call identity merge")

@@ -82,7 +82,7 @@ func (s *Service) assembleSystemPromptViaAPI(
 	msg InboundMessage,
 	agentUserID *string,
 ) string {
-	if reg.APIURL == "" || reg.AgentID == "" {
+	if s.config.InternalAPIURL() == "" || reg.AgentID == "" {
 		return s.assembleSystemPromptLegacy(reg, msg, agentUserID)
 	}
 
@@ -101,7 +101,7 @@ func (s *Service) assembleSystemPromptViaAPI(
 	}
 
 	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/assemble-system-prompt",
-		reg.APIURL, reg.AgentID)
+		s.config.InternalAPIURL(), reg.AgentID)
 
 	resp, err := s.apiClient.Post(endpoint, "application/json", bytes.NewReader(body)) // #nosec G107 — internal service URL
 	if err != nil {
@@ -473,7 +473,7 @@ type assembledPendingAction struct {
 // treats nil as "no memories" and falls back to persona + directive.
 // Never blocks the reply path.
 func (s *Service) fetchPinnedMemories(reg *launch.AgentRegistration, agentUserID string) []assembledMemory {
-	if reg.APIURL == "" || reg.AgentID == "" || agentUserID == "" {
+	if s.config.InternalAPIURL() == "" || reg.AgentID == "" || agentUserID == "" {
 		return nil
 	}
 
@@ -487,7 +487,7 @@ func (s *Service) fetchPinnedMemories(reg *launch.AgentRegistration, agentUserID
 
 	endpoint := fmt.Sprintf(
 		"%s/api/v1/internal/agent/%s/memory?%s",
-		reg.APIURL, reg.AgentID, q.Encode(),
+		s.config.InternalAPIURL(), reg.AgentID, q.Encode(),
 	)
 
 	resp, err := s.apiClient.Get(endpoint)
@@ -515,7 +515,7 @@ func (s *Service) fetchPinnedMemories(reg *launch.AgentRegistration, agentUserID
 // fetchOpenPendingActions calls the API's internal list-pending-actions
 // endpoint. Same failure semantics as fetchPinnedMemories.
 func (s *Service) fetchOpenPendingActions(reg *launch.AgentRegistration, agentUserID string) []assembledPendingAction {
-	if reg.APIURL == "" || reg.AgentID == "" || agentUserID == "" {
+	if s.config.InternalAPIURL() == "" || reg.AgentID == "" || agentUserID == "" {
 		return nil
 	}
 
@@ -524,7 +524,7 @@ func (s *Service) fetchOpenPendingActions(reg *launch.AgentRegistration, agentUs
 
 	endpoint := fmt.Sprintf(
 		"%s/api/v1/internal/agent/%s/pending-action?%s",
-		reg.APIURL, reg.AgentID, q.Encode(),
+		s.config.InternalAPIURL(), reg.AgentID, q.Encode(),
 	)
 
 	resp, err := s.apiClient.Get(endpoint)
@@ -553,11 +553,11 @@ func (s *Service) fetchOpenPendingActions(reg *launch.AgentRegistration, agentUs
 // orchestrator flow from the API. Returns nil on error — the tools
 // section is omitted from the system prompt rather than blocking the reply.
 func (s *Service) fetchToolSummary(reg *launch.AgentRegistration) []assembledTool {
-	if reg.APIURL == "" || reg.AgentID == "" {
+	if s.config.InternalAPIURL() == "" || reg.AgentID == "" {
 		return nil
 	}
 
-	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/tool-summary", reg.APIURL, reg.AgentID)
+	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/tool-summary", s.config.InternalAPIURL(), reg.AgentID)
 
 	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
@@ -584,7 +584,7 @@ func (s *Service) fetchToolSummary(reg *launch.AgentRegistration) []assembledToo
 // performs a semantic search against the API. Returns nil on any error —
 // the assembler treats nil as "no relevant context" and gracefully degrades.
 func (s *Service) fetchRelevantMemories(reg *launch.AgentRegistration, msg InboundMessage, agentUserID string) []assembledMemory {
-	if s.embedding == nil || reg.APIURL == "" || reg.AgentID == "" || agentUserID == "" {
+	if s.embedding == nil || s.config.InternalAPIURL() == "" || reg.AgentID == "" || agentUserID == "" {
 		return nil
 	}
 
@@ -620,7 +620,7 @@ func (s *Service) fetchRelevantMemories(reg *launch.AgentRegistration, msg Inbou
 		"exclude_pinned": true,
 	})
 
-	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/memory/search", reg.APIURL, reg.AgentID)
+	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/memory/search", s.config.InternalAPIURL(), reg.AgentID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
