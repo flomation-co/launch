@@ -1,0 +1,2 @@
+# Generated dev certificates — regenerate with: go run tools/gencerts/main.go
+dev/

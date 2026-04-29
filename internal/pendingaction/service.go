@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"flomation.app/automate/launch/internal/config"
+	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
 	log "github.com/sirupsen/logrus"
 )
@@ -47,10 +48,15 @@ type Service struct {
 
 // NewService creates and starts the pending action poller.
 func NewService(cfg *config.Config, db *persistence.Service) *Service {
+	client, err := mtls.ClientOrDefault(cfg.TLS, httpTimeout)
+	if err != nil {
+		log.WithError(err).Fatal("pendingaction: unable to create API client")
+	}
+
 	s := &Service{
 		config: cfg,
 		db:     db,
-		client: &http.Client{Timeout: httpTimeout},
+		client: client,
 	}
 	go s.watch()
 	return s
@@ -312,7 +318,7 @@ func (s *Service) lookupUserIdentity(apiURL, agentID, agentUserID string) *ident
 // --- HTTP helpers ---
 
 func (s *Service) fetchUnnotified() []pendingAction {
-	url := fmt.Sprintf("%s/api/v1/internal/pending-action/unnotified", s.config.Automate.URL)
+	url := fmt.Sprintf("%s/api/v1/internal/pending-action/unnotified", s.config.InternalAPIURL())
 	resp, err := s.client.Get(url)
 	if err != nil {
 		log.WithError(err).Warn("failed to fetch unnotified pending actions")
@@ -333,7 +339,7 @@ func (s *Service) fetchUnnotified() []pendingAction {
 }
 
 func (s *Service) markNotified(id string) error {
-	url := fmt.Sprintf("%s/api/v1/internal/pending-action/%s/notified", s.config.Automate.URL, id)
+	url := fmt.Sprintf("%s/api/v1/internal/pending-action/%s/notified", s.config.InternalAPIURL(), id)
 	req, err := http.NewRequest(http.MethodPatch, url, nil)
 	if err != nil {
 		return err

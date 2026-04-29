@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"flomation.app/automate/launch/internal/config"
+	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
 	log "github.com/sirupsen/logrus"
 )
@@ -56,10 +57,15 @@ type Service struct {
 // method — the goroutine dies when the process exits, which matches
 // the pattern used by the schedule and S3 poll services.
 func NewService(cfg *config.Config, db *persistence.Service) *Service {
+	client, err := mtls.ClientOrDefault(cfg.TLS, httpTimeout)
+	if err != nil {
+		log.WithError(err).Fatal("commitment: unable to create API client")
+	}
+
 	s := &Service{
 		config: cfg,
 		db:     db,
-		client: &http.Client{Timeout: httpTimeout},
+		client: client,
 	}
 	go s.watch()
 	return s
@@ -231,7 +237,7 @@ func (s *Service) processCommitment(c commitment) {
 // --- HTTP helpers ---
 
 func (s *Service) fetchDueCommitments() []commitment {
-	return s.fetchDueCommitmentsFrom(s.config.Automate.URL)
+	return s.fetchDueCommitmentsFrom(s.config.InternalAPIURL())
 }
 
 // fetchDueCommitmentsFrom is the testable core — takes the API base URL
@@ -258,7 +264,7 @@ func (s *Service) fetchDueCommitmentsFrom(apiBase string) []commitment {
 }
 
 func (s *Service) updateCommitmentStatus(id, status string) error {
-	return s.updateCommitmentStatusAt(s.config.Automate.URL, id, status)
+	return s.updateCommitmentStatusAt(s.config.InternalAPIURL(), id, status)
 }
 
 func (s *Service) updateCommitmentStatusAt(apiBase, id, status string) error {

@@ -30,7 +30,7 @@ func (s *Service) handleGoogleTokens(c *gin.Context) {
 		return
 	}
 
-	apiURL := fmt.Sprintf("%s/api/v1/internal/agent-user/%s/google-refresh-tokens", s.config.Automate.URL, agentUserID)
+	apiURL := fmt.Sprintf("%s/api/v1/internal/agent-user/%s/google-refresh-tokens", s.config.InternalAPIURL(), agentUserID)
 	if purpose := c.Query("purpose"); purpose != "" {
 		apiURL += "?purpose=" + purpose
 	}
@@ -41,7 +41,7 @@ func (s *Service) handleGoogleTokens(c *gin.Context) {
 // exchanges each for an access token, and returns the results as JSON.
 // Shared by both agent-user and trigger-scoped token handlers.
 func (s *Service) refreshAndRespond(c *gin.Context, apiURL string) {
-	apiResp, err := http.Get(apiURL) // #nosec G107 — internal service-to-service call
+	apiResp, err := s.apiClient.Get(apiURL) // #nosec G107 — internal service-to-service call
 	if err != nil {
 		log.WithError(err).Error("failed to fetch Google tokens from API")
 		c.AbortWithStatus(http.StatusInternalServerError)
@@ -119,7 +119,7 @@ func (s *Service) handleGoogleTokensTrigger(c *gin.Context) {
 		return
 	}
 
-	apiURL := fmt.Sprintf("%s/api/v1/internal/trigger/%s/google-refresh-tokens", s.config.Automate.URL, triggerID)
+	apiURL := fmt.Sprintf("%s/api/v1/internal/trigger/%s/google-refresh-tokens", s.config.InternalAPIURL(), triggerID)
 	if purpose := c.Query("purpose"); purpose != "" {
 		apiURL += "?purpose=" + purpose
 	}

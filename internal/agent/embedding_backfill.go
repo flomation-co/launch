@@ -53,14 +53,14 @@ type unembeddedMemory struct {
 }
 
 func (s *Service) backfillBatch() {
-	apiURL := s.config.Automate.URL
+	apiURL := s.config.InternalAPIURL()
 	if apiURL == "" {
 		return
 	}
 
 	// 1. Fetch memories without embeddings.
 	endpoint := fmt.Sprintf("%s/api/v1/internal/memory/unembedded?limit=%d", apiURL, backfillBatch)
-	resp, err := http.Get(endpoint) // #nosec G107 — internal service-to-service call
+	resp, err := s.apiClient.Get(endpoint) // #nosec G107 — internal service-to-service call
 	if err != nil {
 		log.WithError(err).Debug("embedding backfill: failed to fetch unembedded memories")
 		return
@@ -120,7 +120,7 @@ func (s *Service) backfillBatch() {
 		}
 		req.Header.Set("Content-Type", "application/json")
 
-		patchResp, err := http.DefaultClient.Do(req)
+		patchResp, err := s.apiClient.Do(req)
 		if err != nil {
 			cancel()
 			log.WithFields(log.Fields{

@@ -103,8 +103,7 @@ func (s *Service) assembleSystemPromptViaAPI(
 	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/assemble-system-prompt",
 		reg.APIURL, reg.AgentID)
 
-	client := http.Client{Timeout: assemblyHTTPTimeout}
-	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(body)) // #nosec G107 — internal service URL
+	resp, err := s.apiClient.Post(endpoint, "application/json", bytes.NewReader(body)) // #nosec G107 — internal service URL
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id": reg.AgentID,
@@ -491,8 +490,7 @@ func (s *Service) fetchPinnedMemories(reg *launch.AgentRegistration, agentUserID
 		reg.APIURL, reg.AgentID, q.Encode(),
 	)
 
-	client := http.Client{Timeout: assemblyHTTPTimeout}
-	resp, err := client.Get(endpoint)
+	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id":      reg.AgentID,
@@ -529,8 +527,7 @@ func (s *Service) fetchOpenPendingActions(reg *launch.AgentRegistration, agentUs
 		reg.APIURL, reg.AgentID, q.Encode(),
 	)
 
-	client := http.Client{Timeout: assemblyHTTPTimeout}
-	resp, err := client.Get(endpoint)
+	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id":      reg.AgentID,
@@ -562,8 +559,7 @@ func (s *Service) fetchToolSummary(reg *launch.AgentRegistration) []assembledToo
 
 	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/tool-summary", reg.APIURL, reg.AgentID)
 
-	client := http.Client{Timeout: assemblyHTTPTimeout}
-	resp, err := client.Get(endpoint)
+	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id": reg.AgentID,
@@ -632,8 +628,7 @@ func (s *Service) fetchRelevantMemories(reg *launch.AgentRegistration, msg Inbou
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := http.Client{Timeout: assemblyHTTPTimeout}
-	resp, err := client.Do(req)
+	resp, err := s.apiClient.Do(req)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id": reg.AgentID,

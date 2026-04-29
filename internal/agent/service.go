@@ -17,6 +17,7 @@ import (
 
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/config"
+	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
 	"strconv"
 
@@ -45,6 +46,7 @@ type Service struct {
 	telegram     *telegramPkg.Service
 	slackSockets *slackPkg.SocketManager
 	embedding    embeddingProvider // nil when embeddings are disabled
+	apiClient    *http.Client     // mTLS-capable client for API calls
 	instanceID   string
 
 	mu            sync.RWMutex
@@ -67,6 +69,11 @@ type managedAgent struct {
 
 // NewService creates and starts the agent orchestration service.
 func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, telegramSvc *telegramPkg.Service, embed embeddingProvider) *Service {
+	apiClient, err := mtls.ClientOrDefault(config.TLS, apiTimeout)
+	if err != nil {
+		log.WithError(err).Fatal("agent: unable to create API client")
+	}
+
 	s := &Service{
 		config:        config,
 		db:            db,
@@ -74,6 +81,7 @@ func NewService(config *config.Config, db *persistence.Service, trigger *trigger
 		telegram:      telegramSvc,
 		slackSockets:  slackPkg.NewSocketManager(),
 		embedding:     embed,
+		apiClient:     apiClient,
 		instanceID:    uuid.New().String(),
 		managedAgents: make(map[string]*managedAgent),
 	}
@@ -207,8 +215,7 @@ func (s *Service) handleInboundViaAPI(reg *launch.AgentRegistration, msg Inbound
 	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/inbound-message",
 		reg.APIURL, reg.AgentID)
 
-	client := http.Client{Timeout: apiTimeout}
-	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(payload)) // #nosec G107
+	resp, err := s.apiClient.Post(endpoint, "application/json", bytes.NewReader(payload)) // #nosec G107
 	if err != nil {
 		return err
 	}
@@ -617,8 +624,7 @@ func (s *Service) resolveIdentity(reg *launch.AgentRegistration, msg InboundMess
 	}
 
 	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/resolve-identity", reg.APIURL, reg.AgentID)
-	client := http.Client{Timeout: apiTimeout}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -661,8 +667,7 @@ func (s *Service) resolveConversation(reg *launch.AgentRegistration, agentUserID
 	}
 
 	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/conversation", reg.APIURL, reg.AgentID)
-	client := http.Client{Timeout: apiTimeout}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -689,8 +694,7 @@ func (s *Service) fetchConversationHistory(reg *launch.AgentRegistration, conver
 	}
 
 	url := fmt.Sprintf("%s/api/v1/internal/conversation/%s/history?limit=%d", reg.APIURL, conversationID, limit)
-	client := http.Client{Timeout: apiTimeout}
-	resp, err := client.Get(url)
+	resp, err := s.apiClient.Get(url)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"conversation_id": conversationID,
@@ -765,8 +769,7 @@ func (s *Service) storeMessage(reg *launch.AgentRegistration, msg InboundMessage
 	} else {
 		url = fmt.Sprintf("%s/api/v1/internal/agent/%s/message", reg.APIURL, reg.AgentID)
 	}
-	client := http.Client{Timeout: apiTimeout}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -856,8 +859,7 @@ func (s *Service) dispatchExecution(
 			reg.APIURL, *reg.OrchestratorFlowID)
 	}
 
-	client := http.Client{Timeout: apiTimeout}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("failed to trigger execution: %w", err)
 	}
@@ -962,8 +964,7 @@ func (s *Service) dispatchExtraction(
 	}
 
 	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/extract", reg.APIURL, reg.AgentID)
-	client := http.Client{Timeout: extractionHTTPTimeout}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id": reg.AgentID,
@@ -1211,8 +1212,7 @@ func (s *Service) generateSessionSummary(reg *launch.AgentRegistration, closedCo
 	}
 
 	url := fmt.Sprintf("%s/api/v1/internal/agent/%s/extract", reg.APIURL, reg.AgentID)
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
+	resp, err := s.apiClient.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		l.WithError(err).Warn("failed to dispatch session summary extraction")
 		return
@@ -1334,8 +1334,7 @@ func (s *Service) checkPendingActionConfirmation(
 		"%s/api/v1/internal/agent/%s/pending-action?agent_user_id=%s",
 		reg.APIURL, reg.AgentID, agentUserID,
 	)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(endpoint)
+	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
 		return
 	}
@@ -1376,7 +1375,7 @@ func (s *Service) checkPendingActionConfirmation(
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
-		patchResp, err := client.Do(req)
+		patchResp, err := s.apiClient.Do(req)
 		if err != nil {
 			continue
 		}
@@ -1430,8 +1429,7 @@ func (s *Service) triggerCrossChannelVerification(
 		reg.APIURL, reg.AgentID,
 	)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(body))
+	resp, err := s.apiClient.Post(endpoint, "application/json", bytes.NewReader(body))
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id":          reg.AgentID,
@@ -1459,11 +1457,9 @@ func (s *Service) triggerIdentityMerge(reg *launch.AgentRegistration, verificati
 		"verification_pa_id": verificationPAID,
 	})
 
-	client := &http.Client{Timeout: 10 * time.Second}
-
 	// Fetch the verification PA to get payload (source_user_id, target_user_id, original_pa_id).
 	paURL := fmt.Sprintf("%s/api/v1/internal/pending-action/%s", reg.APIURL, verificationPAID)
-	resp, err := client.Get(paURL)
+	resp, err := s.apiClient.Get(paURL)
 	if err != nil {
 		l.WithError(err).Warn("failed to fetch verification PA for merge")
 		return
@@ -1504,7 +1500,7 @@ func (s *Service) triggerIdentityMerge(reg *launch.AgentRegistration, verificati
 		req, _ := http.NewRequest(http.MethodPatch, patchURL, bytes.NewReader(statusBody))
 		if req != nil {
 			req.Header.Set("Content-Type", "application/json")
-			r, err := client.Do(req)
+			r, err := s.apiClient.Do(req)
 			if err == nil {
 				_ = r.Body.Close()
 			}
@@ -1517,7 +1513,7 @@ func (s *Service) triggerIdentityMerge(reg *launch.AgentRegistration, verificati
 	req, _ := http.NewRequest(http.MethodPatch, patchURL, bytes.NewReader(statusBody))
 	if req != nil {
 		req.Header.Set("Content-Type", "application/json")
-		r, err := client.Do(req)
+		r, err := s.apiClient.Do(req)
 		if err == nil {
 			_ = r.Body.Close()
 		}
@@ -1529,7 +1525,7 @@ func (s *Service) triggerIdentityMerge(reg *launch.AgentRegistration, verificati
 		"target_user_id": payload.TargetUserID,
 	})
 	mergeURL := fmt.Sprintf("%s/api/v1/internal/agent/%s/identity/merge", reg.APIURL, reg.AgentID)
-	mergeResp, err := client.Post(mergeURL, "application/json", bytes.NewReader(mergeBody))
+	mergeResp, err := s.apiClient.Post(mergeURL, "application/json", bytes.NewReader(mergeBody))
 	if err != nil {
 		l.WithError(err).Warn("failed to call identity merge")
 		return

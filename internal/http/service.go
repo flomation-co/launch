@@ -18,6 +18,7 @@ import (
 
 	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/google"
+	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
 
@@ -30,24 +31,32 @@ import (
 )
 
 type Service struct {
-	config  *config.Config
-	engine  *gin.Engine
-	trigger *trigger.Service
-	agent   *agent.Service
-	google  *google.Service
-	db      *persistence.Service
+	config         *config.Config
+	engine         *gin.Engine
+	internalEngine *gin.Engine   // mTLS-only listener for internal routes
+	apiClient      *http.Client  // mTLS-capable client for internal API calls
+	trigger        *trigger.Service
+	agent          *agent.Service
+	google         *google.Service
+	db             *persistence.Service
 }
 
 func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, db *persistence.Service) (*Service, error) {
 	gin.SetMode(gin.ReleaseMode)
 
+	apiClient, err := mtls.ClientOrDefault(config.TLS, 15*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("http: unable to create API client: %w", err)
+	}
+
 	s := Service{
-		config:  config,
-		engine:  gin.New(),
-		google:  googleSvc,
-		db:      db,
-		trigger: trigger,
-		agent:   agentSvc,
+		config:    config,
+		engine:    gin.New(),
+		apiClient: apiClient,
+		google:    googleSvc,
+		db:        db,
+		trigger:   trigger,
+		agent:     agentSvc,
 	}
 
 	templ := template.Must(template.ParseFS(assets.Templates, "files/form.html"))
@@ -118,12 +127,33 @@ func (s *Service) configure() error {
 	admin.POST("/:id", s.createTrigger)
 	admin.DELETE("/:id", s.deleteTrigger)
 
+	// Internal routes — service-to-service calls from the API.
+	// When mTLS is enabled, these register on a separate Gin engine
+	// served on the internal port with client certificate verification.
+	internalRouter := s.engine
+	if s.config.TLS != nil && s.config.TLS.Enabled {
+		gin.SetMode(gin.ReleaseMode)
+		s.internalEngine = gin.New()
+		internalRouter = s.internalEngine
+	}
+
 	// Agent registration (internal, called by API service)
-	agentAdmin := s.engine.Group("/agent")
+	agentAdmin := internalRouter.Group("/agent")
 	agentAdmin.POST("/:id", s.registerAgent)
 	agentAdmin.DELETE("/:id", s.deregisterAgent)
 
+	// Identity verification dispatch (internal, called by API)
+	internalRouter.POST("/internal/agent/:agent_id/verify-identity", s.handleVerifyIdentity)
+
+	// Channel actions — typing indicators, etc. (internal, called by executor)
+	internalRouter.POST("/internal/agent/:agent_id/channel-action", s.handleChannelAction)
+
+	// Google token exchange (internal, called by executor tool actions)
+	internalRouter.GET("/internal/google/tokens/trigger/:id", s.handleGoogleTokensTrigger)
+	internalRouter.GET("/internal/google/tokens/:agent_user_id", s.handleGoogleTokens)
+
 	// Agent inbound webhooks (edge-facing, no auth — validated by agent ID)
+	// These stay on the public engine — external services hit them directly.
 	s.engine.POST("/webhook/agent/:agent_id", s.handleAgentWebhook)
 	s.engine.POST("/webhook/telegram/:agent_id", s.handleTelegramWebhook)
 	s.engine.POST("/webhook/slack/:agent_id", s.handleSlackWebhook)
@@ -131,16 +161,6 @@ func (s *Service) configure() error {
 	// Slack interactivity — Block Kit button clicks, select menus, etc.
 	// Configure in Slack App Settings → Interactivity & Shortcuts → Request URL.
 	s.engine.POST("/slack/:agent_id/interact", s.handleSlackInteraction)
-
-	// Identity verification dispatch (internal, called by API)
-	s.engine.POST("/internal/agent/:agent_id/verify-identity", s.handleVerifyIdentity)
-
-	// Channel actions — typing indicators, etc. (internal, called by executor)
-	s.engine.POST("/internal/agent/:agent_id/channel-action", s.handleChannelAction)
-
-	// Google token exchange (internal, called by executor tool actions)
-	s.engine.GET("/internal/google/tokens/trigger/:id", s.handleGoogleTokensTrigger)
-	s.engine.GET("/internal/google/tokens/:agent_user_id", s.handleGoogleTokens)
 
 	// Google OAuth2 (public, browser-facing)
 	s.engine.GET("/auth/google/callback", s.handleGoogleAuthCallback)
@@ -151,7 +171,35 @@ func (s *Service) configure() error {
 }
 
 func (s *Service) Listen() error {
+	if s.internalEngine != nil {
+		go s.listenInternal()
+	}
 	return s.engine.Run(fmt.Sprintf("%v:%v", s.config.HttpListenConfig.Address, s.config.HttpListenConfig.Port))
+}
+
+// listenInternal starts the mTLS-protected internal listener on a
+// separate port. Only clients presenting a valid certificate signed
+// by the platform CA are accepted.
+func (s *Service) listenInternal() {
+	tlsCfg, err := mtls.NewServerTLSConfig(s.config.TLS)
+	if err != nil {
+		log.WithError(err).Fatal("unable to configure mTLS server")
+	}
+
+	addr := fmt.Sprintf("%v:%d", s.config.HttpListenConfig.Address, s.config.TLS.InternalPort)
+	server := &http.Server{
+		Addr:      addr,
+		Handler:   s.internalEngine,
+		TLSConfig: tlsCfg,
+	}
+
+	log.WithFields(log.Fields{
+		"address": addr,
+	}).Info("starting mTLS internal listener")
+
+	if err := server.ListenAndServeTLS(s.config.TLS.CertFile, s.config.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
+		log.WithError(err).Fatal("mTLS internal listener failed")
+	}
 }
 
 func (s *Service) handleImageLoad(c *gin.Context) {

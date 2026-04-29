@@ -67,7 +67,7 @@ func TestDispatchExtraction_HappyPath(t *testing.T) {
 	fake := newExtractFakeAPI(http.StatusAccepted)
 	defer fake.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := &launch.AgentRegistration{
 		AgentID: "agent-1",
 		APIURL:  fake.server.URL,
@@ -111,7 +111,7 @@ func TestDispatchExtraction_204NoOp(t *testing.T) {
 	fake := newExtractFakeAPI(http.StatusNoContent)
 	defer fake.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := &launch.AgentRegistration{
 		AgentID: "agent-1",
 		APIURL:  fake.server.URL,
@@ -135,7 +135,7 @@ func TestDispatchExtraction_APIError_NoReturn(t *testing.T) {
 	fake := newExtractFakeAPI(http.StatusInternalServerError)
 	defer fake.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := &launch.AgentRegistration{
 		AgentID: "agent-1",
 		APIURL:  fake.server.URL,
@@ -156,7 +156,7 @@ func TestDispatchExtraction_APIError_NoReturn(t *testing.T) {
 // --- unreachable API → warning, no crash ---
 
 func TestDispatchExtraction_UnreachableAPI(t *testing.T) {
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := &launch.AgentRegistration{
 		AgentID: "agent-1",
 		APIURL:  "http://127.0.0.1:1", // guaranteed refused
@@ -173,7 +173,7 @@ func TestDispatchExtraction_NilOptionalsOmitted(t *testing.T) {
 	fake := newExtractFakeAPI(http.StatusAccepted)
 	defer fake.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := &launch.AgentRegistration{
 		AgentID: "agent-1",
 		APIURL:  fake.server.URL,
@@ -204,7 +204,7 @@ func TestDispatchExtraction_NilOptionalsOmitted(t *testing.T) {
 
 func TestDispatchExtraction_EmptyAPIURL_Skips(t *testing.T) {
 	// Should be a silent no-op — don't try to dial an empty URL.
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := &launch.AgentRegistration{AgentID: "agent-1", APIURL: ""}
 	msg := InboundMessage{Content: "hello"}
 	svc.dispatchExtraction(reg, msg, nil, nil, nil, "user")

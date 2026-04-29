@@ -217,7 +217,7 @@ func TestResolveIdentity_SendsStableIDAndDisplayName(t *testing.T) {
 	api := newFakeAPI(t)
 	defer api.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := newTestReg(api.server.URL)
 	msg := InboundMessage{
 		ChannelType: "slack",
@@ -255,7 +255,7 @@ func TestResolveConversation_PassesThreadAndUser(t *testing.T) {
 	api := newFakeAPI(t)
 	defer api.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := newTestReg(api.server.URL)
 	userID := "user-123"
 	thread := "1712160000.000100"
@@ -283,7 +283,7 @@ func TestFetchConversationHistory_ReturnsDecodedMessages(t *testing.T) {
 	api := newFakeAPI(t)
 	defer api.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := newTestReg(api.server.URL)
 
 	history := svc.fetchConversationHistory(reg, "conv-abc", 20)
@@ -307,7 +307,7 @@ func TestStoreMessage_WithConversationID_UsesScopedEndpoint(t *testing.T) {
 	api := newFakeAPI(t)
 	defer api.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := newTestReg(api.server.URL)
 	convID := "conv-abc"
 	msg := InboundMessage{
@@ -337,7 +337,7 @@ func TestStoreMessage_WithoutConversationID_FallsBackToLegacy(t *testing.T) {
 	api := newFakeAPI(t)
 	defer api.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := newTestReg(api.server.URL)
 	msg := InboundMessage{ChannelType: "webhook", Sender: "1.2.3.4", Content: "hi"}
 
@@ -359,7 +359,7 @@ func TestDispatchExecution_PlumbsMemoryKeysIntoTriggerData(t *testing.T) {
 	api := newFakeAPI(t)
 	defer api.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := newTestReg(api.server.URL)
 
 	msg := InboundMessage{
@@ -426,7 +426,7 @@ func TestHandleInboundMessageForReg_EndToEnd_WiresValuesBetweenSteps(t *testing.
 	api := newFakeAPI(t)
 	defer api.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := newTestReg(api.server.URL)
 	msg := InboundMessage{
 		ChannelType: "slack",
@@ -529,7 +529,7 @@ func TestHandleInboundMessageForReg_Webhook_NoChannelScope_FallsBackCleanly(t *t
 	api := newFakeAPI(t)
 	defer api.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := newTestReg(api.server.URL)
 	msg := InboundMessage{
 		ChannelType: "webhook",
@@ -580,7 +580,7 @@ func TestDispatchExecution_OmitsNilMemoryKeys(t *testing.T) {
 	api := newFakeAPI(t)
 	defer api.close()
 
-	svc := &Service{}
+	svc := &Service{apiClient: http.DefaultClient}
 	reg := newTestReg(api.server.URL)
 	msg := InboundMessage{ChannelType: "webhook", Sender: "1.2.3.4", Content: "hi"}
 

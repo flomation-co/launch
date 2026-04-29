@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"flomation.app/automate/launch/internal/config"
+	"flomation.app/automate/launch/internal/mtls"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -37,9 +38,14 @@ type Service struct {
 
 // NewService creates and starts the retention poller.
 func NewService(cfg *config.Config) *Service {
+	client, err := mtls.ClientOrDefault(cfg.TLS, httpTimeout)
+	if err != nil {
+		log.WithError(err).Fatal("retention: unable to create API client")
+	}
+
 	s := &Service{
 		config: cfg,
-		client: &http.Client{Timeout: httpTimeout},
+		client: client,
 	}
 	go s.watch()
 	return s
@@ -88,7 +94,7 @@ func (s *Service) deleteExpired() {
 		"limit": 500,
 	})
 
-	url := fmt.Sprintf("%s/api/v1/internal/memory/bulk-delete", s.config.Automate.URL)
+	url := fmt.Sprintf("%s/api/v1/internal/memory/bulk-delete", s.config.InternalAPIURL())
 	resp, err := s.client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		log.WithError(err).Warn("retention: failed to delete expired memories")
@@ -116,7 +122,7 @@ func (s *Service) enforcePolicy(p retentionPolicy) {
 		"exclude_pinned": true,
 	})
 
-	url := fmt.Sprintf("%s/api/v1/internal/memory/bulk-delete", s.config.Automate.URL)
+	url := fmt.Sprintf("%s/api/v1/internal/memory/bulk-delete", s.config.InternalAPIURL())
 	resp, err := s.client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -143,7 +149,7 @@ func (s *Service) enforcePolicy(p retentionPolicy) {
 }
 
 func (s *Service) fetchRetentionPolicies() []retentionPolicy {
-	url := fmt.Sprintf("%s/api/v1/internal/agent/retention-policies", s.config.Automate.URL)
+	url := fmt.Sprintf("%s/api/v1/internal/agent/retention-policies", s.config.InternalAPIURL())
 	resp, err := s.client.Get(url)
 	if err != nil {
 		log.WithError(err).Warn("retention: failed to fetch policies")
@@ -177,7 +183,7 @@ func (s *Service) writeAuditLog(agentID, eventType string, count int64) {
 	}
 
 	body, _ := json.Marshal(entry)
-	url := fmt.Sprintf("%s/api/v1/internal/audit-log", s.config.Automate.URL)
+	url := fmt.Sprintf("%s/api/v1/internal/audit-log", s.config.InternalAPIURL())
 
 	resp, err := s.client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
