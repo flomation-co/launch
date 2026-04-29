@@ -3,11 +3,13 @@ package http
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +19,8 @@ import (
 	"flomation.app/automate/launch"
 
 	"flomation.app/automate/launch/internal/agent"
+	githubwh "flomation.app/automate/launch/internal/github"
+	gitlabwh "flomation.app/automate/launch/internal/gitlab"
 	"flomation.app/automate/launch/internal/google"
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
@@ -260,7 +264,14 @@ func (s *Service) handleWebhook(c *gin.Context) {
 		return
 	}
 
-	if tr.Type != launch.TriggerTypeWebhook {
+	// Route to provider-specific handler for GitLab/GitHub webhooks
+	switch tr.Type {
+	case launch.TriggerTypeGitLabWebhook, launch.TriggerTypeGitHubWebhook:
+		s.handleProviderWebhookForTrigger(c, tr)
+		return
+	case launch.TriggerTypeWebhook:
+		// Continue with generic webhook handling below
+	default:
 		log.WithFields(log.Fields{
 			"id":   id,
 			"type": tr.Type,
@@ -285,6 +296,104 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	}()
 
 	//	TODO: Allow responding to webhook from Flow output (sit and wait for it to complete/timeout)
+	c.Status(http.StatusOK)
+}
+
+// handleProviderWebhookForTrigger handles GitLab and GitHub webhook triggers.
+// Called from handleWebhook after the trigger has been fetched and type-checked.
+func (s *Service) handleProviderWebhookForTrigger(c *gin.Context, tr *launch.Trigger) {
+	id := tr.ID
+
+	// Determine provider from trigger type
+	var provider string
+	switch tr.Type {
+	case launch.TriggerTypeGitLabWebhook:
+		provider = "gitlab"
+	case launch.TriggerTypeGitHubWebhook:
+		provider = "github"
+	default:
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+	if err != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	// Resolve the webhook secret from trigger data
+	var triggerData map[string]string
+	_ = json.Unmarshal(tr.Data, &triggerData)
+	secretRef := triggerData["webhook_secret"]
+
+	if secretRef != "" {
+		if strings.Contains(secretRef, "${") {
+			resolved, resolveErr := s.trigger.ResolveVariables(id, []string{secretRef})
+			if resolveErr == nil && resolved[secretRef] != "" {
+				secretRef = resolved[secretRef]
+			}
+		}
+
+		switch provider {
+		case "gitlab":
+			if err := gitlabwh.VerifyToken(secretRef, c.Request); err != nil {
+				log.WithFields(log.Fields{"id": id, "error": err}).Warn("GitLab webhook token verification failed")
+				c.AbortWithStatus(http.StatusUnauthorized)
+				return
+			}
+		case "github":
+			if err := githubwh.VerifySignature(secretRef, body, c.Request); err != nil {
+				log.WithFields(log.Fields{"id": id, "error": err}).Warn("GitHub webhook signature verification failed")
+				c.AbortWithStatus(http.StatusUnauthorized)
+				return
+			}
+		}
+	}
+
+	// Parse event based on provider
+	var data map[string]interface{}
+	var parseErr error
+	switch provider {
+	case "gitlab":
+		data, parseErr = gitlabwh.ParseEvent(c.GetHeader("X-Gitlab-Event"), body)
+	case "github":
+		data, parseErr = githubwh.ParseEvent(c.GetHeader("X-GitHub-Event"), body)
+	}
+	if parseErr != nil {
+		log.WithFields(log.Fields{"id": id, "provider": provider, "error": parseErr}).Error("webhook parse failed")
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	// Check event filter
+	eventFilter := triggerData["event_filter"]
+	eventType, _ := data["event_type"].(string)
+
+	matches := false
+	switch provider {
+	case "gitlab":
+		matches = gitlabwh.MatchesFilter(eventType, eventFilter)
+	case "github":
+		matches = githubwh.MatchesFilter(eventType, eventFilter)
+	}
+	if !matches {
+		c.Status(http.StatusOK)
+		return
+	}
+
+	// Carry __node_id from the trigger's stored config so the executor
+	// can inject event data into the correct trigger node in multi-trigger flows.
+	if nodeID := triggerData["__node_id"]; nodeID != "" {
+		data["__node_id"] = nodeID
+	}
+
+	go func() {
+		if err := s.trigger.Trigger(tr, data); err != nil {
+			log.WithFields(log.Fields{"error": err, "provider": provider}).Error("unable to fire webhook trigger")
+		}
+	}()
+
 	c.Status(http.StatusOK)
 }
 
