@@ -1,0 +1,20 @@
+{
+  "http": {
+    "address": "0.0.0.0",
+    "port": 9090
+  },
+  "database": {
+    "hostname": "localhost",
+    "port": 5432,
+    "username": "test",
+    "password": "not-a-real-password",
+    "database": "test_db",
+    "encryption_key": "not-a-real-key-just-for-tests"
+  },
+  "automate": {
+    "url": "http://localhost:8080"
+  },
+  "security": {
+    "identity_service": "http://localhost:8081"
+  }
+}

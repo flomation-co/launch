@@ -192,9 +192,10 @@ func (s *Service) listenInternal() {
 
 	addr := fmt.Sprintf("%v:%d", s.config.HttpListenConfig.Address, s.config.TLS.InternalPort)
 	server := &http.Server{
-		Addr:      addr,
-		Handler:   s.internalEngine,
-		TLSConfig: tlsCfg,
+		Addr:               addr,
+		Handler:            s.internalEngine,
+		TLSConfig:          tlsCfg,
+		ReadHeaderTimeout:  10 * time.Second,
 	}
 
 	log.WithFields(log.Fields{

@@ -141,7 +141,7 @@ type genOpts struct {
 }
 
 func run(opts genOpts) error {
-	if err := os.MkdirAll(opts.OutDir, 0o755); err != nil {
+	if err := os.MkdirAll(opts.OutDir, 0o750); err != nil {
 		return err
 	}
 
@@ -321,7 +321,7 @@ func generateServiceCert(opts genOpts, svc serviceSpec, caCert *x509.Certificate
 	}
 
 	svcDir := filepath.Join(opts.OutDir, svc.Name)
-	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+	if err := os.MkdirAll(svcDir, 0o750); err != nil {
 		return err
 	}
 
