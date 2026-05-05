@@ -206,14 +206,14 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int64            `json:"message_id"`
-	From      *telegramUser    `json:"from,omitempty"`
-	Chat      telegramChat     `json:"chat"`
-	Date      int64            `json:"date"`
-	Text      string           `json:"text"`
-	Voice     *telegramVoice   `json:"voice,omitempty"`
-	Audio     *telegramAudio   `json:"audio,omitempty"`
-	Caption   string           `json:"caption,omitempty"`
+	MessageID int64          `json:"message_id"`
+	From      *telegramUser  `json:"from,omitempty"`
+	Chat      telegramChat   `json:"chat"`
+	Date      int64          `json:"date"`
+	Text      string         `json:"text"`
+	Voice     *telegramVoice `json:"voice,omitempty"`
+	Audio     *telegramAudio `json:"audio,omitempty"`
+	Caption   string         `json:"caption,omitempty"`
 }
 
 type telegramVoice struct {

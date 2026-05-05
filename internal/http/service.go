@@ -37,8 +37,8 @@ import (
 type Service struct {
 	config         *config.Config
 	engine         *gin.Engine
-	internalEngine *gin.Engine   // mTLS-only listener for internal routes
-	apiClient      *http.Client  // mTLS-capable client for internal API calls
+	internalEngine *gin.Engine  // mTLS-only listener for internal routes
+	apiClient      *http.Client // mTLS-capable client for internal API calls
 	trigger        *trigger.Service
 	agent          *agent.Service
 	google         *google.Service
@@ -192,10 +192,10 @@ func (s *Service) listenInternal() {
 
 	addr := fmt.Sprintf("%v:%d", s.config.HttpListenConfig.Address, s.config.TLS.InternalPort)
 	server := &http.Server{
-		Addr:               addr,
-		Handler:            s.internalEngine,
-		TLSConfig:          tlsCfg,
-		ReadHeaderTimeout:  10 * time.Second,
+		Addr:              addr,
+		Handler:           s.internalEngine,
+		TLSConfig:         tlsCfg,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	log.WithFields(log.Fields{

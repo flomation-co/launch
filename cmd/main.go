@@ -3,10 +3,10 @@ package main
 import (
 	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/config"
-	"flomation.app/automate/launch/internal/embedding"
 	emailtrigger "flomation.app/automate/launch/internal/email"
-	"flomation.app/automate/launch/internal/google"
+	"flomation.app/automate/launch/internal/embedding"
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
+	"flomation.app/automate/launch/internal/google"
 	"flomation.app/automate/launch/internal/http"
 	"flomation.app/automate/launch/internal/persistence"
 	s3trigger "flomation.app/automate/launch/internal/s3"

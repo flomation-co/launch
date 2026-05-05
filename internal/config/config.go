@@ -42,13 +42,13 @@ type GoogleConfig struct {
 }
 
 type EmbeddingConfig struct {
-	Enabled      bool   `json:"enabled"`
-	Region       string `json:"region"`
-	ModelID      string `json:"model_id"`
-	Dimensions   int    `json:"dimensions"`
-	TopK         int    `json:"top_k"`
-	AccessKeyID  string `json:"access_key_id,omitempty"`
-	SecretKey    string `json:"secret_access_key,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Region      string `json:"region"`
+	ModelID     string `json:"model_id"`
+	Dimensions  int    `json:"dimensions"`
+	TopK        int    `json:"top_k"`
+	AccessKeyID string `json:"access_key_id,omitempty"`
+	SecretKey   string `json:"secret_access_key,omitempty"`
 }
 
 type Config struct {

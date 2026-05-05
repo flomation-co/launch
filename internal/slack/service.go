@@ -195,8 +195,8 @@ func LookupUser(botToken string, userID string) (*UserInfo, error) {
 // InteractionPayload represents a Slack interaction (button click, select
 // menu, etc.) from Block Kit interactive components.
 type InteractionPayload struct {
-	Type    string `json:"type"` // block_actions, view_submission, etc.
-	User    struct {
+	Type string `json:"type"` // block_actions, view_submission, etc.
+	User struct {
 		ID       string `json:"id"`
 		Username string `json:"username"`
 		Name     string `json:"name"`
@@ -225,7 +225,7 @@ type InteractionAction struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"text"`
-	Value          string `json:"value,omitempty"`           // button value
+	Value          string `json:"value,omitempty"` // button value
 	SelectedOption *struct {
 		Text  struct{ Text string } `json:"text"`
 		Value string                `json:"value"`

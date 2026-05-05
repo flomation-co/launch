@@ -43,9 +43,9 @@ func (s *Service) handleVerifyIdentity(c *gin.Context) {
 	// deriveExternalID and deriveChannelScope in the agent service
 	// correctly resolve identity and conversation for the target user.
 	metadata := map[string]interface{}{
-		"trigger_source":    "identity_verification",
-		"target_user_id":    body.TargetUserID,
-		"source_channel":    body.SourceChannel,
+		"trigger_source": "identity_verification",
+		"target_user_id": body.TargetUserID,
+		"source_channel": body.SourceChannel,
 	}
 
 	switch body.TargetChannel {

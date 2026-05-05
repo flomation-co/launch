@@ -209,12 +209,12 @@ func (s *Service) assembleSystemPromptWithPendingFlag(
 	wg.Wait()
 
 	log.WithFields(log.Fields{
-		"agent_id":        reg.AgentID,
-		"agent_user_id":   *agentUserID,
-		"pinned_memories":  len(pinnedMem),
+		"agent_id":          reg.AgentID,
+		"agent_user_id":     *agentUserID,
+		"pinned_memories":   len(pinnedMem),
 		"relevant_memories": len(relevantMem),
-		"pending_actions":  len(pending),
-		"tools":           len(toolSummary),
+		"pending_actions":   len(pending),
+		"tools":             len(toolSummary),
 	}).Info("system prompt assembly complete")
 
 	prompt := buildSystemPrompt(persona, pinnedMem, relevantMem, pending, toolSummary, msg.ChannelType)
@@ -243,6 +243,7 @@ func (s *Service) assembleSystemPromptWithPendingFlag(
 //     would just be noise).
 //   - Sections are separated by the ━ divider pattern from the plan
 //     document so the model sees a visually unambiguous boundary.
+//
 // assembledTool is a tool available in the agent's orchestrator flow.
 type assembledTool struct {
 	Type        string `json:"type"`
@@ -614,9 +615,9 @@ func (s *Service) fetchRelevantMemories(reg *launch.AgentRegistration, msg Inbou
 
 	// POST the embedding to the API's search endpoint.
 	payload, _ := json.Marshal(map[string]interface{}{
-		"agent_user_id": agentUserID,
-		"embedding":     vec,
-		"top_k":         topK,
+		"agent_user_id":  agentUserID,
+		"embedding":      vec,
+		"top_k":          topK,
 		"exclude_pinned": true,
 	})
 

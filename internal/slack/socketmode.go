@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
+	log "github.com/sirupsen/logrus"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
-	log "github.com/sirupsen/logrus"
 )
 
 // MessageHandler is called when a Socket Mode connection receives a message event.
@@ -22,13 +22,13 @@ type InteractionHandler func(payload *InteractionPayload)
 
 // SocketClient manages a Socket Mode WebSocket connection for a single agent.
 type SocketClient struct {
-	agentID        string
-	api            *slack.Client
-	sm             *socketmode.Client
-	cancel         context.CancelFunc
-	onMessage      MessageHandler
-	onInteract     InteractionHandler
-	presenceOnce   sync.Once
+	agentID      string
+	api          *slack.Client
+	sm           *socketmode.Client
+	cancel       context.CancelFunc
+	onMessage    MessageHandler
+	onInteract   InteractionHandler
+	presenceOnce sync.Once
 }
 
 // SocketManager tracks active Socket Mode connections across agents.

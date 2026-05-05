@@ -15,11 +15,12 @@ import (
 
 	"context"
 
+	"strconv"
+
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/config"
 	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
-	"strconv"
 
 	slackPkg "flomation.app/automate/launch/internal/slack"
 	telegramPkg "flomation.app/automate/launch/internal/telegram"
@@ -46,7 +47,7 @@ type Service struct {
 	telegram     *telegramPkg.Service
 	slackSockets *slackPkg.SocketManager
 	embedding    embeddingProvider // nil when embeddings are disabled
-	apiClient    *http.Client     // mTLS-capable client for API calls
+	apiClient    *http.Client      // mTLS-capable client for API calls
 	instanceID   string
 
 	mu            sync.RWMutex
@@ -594,8 +595,8 @@ type agentIdentityResponse struct {
 
 // agentConversationResponse mirrors the API's resolve-conversation response.
 type agentConversationResponse struct {
-	ID                     string  `json:"id"`
-	ClosedConversationID   *string `json:"closed_conversation_id,omitempty"`
+	ID                   string  `json:"id"`
+	ClosedConversationID *string `json:"closed_conversation_id,omitempty"`
 }
 
 // resolveIdentity calls the API's internal resolve-identity endpoint to
@@ -881,14 +882,6 @@ func (s *Service) dispatchExecution(
 
 	return nil
 }
-
-// extractionHTTPTimeout is deliberately shorter than apiTimeout. The
-// extraction dispatch is a fire-and-forget call on the tail end of the
-// reply pipeline — it enqueues an execution via the API and returns
-// immediately, so it has no legitimate reason to take more than a few
-// seconds. A hung API must not be able to delay the next reply by the
-// full apiTimeout budget.
-const extractionHTTPTimeout = apiTimeout / 4
 
 // dispatchExtraction fires the extraction System Flow for this turn.
 // Phase 2d-γ: called from handleInboundMessageForReg after the main
@@ -1453,7 +1446,7 @@ func (s *Service) triggerCrossChannelVerification(
 // endpoint to unify the two agent_user records.
 func (s *Service) triggerIdentityMerge(reg *launch.AgentRegistration, verificationPAID string) {
 	l := log.WithFields(log.Fields{
-		"agent_id":          reg.AgentID,
+		"agent_id":           reg.AgentID,
 		"verification_pa_id": verificationPAID,
 	})
 
