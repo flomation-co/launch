@@ -82,7 +82,7 @@ func (s *Service) assembleSystemPromptViaAPI(
 	msg InboundMessage,
 	agentUserID *string,
 ) string {
-	if reg.APIURL == "" || reg.AgentID == "" {
+	if s.config.InternalAPIURL() == "" || reg.AgentID == "" {
 		return s.assembleSystemPromptLegacy(reg, msg, agentUserID)
 	}
 
@@ -101,10 +101,9 @@ func (s *Service) assembleSystemPromptViaAPI(
 	}
 
 	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/assemble-system-prompt",
-		reg.APIURL, reg.AgentID)
+		s.config.InternalAPIURL(), reg.AgentID)
 
-	client := http.Client{Timeout: assemblyHTTPTimeout}
-	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(body)) // #nosec G107 — internal service URL
+	resp, err := s.apiClient.Post(endpoint, "application/json", bytes.NewReader(body)) // #nosec G107 — internal service URL
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id": reg.AgentID,
@@ -210,12 +209,12 @@ func (s *Service) assembleSystemPromptWithPendingFlag(
 	wg.Wait()
 
 	log.WithFields(log.Fields{
-		"agent_id":        reg.AgentID,
-		"agent_user_id":   *agentUserID,
-		"pinned_memories":  len(pinnedMem),
+		"agent_id":          reg.AgentID,
+		"agent_user_id":     *agentUserID,
+		"pinned_memories":   len(pinnedMem),
 		"relevant_memories": len(relevantMem),
-		"pending_actions":  len(pending),
-		"tools":           len(toolSummary),
+		"pending_actions":   len(pending),
+		"tools":             len(toolSummary),
 	}).Info("system prompt assembly complete")
 
 	prompt := buildSystemPrompt(persona, pinnedMem, relevantMem, pending, toolSummary, msg.ChannelType)
@@ -244,6 +243,7 @@ func (s *Service) assembleSystemPromptWithPendingFlag(
 //     would just be noise).
 //   - Sections are separated by the ━ divider pattern from the plan
 //     document so the model sees a visually unambiguous boundary.
+//
 // assembledTool is a tool available in the agent's orchestrator flow.
 type assembledTool struct {
 	Type        string `json:"type"`
@@ -474,7 +474,7 @@ type assembledPendingAction struct {
 // treats nil as "no memories" and falls back to persona + directive.
 // Never blocks the reply path.
 func (s *Service) fetchPinnedMemories(reg *launch.AgentRegistration, agentUserID string) []assembledMemory {
-	if reg.APIURL == "" || reg.AgentID == "" || agentUserID == "" {
+	if s.config.InternalAPIURL() == "" || reg.AgentID == "" || agentUserID == "" {
 		return nil
 	}
 
@@ -488,11 +488,10 @@ func (s *Service) fetchPinnedMemories(reg *launch.AgentRegistration, agentUserID
 
 	endpoint := fmt.Sprintf(
 		"%s/api/v1/internal/agent/%s/memory?%s",
-		reg.APIURL, reg.AgentID, q.Encode(),
+		s.config.InternalAPIURL(), reg.AgentID, q.Encode(),
 	)
 
-	client := http.Client{Timeout: assemblyHTTPTimeout}
-	resp, err := client.Get(endpoint)
+	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id":      reg.AgentID,
@@ -517,7 +516,7 @@ func (s *Service) fetchPinnedMemories(reg *launch.AgentRegistration, agentUserID
 // fetchOpenPendingActions calls the API's internal list-pending-actions
 // endpoint. Same failure semantics as fetchPinnedMemories.
 func (s *Service) fetchOpenPendingActions(reg *launch.AgentRegistration, agentUserID string) []assembledPendingAction {
-	if reg.APIURL == "" || reg.AgentID == "" || agentUserID == "" {
+	if s.config.InternalAPIURL() == "" || reg.AgentID == "" || agentUserID == "" {
 		return nil
 	}
 
@@ -526,11 +525,10 @@ func (s *Service) fetchOpenPendingActions(reg *launch.AgentRegistration, agentUs
 
 	endpoint := fmt.Sprintf(
 		"%s/api/v1/internal/agent/%s/pending-action?%s",
-		reg.APIURL, reg.AgentID, q.Encode(),
+		s.config.InternalAPIURL(), reg.AgentID, q.Encode(),
 	)
 
-	client := http.Client{Timeout: assemblyHTTPTimeout}
-	resp, err := client.Get(endpoint)
+	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id":      reg.AgentID,
@@ -556,14 +554,13 @@ func (s *Service) fetchOpenPendingActions(reg *launch.AgentRegistration, agentUs
 // orchestrator flow from the API. Returns nil on error — the tools
 // section is omitted from the system prompt rather than blocking the reply.
 func (s *Service) fetchToolSummary(reg *launch.AgentRegistration) []assembledTool {
-	if reg.APIURL == "" || reg.AgentID == "" {
+	if s.config.InternalAPIURL() == "" || reg.AgentID == "" {
 		return nil
 	}
 
-	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/tool-summary", reg.APIURL, reg.AgentID)
+	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/tool-summary", s.config.InternalAPIURL(), reg.AgentID)
 
-	client := http.Client{Timeout: assemblyHTTPTimeout}
-	resp, err := client.Get(endpoint)
+	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id": reg.AgentID,
@@ -588,7 +585,7 @@ func (s *Service) fetchToolSummary(reg *launch.AgentRegistration) []assembledToo
 // performs a semantic search against the API. Returns nil on any error —
 // the assembler treats nil as "no relevant context" and gracefully degrades.
 func (s *Service) fetchRelevantMemories(reg *launch.AgentRegistration, msg InboundMessage, agentUserID string) []assembledMemory {
-	if s.embedding == nil || reg.APIURL == "" || reg.AgentID == "" || agentUserID == "" {
+	if s.embedding == nil || s.config.InternalAPIURL() == "" || reg.AgentID == "" || agentUserID == "" {
 		return nil
 	}
 
@@ -618,13 +615,13 @@ func (s *Service) fetchRelevantMemories(reg *launch.AgentRegistration, msg Inbou
 
 	// POST the embedding to the API's search endpoint.
 	payload, _ := json.Marshal(map[string]interface{}{
-		"agent_user_id": agentUserID,
-		"embedding":     vec,
-		"top_k":         topK,
+		"agent_user_id":  agentUserID,
+		"embedding":      vec,
+		"top_k":          topK,
 		"exclude_pinned": true,
 	})
 
-	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/memory/search", reg.APIURL, reg.AgentID)
+	endpoint := fmt.Sprintf("%s/api/v1/internal/agent/%s/memory/search", s.config.InternalAPIURL(), reg.AgentID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
@@ -632,8 +629,7 @@ func (s *Service) fetchRelevantMemories(reg *launch.AgentRegistration, msg Inbou
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := http.Client{Timeout: assemblyHTTPTimeout}
-	resp, err := client.Do(req)
+	resp, err := s.apiClient.Do(req)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"agent_id": reg.AgentID,

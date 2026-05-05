@@ -21,6 +21,7 @@ import (
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/config"
+	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
 )
@@ -57,15 +58,22 @@ type Service struct {
 	db         *persistence.Service
 	trigger    *trigger.Service
 	agent      *agent.Service
+	apiClient  *http.Client // mTLS-capable client for internal API calls
 	instanceID string
 }
 
 func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, agentSvc *agent.Service) *Service {
+	apiClient, err := mtls.ClientOrDefault(config.TLS, 15*time.Second)
+	if err != nil {
+		log.WithError(err).Fatal("email: unable to create API client")
+	}
+
 	s := &Service{
 		config:     config,
 		db:         db,
 		trigger:    trigger,
 		agent:      agentSvc,
+		apiClient:  apiClient,
 		instanceID: uuid.New().String(),
 	}
 
@@ -110,7 +118,7 @@ func (s *Service) poll() {
 func (s *Service) checkAgentEmail(agentID string) {
 	// Fetch tokens using the agent ID as the trigger_google_account scope
 	endpoint := fmt.Sprintf("%s/api/v1/internal/trigger/%s/google-refresh-tokens?purpose=email_read",
-		s.config.Automate.URL, agentID)
+		s.config.InternalAPIURL(), agentID)
 	tokens := s.fetchAndRefreshTokens(endpoint)
 
 	if len(tokens) == 0 {
@@ -363,7 +371,7 @@ func (s *Service) fetchTokens(tr *launch.Trigger, accountFilter string) ([]token
 	// Source 1: trigger-scoped tokens (refresh in-process since we have
 	// the Google credentials locally — no need to proxy through ourselves)
 	triggerEndpoint := fmt.Sprintf("%s/api/v1/internal/trigger/%s/google-refresh-tokens?purpose=email_read",
-		s.config.Automate.URL, tr.ID)
+		s.config.InternalAPIURL(), tr.ID)
 	triggerTokens := s.fetchAndRefreshTokens(triggerEndpoint)
 
 	// Source 2: agent-user tokens (if agent_user_id is in trigger data)
@@ -374,7 +382,7 @@ func (s *Service) fetchTokens(tr *launch.Trigger, accountFilter string) ([]token
 	_ = json.Unmarshal(tr.Data, &triggerData)
 	if triggerData.AgentUserID != "" {
 		agentEndpoint := fmt.Sprintf("%s/api/v1/internal/agent-user/%s/google-refresh-tokens?purpose=email_read",
-			s.config.Automate.URL, triggerData.AgentUserID)
+			s.config.InternalAPIURL(), triggerData.AgentUserID)
 		agentTokens = s.fetchAndRefreshTokens(agentEndpoint)
 	}
 
@@ -401,8 +409,7 @@ func (s *Service) fetchTokens(tr *launch.Trigger, accountFilter string) ([]token
 // fetchAndRefreshTokens fetches raw refresh tokens from the API and
 // exchanges each for an access token using Launch's Google credentials.
 func (s *Service) fetchAndRefreshTokens(endpoint string) []tokenInfo {
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(endpoint)
+	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
 		return nil
 	}

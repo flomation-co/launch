@@ -15,21 +15,27 @@ import (
 	"flomation.app/automate/launch"
 
 	"flomation.app/automate/launch/internal/config"
+	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
 )
 
 type Service struct {
-	config *config.Config
-	db     *persistence.Service
+	config    *config.Config
+	db        *persistence.Service
+	apiClient *http.Client
 }
 
-func NewService(config *config.Config, db *persistence.Service) *Service {
-	s := Service{
-		config: config,
-		db:     db,
+func NewService(cfg *config.Config, db *persistence.Service) *Service {
+	client, err := mtls.ClientOrDefault(cfg.TLS, 30*time.Second)
+	if err != nil {
+		log.WithError(err).Fatal("trigger: unable to create API client")
 	}
 
-	return &s
+	return &Service{
+		config:    cfg,
+		db:        db,
+		apiClient: client,
+	}
 }
 
 func (s *Service) CreateTrigger(trigger launch.Trigger) (*launch.Trigger, error) {
@@ -75,15 +81,14 @@ func (s *Service) ResolveVariables(triggerID string, variables []string) (map[st
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%v/api/v1/trigger/%v/resolve", s.config.Automate.URL, triggerID)
+	url := fmt.Sprintf("%v/api/v1/trigger/%v/resolve", s.config.InternalAPIURL(), triggerID)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := http.Client{Timeout: time.Second * 10}
-	res, err := client.Do(req)
+	res, err := s.apiClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -152,11 +157,7 @@ func (s *Service) Trigger(trigger *launch.Trigger, data interface{}) error {
 		"data": data,
 	}).Info("invoking trigger")
 
-	url := fmt.Sprintf("%v/api/v1/internal/flo/%v/trigger/%v/execute", s.config.Automate.URL, trigger.FlowID, trigger.ID)
-
-	client := http.Client{
-		Timeout: time.Second * 30,
-	}
+	url := fmt.Sprintf("%v/api/v1/internal/flo/%v/trigger/%v/execute", s.config.InternalAPIURL(), trigger.FlowID, trigger.ID)
 
 	b, err := json.Marshal(data)
 	if err != nil {
@@ -168,7 +169,7 @@ func (s *Service) Trigger(trigger *launch.Trigger, data interface{}) error {
 		return err
 	}
 
-	res, err := client.Do(req)
+	res, err := s.apiClient.Do(req)
 	if err != nil {
 		return err
 	}

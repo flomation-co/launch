@@ -260,7 +260,7 @@ func Test_AssembleSystemPrompt_HappyPath_FetchesAndComposes(t *testing.T) {
 		{Type: "identity_link", Evidence: "I'm @andyesser"},
 	}
 
-	svc := &Service{}
+	svc := newTestService(fake.server.URL)
 	reg := regWith(fake.server.URL, "agent-1", "You are Atlas.")
 	msg := InboundMessage{ChannelType: "slack"}
 
@@ -294,7 +294,7 @@ func Test_AssembleSystemPrompt_NoAgentUserID_SkipsFetchesEntirely(t *testing.T) 
 	fake := newFakeMemoryAPI()
 	defer fake.close()
 
-	svc := &Service{}
+	svc := newTestService(fake.server.URL)
 	reg := regWith(fake.server.URL, "agent-1", "P")
 	msg := InboundMessage{ChannelType: "slack"}
 
@@ -319,7 +319,7 @@ func Test_AssembleSystemPrompt_APIReturns500_FailsOpen(t *testing.T) {
 	fake.memoryStatus = http.StatusInternalServerError
 	fake.pendingStatus = http.StatusInternalServerError
 
-	svc := &Service{}
+	svc := newTestService(fake.server.URL)
 	reg := regWith(fake.server.URL, "agent-1", "P")
 	msg := InboundMessage{ChannelType: "slack"}
 
@@ -341,7 +341,7 @@ func Test_AssembleSystemPrompt_APIReturns500_FailsOpen(t *testing.T) {
 func Test_AssembleSystemPrompt_UnreachableAPI_FailsOpen(t *testing.T) {
 	// Point the registration at a URL nothing is listening on. We use
 	// 127.0.0.1:1 because port 1 is the canonical "nothing here" port.
-	svc := &Service{}
+	svc := newTestService("http://127.0.0.1:1")
 	reg := regWith("http://127.0.0.1:1", "agent-1", "Persona")
 	msg := InboundMessage{ChannelType: "slack"}
 
@@ -375,7 +375,7 @@ func Test_AssembleSystemPrompt_URLShapeMatchesAPIContract(t *testing.T) {
 	}))
 	defer server.Close()
 
-	svc := &Service{}
+	svc := newTestService(server.URL)
 	reg := regWith(server.URL, "agent-xyz", "P")
 	msg := InboundMessage{ChannelType: "slack"}
 

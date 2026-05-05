@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"flomation.app/automate/launch/internal/mtls"
 )
 
 type HttpListenConfig struct {
@@ -24,8 +26,9 @@ type DatabaseConfig struct {
 }
 
 type ServiceConfig struct {
-	URL string  `json:"url"`
-	Key *string `json:"key"`
+	URL         string  `json:"url"`
+	InternalURL string  `json:"internal_url,omitempty"`
+	Key         *string `json:"key"`
 }
 
 type SecurityConfig struct {
@@ -39,13 +42,13 @@ type GoogleConfig struct {
 }
 
 type EmbeddingConfig struct {
-	Enabled      bool   `json:"enabled"`
-	Region       string `json:"region"`
-	ModelID      string `json:"model_id"`
-	Dimensions   int    `json:"dimensions"`
-	TopK         int    `json:"top_k"`
-	AccessKeyID  string `json:"access_key_id,omitempty"`
-	SecretKey    string `json:"secret_access_key,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Region      string `json:"region"`
+	ModelID     string `json:"model_id"`
+	Dimensions  int    `json:"dimensions"`
+	TopK        int    `json:"top_k"`
+	AccessKeyID string `json:"access_key_id,omitempty"`
+	SecretKey   string `json:"secret_access_key,omitempty"`
 }
 
 type Config struct {
@@ -56,6 +59,16 @@ type Config struct {
 	Google           *GoogleConfig    `json:"google"`
 	Embedding        *EmbeddingConfig `json:"embedding"`
 	PublicURL        string           `json:"public_url"` // e.g. "https://launch.flomation.app"
+	TLS              *mtls.TLSConfig  `json:"tls,omitempty"`
+}
+
+// InternalAPIURL returns the internal mTLS URL if configured,
+// otherwise falls back to the public API URL.
+func (c *Config) InternalAPIURL() string {
+	if c.Automate.InternalURL != "" {
+		return c.Automate.InternalURL
+	}
+	return c.Automate.URL
 }
 
 func LoadConfig(path string) (*Config, error) {
