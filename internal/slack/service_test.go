@@ -119,3 +119,36 @@ func TestParseEvent_UnknownType(t *testing.T) {
 	Expect(msg).To(BeNil())
 	Expect(verification).To(BeNil())
 }
+
+func TestSocketManager_IsConnected_NoClient(t *testing.T) {
+	RegisterTestingT(t)
+
+	sm := NewSocketManager()
+	Expect(sm.IsConnected("nonexistent")).To(BeFalse())
+}
+
+func TestSocketManager_ReconnectStale_NoClients(t *testing.T) {
+	RegisterTestingT(t)
+
+	sm := NewSocketManager()
+	n := sm.ReconnectStale()
+	Expect(n).To(Equal(0))
+}
+
+func TestSocketClient_AliveFlag_DefaultFalse(t *testing.T) {
+	RegisterTestingT(t)
+
+	client := &SocketClient{agentID: "test"}
+	Expect(client.alive.Load()).To(BeFalse())
+}
+
+func TestSocketClient_AliveFlag_SetAndRead(t *testing.T) {
+	RegisterTestingT(t)
+
+	client := &SocketClient{agentID: "test"}
+	client.alive.Store(true)
+	Expect(client.alive.Load()).To(BeTrue())
+
+	client.alive.Store(false)
+	Expect(client.alive.Load()).To(BeFalse())
+}
