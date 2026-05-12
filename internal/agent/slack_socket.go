@@ -1,9 +1,49 @@
 package agent
 
 import (
+	"sync"
+	"time"
+
 	slackPkg "flomation.app/automate/launch/internal/slack"
 	log "github.com/sirupsen/logrus"
 )
+
+// slackEventDedup prevents duplicate processing when Slack delivers both
+// a "message" and "app_mention" event for the same user message. Keyed
+// by agent_id + channel_id + timestamp (unique per Slack message).
+var slackEventDedup = struct {
+	sync.Mutex
+	seen map[string]time.Time
+}{seen: make(map[string]time.Time)}
+
+const dedupWindow = 5 * time.Second
+
+func slackEventKey(agentID, channelID, ts string) string {
+	return agentID + ":" + channelID + ":" + ts
+}
+
+func isDuplicateSlackEvent(agentID, channelID, ts string) bool {
+	key := slackEventKey(agentID, channelID, ts)
+	now := time.Now()
+
+	slackEventDedup.Lock()
+	defer slackEventDedup.Unlock()
+
+	// Prune stale entries periodically
+	if len(slackEventDedup.seen) > 1000 {
+		for k, t := range slackEventDedup.seen {
+			if now.Sub(t) > dedupWindow {
+				delete(slackEventDedup.seen, k)
+			}
+		}
+	}
+
+	if _, exists := slackEventDedup.seen[key]; exists {
+		return true
+	}
+	slackEventDedup.seen[key] = now
+	return false
+}
 
 // handleSlackSocketMessage converts a Socket Mode message event into an
 // InboundMessage and dispatches it through the standard agent pipeline.
@@ -15,6 +55,13 @@ func (s *Service) handleSlackSocketMessage(agentID, botToken string, msg *slackP
 		"event_type": msg.EventType,
 		"source":     "socket_mode",
 	})
+
+	// Deduplicate: Slack sends both "message" and "app_mention" events for
+	// the same @mention message. Only process the first one we see.
+	if isDuplicateSlackEvent(agentID, msg.ChannelID, msg.Timestamp) {
+		l.Debug("skipping duplicate slack event")
+		return
+	}
 
 	// Resolve user display name
 	senderName := msg.UserID

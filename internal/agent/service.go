@@ -476,7 +476,17 @@ func (s *Service) heartbeatLoop() {
 
 	for {
 		s.renewLeases()
+		s.reconnectStaleChannels()
 		time.Sleep(heartbeatInterval)
+	}
+}
+
+// reconnectStaleChannels checks for Socket Mode connections that have
+// silently died and re-establishes them. This prevents agents from going
+// deaf when the WebSocket drops without a clean shutdown.
+func (s *Service) reconnectStaleChannels() {
+	if n := s.slackSockets.ReconnectStale(); n > 0 {
+		log.WithField("count", n).Info("reconnected stale slack socket mode connections")
 	}
 }
 

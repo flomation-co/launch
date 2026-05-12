@@ -6,6 +6,7 @@ import (
 	stdlog "log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -23,12 +24,15 @@ type InteractionHandler func(payload *InteractionPayload)
 // SocketClient manages a Socket Mode WebSocket connection for a single agent.
 type SocketClient struct {
 	agentID      string
+	appToken     string
+	botToken     string
 	api          *slack.Client
 	sm           *socketmode.Client
 	cancel       context.CancelFunc
 	onMessage    MessageHandler
 	onInteract   InteractionHandler
 	presenceOnce sync.Once
+	alive        atomic.Bool // true while RunContext is actively connected
 }
 
 // SocketManager tracks active Socket Mode connections across agents.
@@ -51,6 +55,11 @@ func (m *SocketManager) Connect(agentID, appToken, botToken string, onMessage Me
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	return m.connectLocked(agentID, appToken, botToken, onMessage, onInteract)
+}
+
+// connectLocked performs the actual connection. Caller must hold m.mu.
+func (m *SocketManager) connectLocked(agentID, appToken, botToken string, onMessage MessageHandler, onInteract InteractionHandler) error {
 	// Disconnect existing connection if re-registering
 	if existing, ok := m.clients[agentID]; ok {
 		existing.cancel()
@@ -69,12 +78,15 @@ func (m *SocketManager) Connect(agentID, appToken, botToken string, onMessage Me
 
 	client := &SocketClient{
 		agentID:    agentID,
+		appToken:   appToken,
+		botToken:   botToken,
 		api:        api,
 		sm:         sm,
 		cancel:     cancel,
 		onMessage:  onMessage,
 		onInteract: onInteract,
 	}
+	client.alive.Store(true)
 
 	m.clients[agentID] = client
 
@@ -83,7 +95,10 @@ func (m *SocketManager) Connect(agentID, appToken, botToken string, onMessage Me
 
 	// Start Socket Mode connection in background
 	go func() {
-		if err := sm.RunContext(ctx); err != nil && ctx.Err() == nil {
+		err := sm.RunContext(ctx)
+		client.alive.Store(false)
+
+		if err != nil && ctx.Err() == nil {
 			log.WithFields(log.Fields{
 				"agent_id": agentID,
 				"error":    err,
@@ -129,12 +144,49 @@ func (m *SocketManager) DisconnectAll() {
 	}
 }
 
-// IsConnected returns whether an agent has an active Socket Mode connection.
+// IsConnected returns whether an agent has an active, live Socket Mode connection.
 func (m *SocketManager) IsConnected(agentID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	_, ok := m.clients[agentID]
-	return ok
+	client, ok := m.clients[agentID]
+	if !ok {
+		return false
+	}
+	return client.alive.Load()
+}
+
+// ReconnectStale finds Socket Mode clients whose underlying WebSocket has
+// died and re-establishes them. Returns the number of reconnections made.
+// Intended to be called periodically from the heartbeat loop.
+func (m *SocketManager) ReconnectStale() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	reconnected := 0
+	for agentID, client := range m.clients {
+		if client.alive.Load() {
+			continue
+		}
+
+		log.WithField("agent_id", agentID).Warn("slack socket mode: detected dead connection, reconnecting")
+
+		// Cancel the old context to clean up goroutines
+		client.cancel()
+
+		// Re-establish with the same tokens and handlers
+		if err := m.connectLocked(agentID, client.appToken, client.botToken, client.onMessage, client.onInteract); err != nil {
+			log.WithFields(log.Fields{
+				"agent_id": agentID,
+				"error":    err,
+			}).Error("slack socket mode: reconnection failed")
+			delete(m.clients, agentID)
+			continue
+		}
+
+		reconnected++
+	}
+
+	return reconnected
 }
 
 // handleEvents processes incoming Socket Mode events and dispatches them
@@ -163,6 +215,7 @@ func (c *SocketClient) processEvent(ctx context.Context, evt socketmode.Event) {
 		log.WithField("agent_id", c.agentID).Debug("slack socket mode connecting...")
 	case socketmode.EventTypeConnected:
 		log.WithField("agent_id", c.agentID).Info("slack socket mode connected")
+		c.alive.Store(true)
 		c.presenceOnce.Do(func() { go c.presenceLoop(ctx) })
 	case socketmode.EventTypeConnectionError:
 		log.WithField("agent_id", c.agentID).Warn("slack socket mode connection error")
