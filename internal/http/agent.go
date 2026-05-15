@@ -10,6 +10,7 @@ import (
 
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/agent"
+	appmetrics "flomation.app/automate/launch/internal/metrics"
 	slackpkg "flomation.app/automate/launch/internal/slack"
 	"flomation.app/automate/launch/internal/telegram"
 	"github.com/gin-gonic/gin"
@@ -191,6 +192,7 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 	}
 
 	// Dispatch asynchronously — Telegram expects a quick 200 response
+	appmetrics.InboundMessagesTotal.WithLabelValues("telegram").Inc()
 	go func() {
 		if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
 			log.WithFields(log.Fields{
@@ -274,6 +276,7 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 	}
 
 	// Dispatch asynchronously — Slack expects a quick 200
+	appmetrics.InboundMessagesTotal.WithLabelValues("slack").Inc()
 	go func() {
 		if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
 			log.WithFields(log.Fields{
