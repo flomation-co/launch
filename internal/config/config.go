@@ -51,6 +51,12 @@ type EmbeddingConfig struct {
 	SecretKey   string `json:"secret_access_key,omitempty"`
 }
 
+// MetricsConfig controls the Prometheus /metrics endpoint.
+type MetricsConfig struct {
+	Enabled    bool     `json:"enabled"`
+	AllowedIPs []string `json:"allowed_ips"`
+}
+
 type Config struct {
 	Database         DatabaseConfig   `json:"database"`
 	HttpListenConfig HttpListenConfig `json:"http"`
@@ -60,6 +66,7 @@ type Config struct {
 	Embedding        *EmbeddingConfig `json:"embedding"`
 	PublicURL        string           `json:"public_url"` // e.g. "https://launch.flomation.app"
 	TLS              *mtls.TLSConfig  `json:"tls,omitempty"`
+	Metrics          MetricsConfig    `json:"metrics"`
 }
 
 // InternalAPIURL returns the internal mTLS URL if configured,

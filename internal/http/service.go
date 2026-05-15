@@ -27,10 +27,12 @@ import (
 	"flomation.app/automate/launch/internal/trigger"
 
 	"flomation.app/automate/launch/internal/config"
+	appmetrics "flomation.app/automate/launch/internal/metrics"
 	"flomation.app/automate/launch/internal/version"
 	"github.com/flomation-co/sentinel-client"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -87,6 +89,10 @@ func corsMiddleware(c *gin.Context) {
 }
 
 func (s *Service) configure() error {
+	if s.config.Metrics.Enabled {
+		s.engine.Use(appmetrics.RequestMetricsMiddleware())
+		s.engine.GET("metrics", appmetrics.IPRestrictionMiddleware(s.config.Metrics.AllowedIPs), gin.WrapH(promhttp.Handler()))
+	}
 	s.engine.Use(corsMiddleware)
 
 	s.engine.GET("version", func(c *gin.Context) {

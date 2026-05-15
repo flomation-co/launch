@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	appmetrics "flomation.app/automate/launch/internal/metrics"
 	log "github.com/sirupsen/logrus"
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -107,6 +108,7 @@ func (m *SocketManager) connectLocked(agentID, appToken, botToken string, onMess
 	}()
 
 	log.WithField("agent_id", agentID).Info("slack socket mode connected")
+	appmetrics.SocketConnectionsActive.Inc()
 	return nil
 }
 
@@ -130,6 +132,7 @@ func (m *SocketManager) Disconnect(agentID string) {
 
 	client.cancel()
 	delete(m.clients, agentID)
+	appmetrics.SocketConnectionsActive.Dec()
 	log.WithField("agent_id", agentID).Info("slack socket mode disconnected")
 }
 

@@ -19,6 +19,7 @@ import (
 
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/config"
+	appmetrics "flomation.app/automate/launch/internal/metrics"
 	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
 
@@ -107,6 +108,7 @@ func (s *Service) RegisterAgent(reg launch.AgentRegistration) error {
 
 	s.startManaging(&reg)
 	s.activateChannels(&reg)
+	appmetrics.AgentsManaged.Inc()
 
 	log.WithFields(log.Fields{
 		"agent_id":    reg.AgentID,
@@ -120,6 +122,7 @@ func (s *Service) RegisterAgent(reg launch.AgentRegistration) error {
 func (s *Service) DeregisterAgent(agentID string) error {
 	s.deactivateChannels(agentID)
 	s.stopManaging(agentID)
+	appmetrics.AgentsManaged.Dec()
 
 	if err := s.db.DisableAgentRegistration(agentID); err != nil {
 		return fmt.Errorf("failed to disable agent registration: %w", err)

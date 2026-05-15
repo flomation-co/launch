@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	appmetrics "flomation.app/automate/launch/internal/metrics"
 	slackPkg "flomation.app/automate/launch/internal/slack"
 	log "github.com/sirupsen/logrus"
 )
@@ -94,6 +95,7 @@ func (s *Service) handleSlackSocketMessage(agentID, botToken string, msg *slackP
 		Metadata:    metadata,
 	}
 
+	appmetrics.InboundMessagesTotal.WithLabelValues("slack").Inc()
 	l.Info("dispatching socket mode message")
 	go func() { _ = s.HandleInboundMessage(agentID, inbound) }()
 }
