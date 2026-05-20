@@ -5,6 +5,7 @@ include:
 
 stages:
   - prepare
+  - security-scan
   - sync
   - test
   - build
@@ -38,6 +39,18 @@ lint:
   stage: prepare
   script:
     - make lint
+
+# Runs security-scan.sh --install on the pre-baked flomationco/security-scanner
+# image. Advisory for now (allow_failure inherited from the template), so
+# findings surface without blocking the pipeline. needs: [] lets it start
+# immediately since it only scans the source tree.
+# NOTE: the scanner image is private — a group-level DOCKER_AUTH_CONFIG CI/CD
+# variable is required so GitLab can authenticate the image pull.
+security-scan:
+  extends: .security-scan-template
+  variables:
+    CI_TEMPLATES_REF: "main"
+  needs: []
 
 compile:
   stage: build
