@@ -406,8 +406,9 @@ func (s *Service) fetchTokens(tr *launch.Trigger, accountFilter string) ([]token
 	return all, nil
 }
 
-// fetchAndRefreshTokens fetches raw refresh tokens from the API and
-// exchanges each for an access token using Launch's Google credentials.
+// fetchAndRefreshTokens fetches tokens from the API. If the API returns a
+// cached access_token (pre-refreshed by the API's poller), it is used
+// directly. Otherwise, falls back to exchanging the refresh_token locally.
 func (s *Service) fetchAndRefreshTokens(endpoint string) []tokenInfo {
 	resp, err := s.apiClient.Get(endpoint)
 	if err != nil {
@@ -423,19 +424,27 @@ func (s *Service) fetchAndRefreshTokens(endpoint string) []tokenInfo {
 		Email        string `json:"email"`
 		Label        string `json:"label"`
 		RefreshToken string `json:"refresh_token"`
+		AccessToken  string `json:"access_token,omitempty"`
 	}
 	var accounts []rawAccount
 	if err := json.NewDecoder(resp.Body).Decode(&accounts); err != nil {
 		return nil
 	}
 
-	if s.config.Google == nil {
-		return nil
-	}
-
 	var tokens []tokenInfo
 	for _, acct := range accounts {
-		if acct.RefreshToken == "" {
+		// Use cached access token from API if available
+		if acct.AccessToken != "" {
+			tokens = append(tokens, tokenInfo{
+				Email:       acct.Email,
+				Label:       acct.Label,
+				AccessToken: acct.AccessToken,
+			})
+			continue
+		}
+
+		// Fallback: exchange refresh token locally
+		if acct.RefreshToken == "" || s.config.Google == nil {
 			continue
 		}
 		accessToken, err := refreshGoogleToken(

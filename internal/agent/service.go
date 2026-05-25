@@ -47,8 +47,9 @@ type Service struct {
 	trigger      *trigger.Service
 	telegram     *telegramPkg.Service
 	slackSockets *slackPkg.SocketManager
-	embedding    embeddingProvider // nil when embeddings are disabled
-	apiClient    *http.Client      // mTLS-capable client for API calls
+	facebook     FacebookChannelManager // nil until SetFacebookManager is called
+	embedding    embeddingProvider      // nil when embeddings are disabled
+	apiClient    *http.Client           // mTLS-capable client for API calls
 	instanceID   string
 
 	mu            sync.RWMutex
@@ -62,11 +63,24 @@ type embeddingProvider interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
+// FacebookChannelManager provides agent channel registration/deregistration
+// for Facebook Messenger. Implemented by the HTTP service's PageIndex.
+type FacebookChannelManager interface {
+	AddAgent(pageID, agentID string)
+	RemoveAgent(agentID string)
+}
+
 // managedAgent tracks runtime state for an agent this instance is managing.
 type managedAgent struct {
 	reg     *launch.AgentRegistration
 	stopCh  chan struct{}
 	stopped bool
+}
+
+// SetFacebookManager injects the Facebook channel manager after construction.
+// Called by the HTTP service once the PageIndex is available.
+func (s *Service) SetFacebookManager(mgr FacebookChannelManager) {
+	s.facebook = mgr
 }
 
 // NewService creates and starts the agent orchestration service.
@@ -382,6 +396,14 @@ func deriveExternalID(msg InboundMessage) (externalID, displayName string) {
 			externalID = extractBareEmail(v)
 			displayName = v
 		}
+	case "facebook_messenger":
+		// Messenger PSID is a stable per-page user identifier.
+		if v, ok := msg.Metadata["user_id"].(string); ok && v != "" {
+			externalID = v
+		}
+		if v, ok := msg.Metadata["user_name"].(string); ok && v != "" {
+			displayName = v
+		}
 	}
 	if externalID == "" {
 		// Fall back to sender string — not ideal (may rename) but
@@ -423,6 +445,11 @@ func deriveChannelScope(msg InboundMessage) (channelID string, threadID *string)
 		if v, ok := msg.Metadata["thread_id"].(string); ok && v != "" {
 			t := v
 			threadID = &t
+		}
+	case "facebook_messenger":
+		// Messenger conversations are 1:1 per PSID — use PSID as scope.
+		if v, ok := msg.Metadata["user_id"].(string); ok {
+			channelID = v
 		}
 	}
 	return channelID, threadID
@@ -1058,6 +1085,24 @@ func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 					}).Error("failed to start slack socket mode")
 				}
 			}
+		case "facebook_messenger":
+			var cfg struct {
+				PageID          string `json:"page_id"`
+				PageAccessToken string `json:"page_access_token"`
+			}
+			if err := json.Unmarshal(ch.Config, &cfg); err != nil || cfg.PageID == "" {
+				log.WithFields(log.Fields{
+					"agent_id": reg.AgentID,
+				}).Warn("facebook_messenger channel missing page_id")
+				continue
+			}
+			if s.facebook != nil {
+				s.facebook.AddAgent(cfg.PageID, reg.AgentID)
+				log.WithFields(log.Fields{
+					"agent_id": reg.AgentID,
+					"page_id":  cfg.PageID,
+				}).Info("Facebook Messenger agent channel activated")
+			}
 		}
 	}
 }
@@ -1071,6 +1116,9 @@ func (s *Service) deactivateChannels(agentID string) {
 		}).Warn("failed to deregister telegram webhook")
 	}
 	s.slackSockets.Disconnect(agentID)
+	if s.facebook != nil {
+		s.facebook.RemoveAgent(agentID)
+	}
 }
 
 // InboundMessage represents a message received from an external channel.

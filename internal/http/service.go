@@ -19,6 +19,7 @@ import (
 	"flomation.app/automate/launch"
 
 	"flomation.app/automate/launch/internal/agent"
+	"flomation.app/automate/launch/internal/facebook"
 	githubwh "flomation.app/automate/launch/internal/github"
 	gitlabwh "flomation.app/automate/launch/internal/gitlab"
 	"flomation.app/automate/launch/internal/google"
@@ -45,6 +46,7 @@ type Service struct {
 	agent          *agent.Service
 	google         *google.Service
 	db             *persistence.Service
+	facebookIndex  *facebook.PageIndex
 }
 
 func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, db *persistence.Service) (*Service, error) {
@@ -56,13 +58,14 @@ func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent
 	}
 
 	s := Service{
-		config:    config,
-		engine:    gin.New(),
-		apiClient: apiClient,
-		google:    googleSvc,
-		db:        db,
-		trigger:   trigger,
-		agent:     agentSvc,
+		config:        config,
+		engine:        gin.New(),
+		apiClient:     apiClient,
+		google:        googleSvc,
+		db:            db,
+		trigger:       trigger,
+		agent:         agentSvc,
+		facebookIndex: facebook.NewPageIndex(),
 	}
 
 	templ := template.Must(template.ParseFS(assets.Templates, "files/form.html"))
@@ -71,6 +74,9 @@ func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent
 	if err := s.configure(); err != nil {
 		return nil, err
 	}
+
+	// Rebuild Facebook page index from existing triggers in the database
+	s.rebuildFacebookIndex()
 
 	return &s, nil
 }
@@ -168,6 +174,10 @@ func (s *Service) configure() error {
 	s.engine.POST("/webhook/telegram/:agent_id", s.handleTelegramWebhook)
 	s.engine.POST("/webhook/slack/:agent_id", s.handleSlackWebhook)
 
+	// Facebook shared webhook (all page events routed by page ID)
+	s.engine.GET("/webhook/facebook", s.handleFacebookVerification)
+	s.engine.POST("/webhook/facebook", s.handleFacebookWebhook)
+
 	// Slack interactivity — Block Kit button clicks, select menus, etc.
 	// Configure in Slack App Settings → Interactivity & Shortcuts → Request URL.
 	s.engine.POST("/slack/:agent_id/interact", s.handleSlackInteraction)
@@ -178,6 +188,12 @@ func (s *Service) configure() error {
 	s.engine.GET("/auth/google/:agent_user_id", s.handleGoogleAuthInitiate)
 
 	return nil
+}
+
+// FacebookPageIndex returns the page index so callers (e.g. agent service)
+// can register/unregister agent channels.
+func (s *Service) FacebookPageIndex() *facebook.PageIndex {
+	return s.facebookIndex
 }
 
 func (s *Service) Listen() error {

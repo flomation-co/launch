@@ -1,9 +1,12 @@
 package http
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 
 	"flomation.app/automate/launch"
+	"flomation.app/automate/launch/internal/facebook"
 
 	log "github.com/sirupsen/logrus"
 
@@ -43,6 +46,9 @@ func (s *Service) createTrigger(c *gin.Context) {
 		return
 	}
 
+	// Update Facebook page index for Facebook triggers
+	s.updateFacebookIndex(&tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -68,6 +74,9 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 		return
 	}
 
+	// Remove from Facebook page index before deleting
+	s.facebookIndex.RemoveTrigger(t.ID)
+
 	if err := s.trigger.RemoveTrigger(*t); err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
@@ -77,4 +86,151 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	}
 
 	c.Status(http.StatusOK)
+}
+
+// updateFacebookIndex adds a Facebook trigger to the page index and
+// auto-subscribes the page to the app's webhook events.
+func (s *Service) updateFacebookIndex(tr *launch.Trigger) {
+	if tr.Type != launch.TriggerTypeFacebookMessenger && tr.Type != launch.TriggerTypeFacebookFeed {
+		return
+	}
+
+	var data map[string]string
+	_ = json.Unmarshal(tr.Data, &data)
+	pageID := data["page_id"]
+	if pageID == "" {
+		return
+	}
+
+	switch tr.Type {
+	case launch.TriggerTypeFacebookMessenger:
+		s.facebookIndex.AddMessengerTrigger(pageID, tr.ID)
+	case launch.TriggerTypeFacebookFeed:
+		s.facebookIndex.AddFeedTrigger(pageID, tr.ID)
+	}
+
+	log.WithFields(log.Fields{
+		"trigger_id": tr.ID,
+		"page_id":    pageID,
+		"type":       tr.Type,
+	}).Info("Facebook trigger registered in page index")
+
+	// Resolve user token → page token and subscribe the page
+	go s.subscribeFacebookPage(tr, pageID)
+}
+
+// subscribeFacebookPage resolves the user access token from the trigger config,
+// exchanges it for a page token, and subscribes the page to webhook events.
+func (s *Service) subscribeFacebookPage(tr *launch.Trigger, pageID string) {
+	userToken, appSecretVal := s.resolveFacebookCredentials(tr)
+	if userToken == "" {
+		return
+	}
+
+	// Exchange user token for page token
+	pageToken, err := facebook.GetPageToken(userToken, appSecretVal, pageID)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"trigger_id": tr.ID,
+			"page_id":    pageID,
+			"error":      err,
+		}).Warn("Facebook: failed to get page token from user token")
+		return
+	}
+
+	// Subscribe the page to webhook events
+	var fields []string
+	switch tr.Type {
+	case launch.TriggerTypeFacebookMessenger:
+		fields = []string{"messages", "messaging_postbacks"}
+	case launch.TriggerTypeFacebookFeed:
+		fields = []string{"feed"}
+	}
+
+	if err := facebook.SubscribePageToApp(pageToken, appSecretVal, pageID, fields); err != nil {
+		log.WithFields(log.Fields{
+			"trigger_id": tr.ID,
+			"page_id":    pageID,
+			"error":      err,
+		}).Warn("Facebook: failed to subscribe page to app")
+		return
+	}
+
+	log.WithFields(log.Fields{
+		"trigger_id": tr.ID,
+		"page_id":    pageID,
+		"fields":     fields,
+	}).Info("Facebook page subscribed to app webhook events")
+}
+
+// rebuildFacebookIndex loads all facebook-messenger and facebook-feed triggers
+// from the database and rebuilds the in-memory page index. Called on startup.
+func (s *Service) rebuildFacebookIndex() {
+	for _, triggerType := range []string{launch.TriggerTypeFacebookMessenger, launch.TriggerTypeFacebookFeed} {
+		triggers, err := s.db.GetTriggersByType(triggerType)
+		if err != nil {
+			log.WithError(err).Warn("unable to load Facebook triggers for index rebuild")
+			continue
+		}
+		for _, tr := range triggers {
+			if tr.DisabledAt != nil {
+				continue
+			}
+			var data map[string]string
+			_ = json.Unmarshal(tr.Data, &data)
+			pageID := data["page_id"]
+			if pageID == "" {
+				continue
+			}
+			switch triggerType {
+			case launch.TriggerTypeFacebookMessenger:
+				s.facebookIndex.AddMessengerTrigger(pageID, tr.ID)
+			case launch.TriggerTypeFacebookFeed:
+				s.facebookIndex.AddFeedTrigger(pageID, tr.ID)
+			}
+			log.WithFields(log.Fields{
+				"trigger_id": tr.ID,
+				"page_id":    pageID,
+				"type":       triggerType,
+			}).Info("Facebook trigger loaded into page index")
+		}
+	}
+}
+
+// resolveFacebookCredentials resolves the user access token and app secret
+// from a Facebook trigger's config, handling ${...} variable references.
+func (s *Service) resolveFacebookCredentials(tr *launch.Trigger) (userToken, appSecret string) {
+	var data map[string]string
+	_ = json.Unmarshal(tr.Data, &data)
+
+	userToken = data["access_token"]
+	appSecret = data["app_secret"]
+
+	// Collect all variables that need resolving
+	var toResolve []string
+	if strings.Contains(userToken, "${") {
+		toResolve = append(toResolve, userToken)
+	}
+	if strings.Contains(appSecret, "${") {
+		toResolve = append(toResolve, appSecret)
+	}
+
+	if len(toResolve) > 0 {
+		resolved, err := s.trigger.ResolveVariables(tr.ID, toResolve)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"trigger_id": tr.ID,
+				"error":      err,
+			}).Warn("Facebook: failed to resolve credentials")
+			return "", ""
+		}
+		if v, ok := resolved[userToken]; ok && v != "" {
+			userToken = v
+		}
+		if v, ok := resolved[appSecret]; ok && v != "" {
+			appSecret = v
+		}
+	}
+
+	return userToken, appSecret
 }
