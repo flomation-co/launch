@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"flomation.app/automate/launch/internal/facebook"
 	"flomation.app/automate/launch/internal/telegram"
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
@@ -48,8 +49,17 @@ func (s *Service) handleChannelAction(c *gin.Context) {
 		}
 	case "slack":
 		// Slack doesn't support bot typing indicators via the API.
-		// Future: add other Slack-specific actions here.
 		c.JSON(http.StatusOK, gin.H{"status": "unsupported", "reason": "slack does not support bot typing indicators"})
+		return
+	case "facebook_messenger":
+		// Messenger supports typing indicators via sender actions
+		if body.Action == "typing" && body.ChannelID != "" {
+			pageToken := s.getFacebookPageTokenForAgent(agentID)
+			if pageToken != "" {
+				_ = facebook.SendAction(pageToken, "", body.ChannelID, "typing_on")
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
 	default:
 		c.JSON(http.StatusOK, gin.H{"status": "unsupported", "reason": "channel type does not support this action"})
@@ -88,6 +98,30 @@ func (s *Service) handleTelegramAction(agentID string, body channelActionRequest
 	}
 
 	return telegram.SendChatAction(botToken, chatIDInt, body.Action)
+}
+
+// getFacebookPageTokenForAgent looks up the page access token from
+// the agent's Facebook Messenger channel config.
+func (s *Service) getFacebookPageTokenForAgent(agentID string) string {
+	reg, err := s.db.GetAgentRegistration(agentID)
+	if err != nil || reg == nil {
+		return ""
+	}
+	var channelList []struct {
+		Type   string `json:"type"`
+		Config struct {
+			PageAccessToken string `json:"page_access_token"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(reg.Channels, &channelList); err != nil {
+		return ""
+	}
+	for _, ch := range channelList {
+		if ch.Type == "facebook_messenger" && ch.Config.PageAccessToken != "" {
+			return ch.Config.PageAccessToken
+		}
+	}
+	return ""
 }
 
 // extractTelegramBotToken finds the Telegram bot token from an agent's

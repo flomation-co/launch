@@ -57,12 +57,19 @@ type MetricsConfig struct {
 	AllowedIPs []string `json:"allowed_ips"`
 }
 
+// FacebookConfig holds credentials for Facebook webhook verification.
+type FacebookConfig struct {
+	AppSecret   string `json:"app_secret"`   // X-Hub-Signature-256 verification
+	VerifyToken string `json:"verify_token"` // hub.challenge verification
+}
+
 type Config struct {
 	Database         DatabaseConfig   `json:"database"`
 	HttpListenConfig HttpListenConfig `json:"http"`
 	Automate         ServiceConfig    `json:"automate"`
 	Security         SecurityConfig   `json:"security"`
 	Google           *GoogleConfig    `json:"google"`
+	Facebook         *FacebookConfig  `json:"facebook"`
 	Embedding        *EmbeddingConfig `json:"embedding"`
 	PublicURL        string           `json:"public_url"` // e.g. "https://launch.flomation.app"
 	TLS              *mtls.TLSConfig  `json:"tls,omitempty"`

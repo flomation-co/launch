@@ -446,6 +446,8 @@ func channelDirective(channelType string) string {
 			"Never include text blocks in a tool_use response on the email channel."
 	case "webhook":
 		return "Responding via webhook — the caller may be a machine. Respond concisely; use JSON only if the caller explicitly requests structured data."
+	case "facebook_messenger":
+		return "Responding via Facebook Messenger — use plain text. Keep replies concise and conversational. Messenger does not support markdown formatting. Maximum message length is 2000 characters."
 	default:
 		return ""
 	}

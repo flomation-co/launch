@@ -1,0 +1,2 @@
+-- PostgreSQL does not support removing ENUM values.
+-- These types will remain in the enum but become unused.

@@ -6,18 +6,21 @@ import (
 )
 
 const (
-	TriggerTypeManual        = "manual"
-	TriggerTypeScheduled     = "schedule"
-	TriggerTypeQR            = "qr"
-	TriggerTypeImage         = "image"
-	TriggerTypeEmail         = "email"
-	TriggerTypeTelegram      = "telegram"
-	TriggerTypeForm          = "form"
-	TriggerTypeWebhook       = "webhook"
-	TriggerTypeGitPoll       = "git-poll"
-	TriggerTypeS3            = "s3"
-	TriggerTypeGitLabWebhook = "gitlab-webhook"
-	TriggerTypeGitHubWebhook = "github-webhook"
+	TriggerTypeManual            = "manual"
+	TriggerTypeScheduled         = "schedule"
+	TriggerTypeQR                = "qr"
+	TriggerTypeImage             = "image"
+	TriggerTypeEmail             = "email"
+	TriggerTypeTelegram          = "telegram"
+	TriggerTypeForm              = "form"
+	TriggerTypeWebhook           = "webhook"
+	TriggerTypeGitPoll           = "git-poll"
+	TriggerTypeS3                = "s3"
+	TriggerTypeGitLabWebhook     = "gitlab-webhook"
+	TriggerTypeGitHubWebhook     = "github-webhook"
+	TriggerTypeFacebookMessenger = "facebook-messenger"
+	TriggerTypeFacebookFeed      = "facebook-feed"
+	TriggerTypeLinkedInPoll      = "linkedin-poll"
 )
 
 type Trigger struct {

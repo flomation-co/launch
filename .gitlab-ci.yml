@@ -15,6 +15,7 @@ stages:
   - publish
   - docker
   - Development
+  - Sandbox
   - test-suite
   - "Deploy to LIVE"
 
@@ -412,6 +413,18 @@ Deploy to DEV:
     - aws s3 cp s3://${DEPLOY_BUCKET}/deploy-application-aws.sh .
     - chmod +x deploy-application-aws.sh
     - ENVIRONMENT=${ENVIRONMENT} APPLICATION=${NAME} ./deploy-application-aws.sh
+
+Deploy to Sandbox:
+  stage: Sandbox
+  variables:
+    OVH_HOST: "79.137.102.79"
+    PACKAGE: "flomation-${NAME}"
+    SERVICE: "flomation-${NAME}"
+  only:
+    - main
+  script:
+    - mkdir -p ~/.ssh && echo "${OVH_DEPLOY_KEY}" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+    - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl restart ${SERVICE}"
 
 build-docker-harbor:
   extends: .build-docker-dhi-harbor-buildx-template

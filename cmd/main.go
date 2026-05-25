@@ -8,6 +8,7 @@ import (
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
 	"flomation.app/automate/launch/internal/google"
 	"flomation.app/automate/launch/internal/http"
+	linkedinpoll "flomation.app/automate/launch/internal/linkedin"
 	"flomation.app/automate/launch/internal/persistence"
 	s3trigger "flomation.app/automate/launch/internal/s3"
 	"flomation.app/automate/launch/internal/schedule"
@@ -91,6 +92,9 @@ func main() {
 	_ = emailSvc
 	log.Info("email trigger service started")
 
+	_ = linkedinpoll.NewService(cfg, db, t)
+	log.Info("LinkedIn poll service started")
+
 	var googleSvc *google.Service
 	if cfg.Google != nil && cfg.Google.ClientID != "" {
 		googleSvc = google.NewService(cfg)
@@ -104,6 +108,10 @@ func main() {
 		}).Error("unable to create http service")
 		return
 	}
+
+	// Wire the Facebook page index into the agent service so agent channels
+	// can register/unregister with the webhook demuxer.
+	agentSvc.SetFacebookManager(r.FacebookPageIndex())
 
 	log.Fatal(r.Listen())
 }
