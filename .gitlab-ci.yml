@@ -17,7 +17,7 @@ stages:
   - Development
   - Sandbox
   - test-suite
-  - "Deploy to LIVE"
+  - Production
 
 variables:
   VERSION: 1.0.${CI_PIPELINE_IID}
@@ -422,6 +422,19 @@ Deploy to Sandbox:
     SERVICE: "flomation-${NAME}"
   only:
     - main
+  script:
+    - mkdir -p ~/.ssh && echo "${OVH_DEPLOY_KEY}" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+    - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl restart ${SERVICE}"
+
+Deploy to Live:
+  stage: Production
+  variables:
+    OVH_HOST: "${OVH_LIVE_HOST}"
+    PACKAGE: "flomation-${NAME}"
+    SERVICE: "flomation-${NAME}"
+  only:
+    - main
+  when: manual
   script:
     - mkdir -p ~/.ssh && echo "${OVH_DEPLOY_KEY}" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
     - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl restart ${SERVICE}"
