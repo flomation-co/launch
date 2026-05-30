@@ -1,0 +1,2 @@
+-- PostgreSQL enums cannot have values removed; this is a no-op.
+-- To fully reverse, recreate the type without these values.
