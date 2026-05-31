@@ -439,14 +439,6 @@ Deploy to Live:
     - mkdir -p ~/.ssh && echo "${OVH_LIVE_DEPLOY_KEY}" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
     - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl restart ${SERVICE}"
 
-build-docker-harbor:
-  extends: .build-docker-dhi-harbor-buildx-template
-  variables:
-    BINARY_FILE_PATTERN: "dist/${PACKAGE_NAME}-amd64-linux-*"
-  needs:
-    - inject-metadata
-    - compile
-
 build-docker:
   extends: .build-docker-dhi-buildx-template
   only:
