@@ -17,6 +17,7 @@ type VoiceCall struct {
 	CallerNumber string
 	TwilioNumber string
 	StartedAt    time.Time
+	Outbound     bool // true if pre-registered by make_call action
 
 	// TwilioConn is the WebSocket connection from Twilio (media stream).
 	TwilioConn *websocket.Conn

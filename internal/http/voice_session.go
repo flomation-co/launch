@@ -130,10 +130,11 @@ func (s *Service) handleTwilioVoiceWS(c *gin.Context) {
 
 	isOutbound := false
 
-	// Check if this session was pre-registered (outbound call)
+	// Check if this session was pre-registered (outbound call) or created
+	// by the inbound voice webhook.
 	vc := s.voiceCalls.Get(sessionID)
-	if vc != nil {
-		// Session already exists -- outbound call pre-registered by make_call action
+	if vc != nil && vc.Outbound {
+		// Session was pre-registered by make_call action
 		isOutbound = true
 		vc.StreamSID = streamSID
 		vc.CallSID = callSID
@@ -147,8 +148,10 @@ func (s *Service) handleTwilioVoiceWS(c *gin.Context) {
 			"outbound":   true,
 		}).Info("Twilio media stream connected (outbound)")
 	} else {
-		// Inbound call -- create new session
-		vc = s.voiceCalls.Create(sessionID, agentID, from, to)
+		// Inbound call -- session may already exist (created by webhook) or be new
+		if vc == nil {
+			vc = s.voiceCalls.Create(sessionID, agentID, from, to)
+		}
 		vc.StreamSID = streamSID
 		vc.CallSID = callSID
 		vc.SetTwilioConn(conn)
@@ -307,7 +310,8 @@ func (s *Service) handleVoiceSessionRegister(c *gin.Context) {
 		return
 	}
 
-	s.voiceCalls.Create(sessionID, body.AgentID, body.CallerNumber, body.TwilioNumber)
+	vc := s.voiceCalls.Create(sessionID, body.AgentID, body.CallerNumber, body.TwilioNumber)
+	vc.Outbound = true
 
 	// Build the public WebSocket URL for the outbound Media Stream
 	wsScheme := "wss"
