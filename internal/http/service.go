@@ -24,6 +24,7 @@ import (
 	gitlabwh "flomation.app/automate/launch/internal/gitlab"
 	"flomation.app/automate/launch/internal/google"
 	"flomation.app/automate/launch/internal/mtls"
+	"flomation.app/automate/launch/internal/twilio"
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
 
@@ -47,6 +48,7 @@ type Service struct {
 	google         *google.Service
 	db             *persistence.Service
 	facebookIndex  *facebook.PageIndex
+	voiceCalls     *twilio.VoiceCallManager
 }
 
 func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, db *persistence.Service) (*Service, error) {
@@ -66,6 +68,7 @@ func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent
 		trigger:       trigger,
 		agent:         agentSvc,
 		facebookIndex: facebook.NewPageIndex(),
+		voiceCalls:    twilio.NewVoiceCallManager(),
 	}
 
 	templ := template.Must(template.ParseFS(assets.Templates, "files/form.html"))
@@ -168,11 +171,20 @@ func (s *Service) configure() error {
 	internalRouter.GET("/internal/google/tokens/trigger/:id", s.handleGoogleTokensTrigger)
 	internalRouter.GET("/internal/google/tokens/:agent_user_id", s.handleGoogleTokens)
 
+	// Voice session WebSocket bridge (internal, called by API proxy → executor)
+	internalRouter.GET("/internal/voice-session/:session_id", s.handleVoiceSessionInternal)
+	internalRouter.POST("/internal/voice-session/:session_id/register", s.handleVoiceSessionRegister)
+
 	// Agent inbound webhooks (edge-facing, no auth — validated by agent ID)
 	// These stay on the public engine — external services hit them directly.
 	s.engine.POST("/webhook/agent/:agent_id", s.handleAgentWebhook)
 	s.engine.POST("/webhook/telegram/:agent_id", s.handleTelegramWebhook)
 	s.engine.POST("/webhook/slack/:agent_id", s.handleSlackWebhook)
+	s.engine.POST("/webhook/twilio/sms/:agent_id", s.handleTwilioSMSWebhook)
+	s.engine.POST("/webhook/twilio/voice/:agent_id", s.handleTwilioVoiceWebhook)
+	s.engine.POST("/webhook/twilio/voice/:agent_id/status", s.handleTwilioVoiceStatus)
+	s.engine.GET("/ws/twilio/voice/:agent_id", s.handleTwilioVoiceWS)
+	s.engine.GET("/ws/twilio/voice-outbound/:session_id", s.handleTwilioVoiceOutboundWS)
 
 	// Facebook shared webhook (all page events routed by page ID)
 	s.engine.GET("/webhook/facebook", s.handleFacebookVerification)

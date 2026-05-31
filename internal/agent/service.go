@@ -25,6 +25,7 @@ import (
 
 	slackPkg "flomation.app/automate/launch/internal/slack"
 	telegramPkg "flomation.app/automate/launch/internal/telegram"
+	twilioPkg "flomation.app/automate/launch/internal/twilio"
 	"flomation.app/automate/launch/internal/trigger"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
@@ -46,6 +47,7 @@ type Service struct {
 	db           *persistence.Service
 	trigger      *trigger.Service
 	telegram     *telegramPkg.Service
+	twilio       *twilioPkg.Service
 	slackSockets *slackPkg.SocketManager
 	facebook     FacebookChannelManager // nil until SetFacebookManager is called
 	embedding    embeddingProvider      // nil when embeddings are disabled
@@ -84,7 +86,7 @@ func (s *Service) SetFacebookManager(mgr FacebookChannelManager) {
 }
 
 // NewService creates and starts the agent orchestration service.
-func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, telegramSvc *telegramPkg.Service, embed embeddingProvider) *Service {
+func NewService(config *config.Config, db *persistence.Service, trigger *trigger.Service, telegramSvc *telegramPkg.Service, twilioSvc *twilioPkg.Service, embed embeddingProvider) *Service {
 	apiClient, err := mtls.ClientOrDefault(config.TLS, apiTimeout)
 	if err != nil {
 		log.WithError(err).Fatal("agent: unable to create API client")
@@ -95,6 +97,7 @@ func NewService(config *config.Config, db *persistence.Service, trigger *trigger
 		db:            db,
 		trigger:       trigger,
 		telegram:      telegramSvc,
+		twilio:        twilioSvc,
 		slackSockets:  slackPkg.NewSocketManager(),
 		embedding:     embed,
 		apiClient:     apiClient,
@@ -404,6 +407,12 @@ func deriveExternalID(msg InboundMessage) (externalID, displayName string) {
 		if v, ok := msg.Metadata["user_name"].(string); ok && v != "" {
 			displayName = v
 		}
+	case "twilio_sms", "twilio_voice":
+		// Phone number in E.164 format as stable identifier.
+		if v, ok := msg.Metadata["user_id"].(string); ok && v != "" {
+			externalID = v
+		}
+		displayName = externalID
 	}
 	if externalID == "" {
 		// Fall back to sender string — not ideal (may rename) but
@@ -450,6 +459,20 @@ func deriveChannelScope(msg InboundMessage) (channelID string, threadID *string)
 		// Messenger conversations are 1:1 per PSID — use PSID as scope.
 		if v, ok := msg.Metadata["user_id"].(string); ok {
 			channelID = v
+		}
+	case "twilio_sms":
+		// SMS conversations scope by phone number pair (no threading).
+		if v, ok := msg.Metadata["user_id"].(string); ok {
+			channelID = v
+		}
+	case "twilio_voice":
+		// Voice conversations scope by call_sid (each call = new conversation).
+		if v, ok := msg.Metadata["user_id"].(string); ok {
+			channelID = v
+		}
+		if v, ok := msg.Metadata["call_sid"].(string); ok && v != "" {
+			t := v
+			threadID = &t
 		}
 	}
 	return channelID, threadID
@@ -1103,6 +1126,25 @@ func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 					"page_id":  cfg.PageID,
 				}).Info("Facebook Messenger agent channel activated")
 			}
+		case "twilio_sms":
+			var cfg struct {
+				AccountSID  string `json:"account_sid"`
+				AuthToken   string `json:"auth_token"`
+				PhoneNumber string `json:"phone_number"`
+			}
+			if err := json.Unmarshal(ch.Config, &cfg); err != nil || cfg.PhoneNumber == "" {
+				log.WithFields(log.Fields{
+					"agent_id": reg.AgentID,
+				}).Warn("twilio_sms channel missing phone_number")
+				continue
+			}
+			if s.twilio != nil {
+				s.twilio.RegisterAgent(reg.AgentID, cfg.PhoneNumber)
+			}
+			log.WithFields(log.Fields{
+				"agent_id": reg.AgentID,
+				"phone":    cfg.PhoneNumber,
+			}).Info("Twilio SMS agent channel activated")
 		}
 	}
 }

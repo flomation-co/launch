@@ -100,7 +100,7 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 	if cfg.RepositoryURL == "" {
 		log.WithFields(log.Fields{
 			"trigger_id": tr.ID,
-		}).Warn("git-poll trigger has no repository URL")
+		}).Debug("git-poll trigger has no repository URL — skipping")
 		return
 	}
 

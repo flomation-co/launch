@@ -456,7 +456,7 @@ func (s *Service) fetchAndRefreshTokens(endpoint string) []tokenInfo {
 			log.WithFields(log.Fields{
 				"error": err,
 				"email": acct.Email,
-			}).Warn("failed to refresh Google token for email trigger")
+			}).Debug("failed to refresh Google token for email trigger")
 			continue
 		}
 		tokens = append(tokens, tokenInfo{

@@ -13,6 +13,7 @@ import (
 	s3trigger "flomation.app/automate/launch/internal/s3"
 	"flomation.app/automate/launch/internal/schedule"
 	"flomation.app/automate/launch/internal/telegram"
+	"flomation.app/automate/launch/internal/twilio"
 	"flomation.app/automate/launch/internal/trigger"
 	"flomation.app/automate/launch/internal/version"
 	log "github.com/sirupsen/logrus"
@@ -66,6 +67,9 @@ func main() {
 	telegramSvc := telegram.NewService(cfg.PublicURL)
 	log.Info("telegram service started")
 
+	twilioSvc := twilio.NewService(cfg.PublicURL)
+	log.Info("twilio service started")
+
 	// Pollers (commitment, pending action, retention) have been migrated
 	// to the API service (Phase 2). They now run API-side with direct DB
 	// access instead of HTTP round-trips from Launch.
@@ -85,7 +89,7 @@ func main() {
 		}
 	}
 
-	agentSvc := agent.NewService(cfg, db, t, telegramSvc, embedProvider)
+	agentSvc := agent.NewService(cfg, db, t, telegramSvc, twilioSvc, embedProvider)
 	log.Info("agent service started")
 
 	emailSvc = emailtrigger.NewService(cfg, db, t, agentSvc)
