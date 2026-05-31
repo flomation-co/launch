@@ -173,6 +173,7 @@ func (s *Service) configure() error {
 
 	// Voice session WebSocket bridge (internal, called by API proxy → executor)
 	internalRouter.GET("/internal/voice-session/:session_id", s.handleVoiceSessionInternal)
+	internalRouter.POST("/internal/voice-session/:session_id/register", s.handleVoiceSessionRegister)
 
 	// Agent inbound webhooks (edge-facing, no auth — validated by agent ID)
 	// These stay on the public engine — external services hit them directly.
@@ -183,6 +184,7 @@ func (s *Service) configure() error {
 	s.engine.POST("/webhook/twilio/voice/:agent_id", s.handleTwilioVoiceWebhook)
 	s.engine.POST("/webhook/twilio/voice/:agent_id/status", s.handleTwilioVoiceStatus)
 	s.engine.GET("/ws/twilio/voice/:agent_id", s.handleTwilioVoiceWS)
+	s.engine.GET("/ws/twilio/voice-outbound/:session_id", s.handleTwilioVoiceOutboundWS)
 
 	// Facebook shared webhook (all page events routed by page ID)
 	s.engine.GET("/webhook/facebook", s.handleFacebookVerification)

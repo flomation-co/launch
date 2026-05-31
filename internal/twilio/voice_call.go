@@ -29,6 +29,10 @@ type VoiceCall struct {
 
 	// bridgeReady is closed when the executor connects and bridging can begin.
 	bridgeReady chan struct{}
+
+	// twilioReady is closed when Twilio connects. Used for outbound calls
+	// where the executor connects before Twilio (callee hasn't answered yet).
+	twilioReady chan struct{}
 }
 
 // VoiceCallManager manages active voice call sessions.
@@ -58,6 +62,7 @@ func (m *VoiceCallManager) Create(sessionID, agentID, callerNumber, twilioNumber
 		TwilioNumber: twilioNumber,
 		StartedAt:    time.Now(),
 		bridgeReady:  make(chan struct{}),
+		twilioReady:  make(chan struct{}),
 	}
 	m.sessions[sessionID] = vc
 
@@ -119,6 +124,25 @@ func (vc *VoiceCall) SetTwilioConn(conn *websocket.Conn) {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
 	vc.TwilioConn = conn
+
+	// Signal that Twilio has connected (used for outbound calls)
+	select {
+	case <-vc.twilioReady:
+		// Already closed
+	default:
+		close(vc.twilioReady)
+	}
+}
+
+// WaitForTwilio blocks until Twilio connects or the timeout expires.
+// Used for outbound calls where the executor connects before Twilio.
+func (vc *VoiceCall) WaitForTwilio(timeout time.Duration) bool {
+	select {
+	case <-vc.twilioReady:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // SetExecutorConn sets the executor-side WebSocket connection and signals

@@ -128,55 +128,70 @@ func (s *Service) handleTwilioVoiceWS(c *gin.Context) {
 		return
 	}
 
-	// Link the Twilio WebSocket to the voice call session
+	isOutbound := false
+
+	// Check if this session was pre-registered (outbound call)
 	vc := s.voiceCalls.Get(sessionID)
-	if vc == nil {
-		log.WithField("session_id", sessionID).Warn("voice WS: session not found")
-		_ = conn.Close()
-		return
-	}
-	vc.StreamSID = streamSID
-	vc.CallSID = callSID
-	vc.SetTwilioConn(conn)
+	if vc != nil {
+		// Session already exists -- outbound call pre-registered by make_call action
+		isOutbound = true
+		vc.StreamSID = streamSID
+		vc.CallSID = callSID
+		vc.SetTwilioConn(conn)
 
-	log.WithFields(log.Fields{
-		"session_id": sessionID,
-		"stream_sid": streamSID,
-		"call_sid":   callSID,
-		"agent_id":   agentID,
-	}).Info("Twilio media stream connected")
-
-	// Dispatch the flow execution via the agent pipeline
-	// The flow will contain a voice_session node that connects back
-	// via the internal voice session WebSocket.
-	go func() {
-		metadata := map[string]interface{}{
-			"channel_id": to,
-			"user_id":    from,
-			"user_name":  from,
-			"from":       from,
-			"to":         to,
-			"call_sid":   callSID,
-			"stream_sid": streamSID,
+		log.WithFields(log.Fields{
 			"session_id": sessionID,
-			"is_voice":   true,
-		}
+			"stream_sid": streamSID,
+			"call_sid":   callSID,
+			"agent_id":   agentID,
+			"outbound":   true,
+		}).Info("Twilio media stream connected (outbound)")
+	} else {
+		// Inbound call -- create new session
+		vc = s.voiceCalls.Create(sessionID, agentID, from, to)
+		vc.StreamSID = streamSID
+		vc.CallSID = callSID
+		vc.SetTwilioConn(conn)
 
-		msg := agent.InboundMessage{
-			ChannelType: "twilio_voice",
-			Sender:      from,
-			Content:     "", // No text content for voice calls
-			Metadata:    metadata,
-		}
+		log.WithFields(log.Fields{
+			"session_id": sessionID,
+			"stream_sid": streamSID,
+			"call_sid":   callSID,
+			"agent_id":   agentID,
+		}).Info("Twilio media stream connected (inbound)")
 
-		if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
-			log.WithFields(log.Fields{
-				"agent_id":   agentID,
+		// Dispatch flow execution for inbound calls only
+		go func() {
+			metadata := map[string]interface{}{
+				"channel_id": to,
+				"user_id":    from,
+				"user_name":  from,
+				"from":       from,
+				"to":         to,
+				"call_sid":   callSID,
+				"stream_sid": streamSID,
 				"session_id": sessionID,
-				"error":      err,
-			}).Error("failed to dispatch voice call flow")
-		}
-	}()
+				"is_voice":   true,
+			}
+
+			msg := agent.InboundMessage{
+				ChannelType: "twilio_voice",
+				Sender:      from,
+				Content:     "",
+				Metadata:    metadata,
+			}
+
+			if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
+				log.WithFields(log.Fields{
+					"agent_id":   agentID,
+					"session_id": sessionID,
+					"error":      err,
+				}).Error("failed to dispatch voice call flow")
+			}
+		}()
+	}
+
+	_ = isOutbound // used for logging above
 
 	// Wait for the executor to connect, then bridge
 	if !vc.WaitForExecutor(30 * time.Second) {
@@ -228,6 +243,20 @@ func (s *Service) handleVoiceSessionInternal(c *gin.Context) {
 
 	log.WithField("session_id", sessionID).Info("executor connected to voice session")
 
+	// For outbound calls, Twilio may not have connected yet (callee hasn't
+	// answered). Wait for the Twilio side before sending start events so
+	// the executor receives valid StreamSID and CallSID.
+	if vc.TwilioConn == nil {
+		log.WithField("session_id", sessionID).Info("waiting for Twilio to connect (outbound call)")
+		if !vc.WaitForTwilio(60 * time.Second) {
+			log.WithField("session_id", sessionID).Warn("Twilio did not connect within timeout (outbound call not answered?)")
+			_ = conn.Close()
+			s.voiceCalls.Remove(sessionID)
+			return
+		}
+		log.WithField("session_id", sessionID).Info("Twilio connected for outbound call")
+	}
+
 	// Forward the initial "connected" and "start" events that we already consumed
 	// The executor's voice_session action expects these events.
 	connectedMsg, _ := json.Marshal(map[string]string{
@@ -259,4 +288,122 @@ func (s *Service) handleVoiceSessionInternal(c *gin.Context) {
 	// Link the executor WebSocket to the voice call session
 	// This signals the WaitForExecutor() to unblock and start bridging
 	vc.SetExecutorConn(conn)
+}
+
+// handleVoiceSessionRegister handles POST /internal/voice-session/:session_id/register
+// Pre-registers a voice session for outbound calls. The make_call action calls
+// this before placing the Twilio call so Launch knows not to dispatch a new flow
+// when Twilio connects. Returns the WebSocket URL for the TwiML.
+func (s *Service) handleVoiceSessionRegister(c *gin.Context) {
+	sessionID := c.Param("session_id")
+
+	var body struct {
+		AgentID      string `json:"agent_id"`
+		CallerNumber string `json:"caller_number"`
+		TwilioNumber string `json:"twilio_number"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	s.voiceCalls.Create(sessionID, body.AgentID, body.CallerNumber, body.TwilioNumber)
+
+	// Build the public WebSocket URL for the outbound Media Stream
+	wsScheme := "wss"
+	publicURL := s.config.PublicURL
+	if strings.HasPrefix(publicURL, "http://") {
+		wsScheme = "ws"
+		publicURL = strings.TrimPrefix(publicURL, "http://")
+	} else {
+		publicURL = strings.TrimPrefix(publicURL, "https://")
+	}
+	wsURL := fmt.Sprintf("%s://%s/ws/twilio/voice-outbound/%s", wsScheme, publicURL, sessionID)
+
+	log.WithFields(log.Fields{
+		"session_id": sessionID,
+		"agent_id":   body.AgentID,
+	}).Info("voice session pre-registered for outbound call")
+
+	c.JSON(http.StatusCreated, gin.H{
+		"session_id": sessionID,
+		"ws_url":     wsURL,
+	})
+}
+
+// handleTwilioVoiceOutboundWS handles GET /ws/twilio/voice-outbound/:session_id
+// WebSocket endpoint for outbound calls. Uses session_id (not agent_id) since
+// the session is pre-registered and no flow dispatch is needed.
+func (s *Service) handleTwilioVoiceOutboundWS(c *gin.Context) {
+	sessionID := c.Param("session_id")
+
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.WithError(err).Error("failed to upgrade outbound voice WebSocket")
+		return
+	}
+
+	// Wait for the "start" event from Twilio
+	var streamSID, callSID string
+	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+
+	for {
+		_, rawMsg, err := conn.ReadMessage()
+		if err != nil {
+			log.WithError(err).Warn("outbound voice WS: error waiting for start event")
+			_ = conn.Close()
+			return
+		}
+
+		var msg struct {
+			Event string `json:"event"`
+			Start *struct {
+				StreamSID        string            `json:"streamSid"`
+				CallSID          string            `json:"callSid"`
+				CustomParameters map[string]string `json:"customParameters"`
+			} `json:"start,omitempty"`
+		}
+		if err := json.Unmarshal(rawMsg, &msg); err != nil {
+			continue
+		}
+
+		if msg.Event == "connected" {
+			continue
+		}
+		if msg.Event == "start" && msg.Start != nil {
+			streamSID = msg.Start.StreamSID
+			callSID = msg.Start.CallSID
+			break
+		}
+	}
+
+	conn.SetReadDeadline(time.Time{})
+
+	// Look up the pre-registered session
+	vc := s.voiceCalls.Get(sessionID)
+	if vc == nil {
+		log.WithField("session_id", sessionID).Warn("outbound voice WS: session not found (not pre-registered)")
+		_ = conn.Close()
+		return
+	}
+
+	vc.StreamSID = streamSID
+	vc.CallSID = callSID
+	vc.SetTwilioConn(conn)
+
+	log.WithFields(log.Fields{
+		"session_id": sessionID,
+		"stream_sid": streamSID,
+		"call_sid":   callSID,
+	}).Info("outbound Twilio media stream connected")
+
+	// Wait for the executor to connect, then bridge
+	if !vc.WaitForExecutor(30 * time.Second) {
+		log.WithField("session_id", sessionID).Warn("executor did not connect within timeout (outbound)")
+		s.voiceCalls.Remove(sessionID)
+		return
+	}
+
+	vc.Bridge()
+	s.voiceCalls.Remove(sessionID)
 }
