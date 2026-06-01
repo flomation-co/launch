@@ -291,7 +291,7 @@ func (s *Service) listFiles(accessToken, folderID, mimeFilter string) (map[strin
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("Drive API returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("drive API returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
@@ -323,7 +323,7 @@ func (s *Service) listFiles(accessToken, folderID, mimeFilter string) (map[strin
 // Google tokens endpoint, which handles refresh transparently.
 func (s *Service) fetchAccessToken(triggerID string) (string, error) {
 	if s.google == nil {
-		return "", fmt.Errorf("Google OAuth service not configured")
+		return "", fmt.Errorf("google OAuth service not configured")
 	}
 
 	// Call Launch's internal token endpoint (it refreshes and returns access tokens)
