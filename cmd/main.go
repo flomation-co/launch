@@ -13,8 +13,8 @@ import (
 	s3trigger "flomation.app/automate/launch/internal/s3"
 	"flomation.app/automate/launch/internal/schedule"
 	"flomation.app/automate/launch/internal/telegram"
-	"flomation.app/automate/launch/internal/twilio"
 	"flomation.app/automate/launch/internal/trigger"
+	"flomation.app/automate/launch/internal/twilio"
 	"flomation.app/automate/launch/internal/version"
 	log "github.com/sirupsen/logrus"
 )

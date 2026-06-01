@@ -28,6 +28,7 @@ var PurposeScopes = map[string]string{
 	"calendar":   "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email",
 	"email_read": "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email",
 	"email_send": "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/userinfo.email",
+	"drive":      "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email",
 }
 
 // DefaultScopes for backwards compatibility (calendar).

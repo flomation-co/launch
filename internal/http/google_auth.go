@@ -170,6 +170,7 @@ func (s *Service) handleGoogleAuthCallback(c *gin.Context) {
 		"calendar":   "Calendar Connected",
 		"email_read": "Email Read Access Connected",
 		"email_send": "Email Send Access Connected",
+		"drive":      "Drive Access Connected",
 	}
 	title := purposeTitle[authState.Purpose]
 	if title == "" {

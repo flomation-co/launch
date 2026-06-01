@@ -85,7 +85,7 @@ func (s *Service) handleTwilioVoiceWS(c *gin.Context) {
 
 	// Wait for the "start" event to get session metadata
 	var sessionID, streamSID, callSID, from, to string
-	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 
 	for {
 		_, rawMsg, err := conn.ReadMessage()
@@ -120,7 +120,7 @@ func (s *Service) handleTwilioVoiceWS(c *gin.Context) {
 		}
 	}
 
-	conn.SetReadDeadline(time.Time{}) // Remove deadline
+	_ = conn.SetReadDeadline(time.Time{}) // Remove deadline
 
 	if sessionID == "" {
 		log.Warn("voice WS: no sessionId in start event")
@@ -349,7 +349,7 @@ func (s *Service) handleTwilioVoiceOutboundWS(c *gin.Context) {
 
 	// Wait for the "start" event from Twilio
 	var streamSID, callSID string
-	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 
 	for {
 		_, rawMsg, err := conn.ReadMessage()
@@ -381,7 +381,7 @@ func (s *Service) handleTwilioVoiceOutboundWS(c *gin.Context) {
 		}
 	}
 
-	conn.SetReadDeadline(time.Time{})
+	_ = conn.SetReadDeadline(time.Time{})
 
 	// Look up the pre-registered session
 	vc := s.voiceCalls.Get(sessionID)

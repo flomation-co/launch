@@ -25,8 +25,8 @@ import (
 
 	slackPkg "flomation.app/automate/launch/internal/slack"
 	telegramPkg "flomation.app/automate/launch/internal/telegram"
-	twilioPkg "flomation.app/automate/launch/internal/twilio"
 	"flomation.app/automate/launch/internal/trigger"
+	twilioPkg "flomation.app/automate/launch/internal/twilio"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 )
