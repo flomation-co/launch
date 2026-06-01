@@ -7,6 +7,7 @@ import (
 	"flomation.app/automate/launch/internal/embedding"
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
 	"flomation.app/automate/launch/internal/google"
+	drivepoll "flomation.app/automate/launch/internal/google/drivepoll"
 	"flomation.app/automate/launch/internal/http"
 	linkedinpoll "flomation.app/automate/launch/internal/linkedin"
 	"flomation.app/automate/launch/internal/persistence"
@@ -103,6 +104,9 @@ func main() {
 	if cfg.Google != nil && cfg.Google.ClientID != "" {
 		googleSvc = google.NewService(cfg)
 		log.Info("google calendar oauth service started")
+
+		_ = drivepoll.NewService(cfg, db, t, googleSvc)
+		log.Info("Google Drive poll service started")
 	}
 
 	r, err := http.NewService(cfg, t, agentSvc, googleSvc, db)
