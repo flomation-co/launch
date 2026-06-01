@@ -12,15 +12,15 @@ import (
 // VerifyResult contains the results of verifying Twilio credentials
 // and phone number configuration.
 type VerifyResult struct {
-	OK              bool              `json:"ok"`
-	Error           string            `json:"error,omitempty"`
-	AccountName     string            `json:"account_name,omitempty"`
-	AccountStatus   string            `json:"account_status,omitempty"`
-	PhoneFound      bool              `json:"phone_found"`
+	OK                bool               `json:"ok"`
+	Error             string             `json:"error,omitempty"`
+	AccountName       string             `json:"account_name,omitempty"`
+	AccountStatus     string             `json:"account_status,omitempty"`
+	PhoneFound        bool               `json:"phone_found"`
 	PhoneCapabilities *PhoneCapabilities `json:"phone_capabilities,omitempty"`
-	VoiceURL        string            `json:"voice_url,omitempty"`
-	SMSURL          string            `json:"sms_url,omitempty"`
-	Checks          []VerifyCheck     `json:"checks"`
+	VoiceURL          string             `json:"voice_url,omitempty"`
+	SMSURL            string             `json:"sms_url,omitempty"`
+	Checks            []VerifyCheck      `json:"checks"`
 }
 
 // PhoneCapabilities describes what a Twilio phone number can do.
@@ -32,9 +32,9 @@ type PhoneCapabilities struct {
 
 // VerifyCheck represents a single verification check result.
 type VerifyCheck struct {
-	Name    string `json:"name"`
-	Passed  bool   `json:"passed"`
-	Detail  string `json:"detail"`
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail"`
 }
 
 // VerifyCredentials checks Twilio Account SID, Auth Token, and phone number
