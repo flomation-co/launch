@@ -5,7 +5,7 @@ package twilio
 
 import (
 	"crypto/hmac"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 — required by Twilio's HMAC-SHA1 signature validation
 	"encoding/base64"
 	"fmt"
 	"io"

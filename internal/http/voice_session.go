@@ -381,7 +381,7 @@ func (s *Service) handleTwilioVoiceOutboundWS(c *gin.Context) {
 		}
 	}
 
-	conn.SetReadDeadline(time.Time{})
+	_ = conn.SetReadDeadline(time.Time{})
 
 	// Look up the pre-registered session
 	vc := s.voiceCalls.Get(sessionID)
