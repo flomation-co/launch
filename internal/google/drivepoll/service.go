@@ -33,6 +33,7 @@ const (
 type triggerConfig struct {
 	FolderID       string `json:"folder_id"`
 	Credential     string `json:"credential"`
+	GoogleAccount  string `json:"google_account"`
 	PollInterval   string `json:"poll_interval"`
 	EventTypes     string `json:"event_types"`
 	MIMETypeFilter string `json:"mime_type_filter"`
@@ -114,23 +115,27 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 		return
 	}
 
-	// Resolve credential from secrets/environment.
-	credential := s.trigger.ResolveString(tr.ID, cfg.Credential)
-	if credential == "" {
-		log.WithFields(log.Fields{
-			"trigger_id": tr.ID,
-		}).Debug("[drive-poll] no credential configured")
-		return
+	// Resolve access token: try credential input first, then internal token endpoint.
+	var accessToken string
+
+	if cfg.Credential != "" {
+		resolved := s.trigger.ResolveString(tr.ID, cfg.Credential)
+		if resolved != "" && resolved != cfg.Credential {
+			accessToken = resolved
+		}
 	}
 
-	// Get Google Drive access token.
-	accessToken, err := s.fetchAccessToken(tr.ID, credential)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error":      err,
-			"trigger_id": tr.ID,
-		}).Debug("[drive-poll] unable to fetch access token")
-		return
+	if accessToken == "" {
+		// Fall back to trigger-scoped Google OAuth tokens
+		token, err := s.fetchTokenFromEndpoint(tr.ID, cfg.GoogleAccount)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"error":      err,
+				"trigger_id": tr.ID,
+			}).Warn("[drive-poll] unable to fetch access token")
+			return
+		}
+		accessToken = token
 	}
 
 	folderID := cfg.FolderID
@@ -328,16 +333,53 @@ func (s *Service) listFiles(accessToken, folderID, mimeFilter string) (map[strin
 	return files, nil
 }
 
-// fetchAccessToken returns a Drive access token. If the credential is a
-// raw access token (already resolved from secrets), it is used directly.
-func (s *Service) fetchAccessToken(_ string, credential string) (string, error) {
-	// The credential is resolved by ResolveString, which handles
-	// ${secrets.X}, ${env.X}, etc. The resulting value is the access
-	// token ready to use.
-	if credential != "" {
-		return credential, nil
+// fetchTokenFromEndpoint calls Launch's internal Google token endpoint to get
+// an access token for the trigger's connected Google account.
+func (s *Service) fetchTokenFromEndpoint(triggerID, accountFilter string) (string, error) {
+	if s.google == nil {
+		return "", fmt.Errorf("google OAuth not configured")
 	}
-	return "", fmt.Errorf("no drive credential available")
+
+	port := s.config.HttpListenConfig.Port
+	if port == 0 {
+		port = 8080
+	}
+	endpoint := fmt.Sprintf("http://localhost:%d/internal/google/tokens/trigger/%s?purpose=drive", port, triggerID)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(endpoint) // #nosec G107
+	if err != nil {
+		return "", fmt.Errorf("fetch tokens: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return "", fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokens []struct {
+		Email       string `json:"email"`
+		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokens); err != nil {
+		return "", fmt.Errorf("parse tokens: %w", err)
+	}
+
+	// If a specific account was requested, find it
+	accountFilter = strings.TrimSpace(accountFilter)
+	for _, t := range tokens {
+		if t.AccessToken == "" || t.Error != "" {
+			continue
+		}
+		if accountFilter != "" && !strings.EqualFold(t.Email, accountFilter) {
+			continue
+		}
+		return t.AccessToken, nil
+	}
+
+	return "", fmt.Errorf("no drive tokens available for trigger %s", triggerID)
 }
 
 func parseEventTypes(s string) map[string]bool {
