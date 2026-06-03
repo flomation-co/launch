@@ -424,7 +424,7 @@ Deploy to Sandbox:
     - main
   script:
     - mkdir -p ~/.ssh && echo "${OVH_DEPLOY_KEY}" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
-    - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl restart ${SERVICE}"
+    - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl reset-failed ${SERVICE} && sudo systemctl restart ${SERVICE}"
 
 Deploy to Live:
   stage: Production
@@ -437,7 +437,7 @@ Deploy to Live:
   when: manual
   script:
     - mkdir -p ~/.ssh && echo "${OVH_LIVE_DEPLOY_KEY}" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
-    - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl restart ${SERVICE}"
+    - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl reset-failed ${SERVICE} && sudo systemctl restart ${SERVICE}"
 
 build-docker:
   extends: .build-docker-dhi-buildx-template
