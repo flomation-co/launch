@@ -429,8 +429,8 @@ Deploy to Sandbox:
   only:
     - main
   script:
-    - mkdir -p ~/.ssh && echo "${OVH_DEPLOY_KEY}" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
-    - echo ~/.ssh/id_rsa
+    - mkdir -p ~/.ssh && printf '%s\n' "${OVH_DEPLOY_KEY}" | tr -d '\r' > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+    - ssh-keygen -y -f ~/.ssh/id_rsa > /dev/null
     - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl reset-failed ${SERVICE} && sudo systemctl restart ${SERVICE}"
 
 Deploy to Live:
@@ -443,7 +443,8 @@ Deploy to Live:
     - main
   when: manual
   script:
-    - mkdir -p ~/.ssh && echo "${OVH_LIVE_DEPLOY_KEY}" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+    - mkdir -p ~/.ssh && printf '%s\n' "${OVH_LIVE_DEPLOY_KEY}" | tr -d '\r' > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+    - ssh-keygen -y -f ~/.ssh/id_rsa > /dev/null
     - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl reset-failed ${SERVICE} && sudo systemctl restart ${SERVICE}"
 
 build-docker:
