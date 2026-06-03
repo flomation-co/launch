@@ -445,11 +445,6 @@ Deploy to Sandbox:
     - main
   script:
     - mkdir -p ~/.ssh && printf '%s\n' "${OVH_DEPLOY_KEY}" | tr -d '\r' > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
-    # --- TEMP DIAGNOSTICS (safe: prints only counts + non-secret BEGIN/END markers, never the key body) ---
-    - 'echo "lines / words / bytes:"; wc -lwc < ~/.ssh/id_rsa'
-    - 'echo "first line:"; head -n1 ~/.ssh/id_rsa'
-    - 'echo "last line:"; tail -n1 ~/.ssh/id_rsa'
-    # --- END TEMP DIAGNOSTICS ---
     - ssh-keygen -y -f ~/.ssh/id_rsa > /dev/null
     - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl reset-failed ${SERVICE} && sudo systemctl restart ${SERVICE}"
 
