@@ -7,13 +7,7 @@ GITHASH 			?= $(shell git rev-parse HEAD)
 CI_PIPELINE_ID 		?= dev
 VERSION 			?= 1.0.${CI_PIPELINE_ID}
 
-OS_ARCHS := \
-	linux/amd64 \
-	linux/arm64 \
-	linux/arm \
-	darwin/amd64 \
-	darwin/arm64 \
-	windows/amd64
+OS_ARCHS ?= linux/amd64
 
 build:
 	rm -rf dist/
