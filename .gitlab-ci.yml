@@ -38,6 +38,12 @@ inject-metadata:
 
 lint:
   stage: prepare
+  variables:
+    # More CPU for the lint/security suite — go build, golangci-lint and the
+    # gosec compile are all multi-threaded (GOMAXPROCS). Requires the runner's
+    # config.toml to permit cpu_*_overwrite_max_allowed, else these are ignored.
+    KUBERNETES_CPU_REQUEST: "2"
+    KUBERNETES_CPU_LIMIT: "4"
   script:
     - make lint
 
@@ -55,6 +61,15 @@ security-scan:
 
 compile:
   stage: build
+  variables:
+    # Give the build pod 4 cores so the per-platform cross-compiles run in
+    # parallel. JOBS is pinned (not left to $(nproc)) because nproc does not
+    # reliably reflect a k8s CFS CPU limit — last run it reported 1, forcing
+    # make -j1 (serial). Requires the runner's config.toml to permit
+    # cpu_*_overwrite_max_allowed, else these are ignored and -j4 just throttles.
+    KUBERNETES_CPU_REQUEST: "2"
+    KUBERNETES_CPU_LIMIT: "4"
+    JOBS: "4"
   script:
     - make build
   artifacts:
