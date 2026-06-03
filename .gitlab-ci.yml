@@ -86,6 +86,7 @@ build-rpm-8:
   extends: .build-rpm-template
   only:
     - main
+  when: manual
   variables:
     EL_VERSION: "8"
     CI_TEMPLATES_REF: "main"
@@ -103,6 +104,7 @@ build-rpm-9:
   extends: .build-rpm-template
   only:
     - main
+  when: manual
   variables:
     EL_VERSION: "9"
     CI_TEMPLATES_REF: "main"
@@ -120,6 +122,7 @@ build-rpm-8-arm64:
   extends: .build-rpm-template
   only:
     - main
+  when: manual
   variables:
     EL_VERSION: "8"
     CI_TEMPLATES_REF: "main"
@@ -137,6 +140,7 @@ build-rpm-9-arm64:
   extends: .build-rpm-template
   only:
     - main
+  when: manual
   variables:
     EL_VERSION: "9"
     CI_TEMPLATES_REF: "main"
@@ -170,6 +174,7 @@ build-deb-arm64:
   extends: .build-deb-template
   only:
     - main
+  when: manual
   variables:
     CI_TEMPLATES_REF: "main"
     APPLICATION_BINARY: "${PACKAGE_NAME}-arm64-linux*"
@@ -186,6 +191,7 @@ build-msi:
   extends: .build-msi-template
   only:
     - main
+  when: manual
   variables:
     CI_TEMPLATES_REF: "main"
     APPLICATION_BINARY: "${PACKAGE_NAME}-amd64-windows*"
