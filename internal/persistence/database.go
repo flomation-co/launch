@@ -12,6 +12,9 @@ import (
 	"github.com/pkg/errors"
 )
 
+// DB returns the underlying sqlx connection for direct queries.
+func (s *Service) DB() *sqlx.DB { return s.conn }
+
 type Service struct {
 	config *config.Config
 	conn   *sqlx.DB
