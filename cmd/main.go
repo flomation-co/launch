@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/config"
 	emailtrigger "flomation.app/automate/launch/internal/email"
@@ -10,6 +12,7 @@ import (
 	drivepoll "flomation.app/automate/launch/internal/google/drivepoll"
 	"flomation.app/automate/launch/internal/http"
 	linkedinpoll "flomation.app/automate/launch/internal/linkedin"
+	"flomation.app/automate/launch/internal/metrics"
 	"flomation.app/automate/launch/internal/persistence"
 	s3trigger "flomation.app/automate/launch/internal/s3"
 	"flomation.app/automate/launch/internal/schedule"
@@ -49,6 +52,10 @@ func main() {
 			"error": err,
 		}).Error("unable to start persistence service")
 		return
+	}
+
+	if cfg.Metrics.Enabled {
+		metrics.StartCollector(db.DB(), 30*time.Second)
 	}
 
 	t := trigger.NewService(cfg, db)

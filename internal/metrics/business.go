@@ -1,8 +1,12 @@
 package metrics
 
 import (
+	"time"
+
+	"github.com/jmoiron/sqlx"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	log "github.com/sirupsen/logrus"
 )
 
 // ── Counters (incremented inline by handlers) ────────────────────────
@@ -26,10 +30,10 @@ var FlowDispatchesTotal = promauto.NewCounter(prometheus.CounterOpts{
 	Help: "Total flow executions dispatched since service start.",
 })
 
-// ── Gauges (set inline — no periodic collector needed) ──────────────
+// ── Gauges (updated by the periodic collector) ──────────────────────
 
-// TriggersActive tracks the number of active triggers.
-var TriggersActive = promauto.NewGauge(prometheus.GaugeOpts{
+// triggersActive tracks the number of active triggers.
+var triggersActive = promauto.NewGauge(prometheus.GaugeOpts{
 	Name: "flomation_triggers_active",
 	Help: "Number of active triggers.",
 })
@@ -45,3 +49,28 @@ var SocketConnectionsActive = promauto.NewGauge(prometheus.GaugeOpts{
 	Name: "flomation_socket_connections_active",
 	Help: "Active Slack Socket Mode connections.",
 })
+
+// StartCollector launches a background goroutine that periodically
+// queries the database to update gauge metrics.
+func StartCollector(db *sqlx.DB, interval time.Duration) {
+	go func() {
+		time.Sleep(5 * time.Second)
+		collect(db)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			collect(db)
+		}
+	}()
+	log.WithField("interval", interval).Info("metrics collector started")
+}
+
+func collect(db *sqlx.DB) {
+	var count int64
+
+	// Active triggers (not disabled)
+	if err := db.Get(&count, `SELECT COUNT(*) FROM trigger WHERE disabled_at IS NULL`); err == nil {
+		triggersActive.Set(float64(count))
+	}
+}
