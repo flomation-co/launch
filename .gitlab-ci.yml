@@ -430,6 +430,7 @@ Deploy to Sandbox:
     - main
   script:
     - mkdir -p ~/.ssh && echo "${OVH_DEPLOY_KEY}" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+    - echo ~/.ssh/id_rsa
     - ssh -o StrictHostKeyChecking=no ubuntu@${OVH_HOST} "sudo apt update && sudo apt install -y ${PACKAGE} && sudo systemctl reset-failed ${SERVICE} && sudo systemctl restart ${SERVICE}"
 
 Deploy to Live:
