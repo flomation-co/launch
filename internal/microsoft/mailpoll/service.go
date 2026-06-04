@@ -41,8 +41,9 @@ type triggerConfig struct {
 
 // emailMessage holds the fields extracted from a Graph API message response.
 type emailMessage struct {
-	ID             string `json:"id"`
-	ConversationID string `json:"conversationId"`
+	ID                string `json:"id"`
+	InternetMessageID string `json:"internetMessageId"`
+	ConversationID    string `json:"conversationId"`
 	Subject        string `json:"subject"`
 	BodyPreview    string `json:"bodyPreview"`
 	Body           struct {
@@ -191,15 +192,22 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 	}
 
 	// Process messages — detect new ones.
+	// Use internetMessageId as the state key because Graph API message IDs
+	// are not stable across folders (moving a message changes its ID).
 	for _, msg := range messages {
-		_, exists := knownState[msg.ID]
+		stateKey := msg.InternetMessageID
+		if stateKey == "" {
+			stateKey = msg.ID // fallback for draft messages without internetMessageId
+		}
+
+		_, exists := knownState[stateKey]
 
 		// Record state for all messages.
 		stateJSON, err := json.Marshal(msg.ReceivedDateTime)
 		if err != nil {
 			continue
 		}
-		if err := s.db.UpsertTriggerState(tr.ID, msg.ID, stateJSON); err != nil {
+		if err := s.db.UpsertTriggerState(tr.ID, stateKey, stateJSON); err != nil {
 			log.WithFields(log.Fields{
 				"error":      err,
 				"trigger_id": tr.ID,
@@ -226,7 +234,7 @@ func (s *Service) buildMessagesEndpoint(cfg triggerConfig) string {
 	params := url.Values{}
 	params.Set("$top", "25")
 	params.Set("$orderby", "receivedDateTime desc")
-	params.Set("$select", "id,conversationId,subject,bodyPreview,body,receivedDateTime,hasAttachments,importance,isRead,from,toRecipients")
+	params.Set("$select", "id,internetMessageId,conversationId,subject,bodyPreview,body,receivedDateTime,hasAttachments,importance,isRead,from,toRecipients")
 
 	if cfg.Filter != "" {
 		params.Set("$filter", cfg.Filter)
