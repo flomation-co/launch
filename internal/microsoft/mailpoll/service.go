@@ -202,6 +202,16 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 
 		_, exists := knownState[stateKey]
 
+		if !exists && !isFirstPoll {
+			log.WithFields(log.Fields{
+				"trigger_id":          tr.ID,
+				"state_key":           stateKey,
+				"internet_message_id": msg.InternetMessageID,
+				"graph_id":            msg.ID,
+				"subject":             msg.Subject,
+			}).Debug("[ms-mail-poll] new message detected")
+		}
+
 		// Record state for all messages.
 		stateJSON, err := json.Marshal(msg.ReceivedDateTime)
 		if err != nil {
