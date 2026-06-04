@@ -22,6 +22,7 @@ const (
 	TriggerTypeFacebookFeed      = "facebook-feed"
 	TriggerTypeLinkedInPoll      = "linkedin-poll"
 	TriggerTypeGoogleDrive       = "google-drive"
+	TriggerTypeMicrosoftOutlook  = "microsoft-outlook"
 )
 
 type Trigger struct {

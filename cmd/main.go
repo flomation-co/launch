@@ -10,6 +10,8 @@ import (
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
 	"flomation.app/automate/launch/internal/google"
 	drivepoll "flomation.app/automate/launch/internal/google/drivepoll"
+	"flomation.app/automate/launch/internal/microsoft"
+	msmailpoll "flomation.app/automate/launch/internal/microsoft/mailpoll"
 	"flomation.app/automate/launch/internal/http"
 	linkedinpoll "flomation.app/automate/launch/internal/linkedin"
 	"flomation.app/automate/launch/internal/metrics"
@@ -106,6 +108,12 @@ func main() {
 
 	_ = linkedinpoll.NewService(cfg, db, t)
 	log.Info("LinkedIn poll service started")
+
+	if cfg.Microsoft != nil && cfg.Microsoft.ClientID != "" {
+		msSvc := microsoft.NewService(cfg)
+		_ = msmailpoll.NewService(cfg, db, t, msSvc)
+		log.Info("Microsoft Outlook mail poll service started")
+	}
 
 	var googleSvc *google.Service
 	if cfg.Google != nil && cfg.Google.ClientID != "" {
