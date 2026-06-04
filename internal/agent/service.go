@@ -413,6 +413,14 @@ func deriveExternalID(msg InboundMessage) (externalID, displayName string) {
 			externalID = v
 		}
 		displayName = externalID
+	case "teams":
+		// AAD object ID is a stable per-tenant user identifier.
+		if v, ok := msg.Metadata["user_id"].(string); ok && v != "" {
+			externalID = v
+		}
+		if v, ok := msg.Metadata["user_name"].(string); ok && v != "" {
+			displayName = v
+		}
 	}
 	if externalID == "" {
 		// Fall back to sender string — not ideal (may rename) but
@@ -473,6 +481,11 @@ func deriveChannelScope(msg InboundMessage) (channelID string, threadID *string)
 		if v, ok := msg.Metadata["call_sid"].(string); ok && v != "" {
 			t := v
 			threadID = &t
+		}
+	case "teams":
+		// Teams conversations scope by conversation ID (covers 1:1, group chat, and channel).
+		if v, ok := msg.Metadata["channel_id"].(string); ok {
+			channelID = v
 		}
 	}
 	return channelID, threadID

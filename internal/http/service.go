@@ -180,6 +180,7 @@ func (s *Service) configure() error {
 	s.engine.POST("/webhook/agent/:agent_id", s.handleAgentWebhook)
 	s.engine.POST("/webhook/telegram/:agent_id", s.handleTelegramWebhook)
 	s.engine.POST("/webhook/slack/:agent_id", s.handleSlackWebhook)
+	s.engine.POST("/webhook/teams/:agent_id", s.handleTeamsWebhook)
 	s.engine.POST("/webhook/twilio/sms/:agent_id", s.handleTwilioSMSWebhook)
 	s.engine.POST("/webhook/twilio/voice/:agent_id", s.handleTwilioVoiceWebhook)
 	s.engine.POST("/webhook/twilio/voice/:agent_id/status", s.handleTwilioVoiceStatus)
