@@ -41,6 +41,13 @@ type GoogleConfig struct {
 	CredentialsFile *string `json:"credentials_file"`
 }
 
+// MicrosoftConfig holds credentials for the Microsoft 365 integration.
+type MicrosoftConfig struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	TenantID     string `json:"tenant_id"` // "common" for multi-tenant, or specific tenant GUID
+}
+
 type EmbeddingConfig struct {
 	Enabled     bool   `json:"enabled"`
 	Region      string `json:"region"`
@@ -69,6 +76,7 @@ type Config struct {
 	Automate         ServiceConfig    `json:"automate"`
 	Security         SecurityConfig   `json:"security"`
 	Google           *GoogleConfig    `json:"google"`
+	Microsoft        *MicrosoftConfig `json:"microsoft"`
 	Facebook         *FacebookConfig  `json:"facebook"`
 	Embedding        *EmbeddingConfig `json:"embedding"`
 	PublicURL        string           `json:"public_url"` // e.g. "https://launch.flomation.app"
