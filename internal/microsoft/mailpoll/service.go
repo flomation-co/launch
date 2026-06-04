@@ -32,10 +32,11 @@ const (
 
 // triggerConfig holds the configuration stored in trigger.Data.
 type triggerConfig struct {
-	FolderID  string `json:"folder_id"`
-	Filter    string `json:"filter"`
-	Account   string `json:"account"`
-	Interval  string `json:"poll_interval"`
+	FolderID   string `json:"folder_id"`
+	Filter     string `json:"filter"`
+	Account    string `json:"account"`
+	Credential string `json:"credential"`
+	Interval   string `json:"poll_interval"`
 }
 
 // emailMessage holds the fields extracted from a Graph API message response.
@@ -133,14 +134,27 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 		return
 	}
 
-	// Resolve access token from trigger-scoped Microsoft account.
-	accessToken, err := s.fetchToken(tr.ID, cfg.Account)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error":      err,
-			"trigger_id": tr.ID,
-		}).Warn("[ms-mail-poll] unable to fetch access token")
-		return
+	// Resolve access token: try credential input first, then internal token endpoint.
+	var accessToken string
+
+	if cfg.Credential != "" {
+		resolved := s.trigger.ResolveString(tr.ID, cfg.Credential)
+		if resolved != "" && resolved != cfg.Credential {
+			accessToken = resolved
+		}
+	}
+
+	if accessToken == "" {
+		// Fall back to trigger-scoped Microsoft tokens
+		token, err := s.fetchToken(tr.ID, cfg.Account)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"error":      err,
+				"trigger_id": tr.ID,
+			}).Warn("[ms-mail-poll] unable to fetch access token")
+			return
+		}
+		accessToken = token
 	}
 
 	// Build the messages endpoint.
