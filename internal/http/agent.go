@@ -12,6 +12,7 @@ import (
 	"flomation.app/automate/launch/internal/agent"
 	appmetrics "flomation.app/automate/launch/internal/metrics"
 	slackpkg "flomation.app/automate/launch/internal/slack"
+	teamspkg "flomation.app/automate/launch/internal/teams"
 	"flomation.app/automate/launch/internal/telegram"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -307,4 +308,94 @@ func extractSlackBotToken(channelsRaw json.RawMessage) string {
 		}
 	}
 	return ""
+}
+
+// ── Teams Bot Framework webhook ─────────────────────────────────────
+
+func (s *Service) handleTeamsWebhook(c *gin.Context) {
+	agentID := c.Param("agent_id")
+
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+	if err != nil {
+		log.WithError(err).Error("[teams] unable to read body")
+		c.Status(http.StatusBadRequest)
+		return
+	}
+
+	parsed, activity, err := teamspkg.ParseActivity(body)
+	if err != nil {
+		log.WithError(err).Error("[teams] unable to parse activity")
+		c.Status(http.StatusBadRequest)
+		return
+	}
+
+	// Non-message activities (e.g., conversationUpdate, typing) — acknowledge silently
+	if parsed == nil {
+		c.Status(http.StatusOK)
+		return
+	}
+
+	log.WithFields(log.Fields{
+		"agent_id":      agentID,
+		"user":          parsed.UserName,
+		"conversation":  parsed.ConversationType,
+		"text_preview":  truncateText(parsed.Text, 50),
+	}).Info("[teams] received message")
+
+	// Send typing indicator
+	if s.config.Microsoft != nil {
+		go func() {
+			token, err := teamspkg.GetBotToken(s.config.Microsoft.ClientID, s.config.Microsoft.ClientSecret)
+			if err != nil {
+				log.WithError(err).Debug("[teams] unable to get bot token for typing indicator")
+				return
+			}
+			teamspkg.SendTypingIndicator(parsed.ServiceURL, parsed.ConversationID, s.config.Microsoft.ClientID, token)
+		}()
+	}
+
+	// Build inbound message with canonical + provider-specific metadata
+	msg := agent.InboundMessage{
+		ChannelType: "teams",
+		Sender:      parsed.UserName,
+		Content:     parsed.Text,
+		Metadata: map[string]interface{}{
+			// Canonical keys (consistent across all providers)
+			"channel_id": parsed.ConversationID,
+			"user_id":    parsed.UserID,
+			"user_name":  parsed.UserName,
+			// Provider-specific keys
+			"conversation_type": parsed.ConversationType,
+			"teams_channel_id":  parsed.ChannelID,
+			"teams_team_id":     parsed.TeamID,
+			"activity_id":       parsed.ActivityID,
+			"service_url":       parsed.ServiceURL,
+			"tenant_id":         parsed.TenantID,
+			// Alias for cross-provider compatibility
+			"chat_id": parsed.ConversationID,
+		},
+	}
+
+	_ = activity // reserved for future use (e.g., adaptive card handling)
+
+	// Dispatch asynchronously — Bot Framework expects a quick 200/201
+	appmetrics.InboundMessagesTotal.WithLabelValues("teams").Inc()
+	go func() {
+		if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
+			log.WithFields(log.Fields{
+				"agent_id": agentID,
+				"error":    err,
+				"user":     parsed.UserName,
+			}).Error("[teams] failed to handle message")
+		}
+	}()
+
+	c.Status(http.StatusCreated) // Bot Framework expects 201 for successful processing
+}
+
+func truncateText(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
