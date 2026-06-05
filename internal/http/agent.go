@@ -333,13 +333,6 @@ func (s *Service) resolveSlackCreds(agentID string) map[string]string {
 	return parseLegacyChannelConfig(reg.Channels, "slack")
 }
 
-// extractSlackBotToken is retained for compatibility with code paths that only
-// need the bot_token field from the legacy agent.channels store. New callers
-// should use resolveSlackCreds for full credential resolution.
-func extractSlackBotToken(channelsRaw json.RawMessage) string {
-	return parseLegacyChannelConfig(channelsRaw, "slack")["bot_token"]
-}
-
 // parseLegacyChannelConfig walks the legacy agent.channels JSON array and
 // returns the config map for the first entry whose type matches.
 func parseLegacyChannelConfig(channelsRaw json.RawMessage, channelType string) map[string]string {
