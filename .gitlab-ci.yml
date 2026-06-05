@@ -6,13 +6,13 @@ include:
 stages:
   - prepare
   - security-scan
-  - sync
   - test
   - build
   - docs
   - rpm-publish
   - deb-publish
   - publish
+  - sync
   - docker
   - Development
   - Sandbox
