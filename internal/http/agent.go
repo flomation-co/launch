@@ -155,11 +155,7 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 		metadata["voice_duration"] = parsed.VoiceDuration
 		metadata["voice_mime_type"] = parsed.VoiceMimeType
 
-		reg, regErr := s.agent.GetRegistration(agentID)
-		botToken := ""
-		if regErr == nil && reg != nil && reg.Channels != nil {
-			botToken = extractTelegramBotToken(reg.Channels)
-		}
+		botToken := s.resolveTelegramCreds(agentID)["bot_token"]
 		if botToken != "" {
 			audioData, err := telegram.DownloadFile(botToken, parsed.VoiceFileID)
 			if err != nil {
@@ -215,10 +211,32 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
-	if err != nil {
-		c.AbortWithStatus(http.StatusBadRequest)
-		return
+	creds := s.resolveSlackCreds(agentID)
+	botToken := creds["bot_token"]
+	signingSecret := creds["signing_secret"]
+
+	// Slack signing-secret request verification (replay-protected HMAC of body).
+	// When the agent has a signing_secret configured we MUST verify before
+	// trusting the payload. When unset (dev/local mode) we read the body raw.
+	var body []byte
+	if signingSecret != "" {
+		verified, err := slackpkg.VerifyRequest(signingSecret, c.Request)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"agent_id": agentID,
+				"error":    err,
+			}).Warn("slack signature verification failed")
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		body = verified
+	} else {
+		var err error
+		body, err = io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+		if err != nil {
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Parse the event — handle url_verification challenge first
@@ -239,16 +257,13 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 	// Resolve user names from Slack API if possible
 	senderDisplay := parsed.UserID
 	senderReal := parsed.UserID
-	reg, _ := s.agent.GetRegistration(agentID)
-	if reg != nil {
-		if botToken := extractSlackBotToken(reg.Channels); botToken != "" {
-			if info, err := slackpkg.LookupUser(botToken, parsed.UserID); err == nil && info != nil {
-				if info.DisplayName != "" {
-					senderDisplay = info.DisplayName
-				}
-				if info.RealName != "" {
-					senderReal = info.RealName
-				}
+	if botToken != "" {
+		if info, err := slackpkg.LookupUser(botToken, parsed.UserID); err == nil && info != nil {
+			if info.DisplayName != "" {
+				senderDisplay = info.DisplayName
+			}
+			if info.RealName != "" {
+				senderReal = info.RealName
 			}
 		}
 	}
@@ -291,23 +306,63 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
-// extractSlackBotToken finds the bot_token from a Slack channel in the agent's channel config.
+// resolveTelegramCreds returns the resolved Telegram credentials for an agent.
+// Same dual-read pattern as resolveSlackCreds.
+func (s *Service) resolveTelegramCreds(agentID string) map[string]string {
+	if creds, ok := s.resolveChannelCreds(agentID, "telegram"); ok {
+		return creds
+	}
+	reg, err := s.agent.GetRegistration(agentID)
+	if err != nil || reg == nil || reg.Channels == nil {
+		return map[string]string{}
+	}
+	return parseLegacyChannelConfig(reg.Channels, "telegram")
+}
+
+// resolveSlackCreds returns the resolved Slack credentials for an agent.
+// Tries the new trigger-node config first, then falls back to the legacy
+// agent.channels store. Always returns a non-nil map (empty if unconfigured).
+func (s *Service) resolveSlackCreds(agentID string) map[string]string {
+	if creds, ok := s.resolveChannelCreds(agentID, "slack"); ok {
+		return creds
+	}
+	reg, err := s.agent.GetRegistration(agentID)
+	if err != nil || reg == nil || reg.Channels == nil {
+		return map[string]string{}
+	}
+	return parseLegacyChannelConfig(reg.Channels, "slack")
+}
+
+// extractSlackBotToken is retained for compatibility with code paths that only
+// need the bot_token field from the legacy agent.channels store. New callers
+// should use resolveSlackCreds for full credential resolution.
 func extractSlackBotToken(channelsRaw json.RawMessage) string {
+	return parseLegacyChannelConfig(channelsRaw, "slack")["bot_token"]
+}
+
+// parseLegacyChannelConfig walks the legacy agent.channels JSON array and
+// returns the config map for the first entry whose type matches.
+func parseLegacyChannelConfig(channelsRaw json.RawMessage, channelType string) map[string]string {
+	out := map[string]string{}
 	var channels []struct {
-		Type   string `json:"type"`
-		Config struct {
-			BotToken string `json:"bot_token"`
-		} `json:"config"`
+		Type   string                 `json:"type"`
+		Config map[string]interface{} `json:"config"`
 	}
 	if err := json.Unmarshal(channelsRaw, &channels); err != nil {
-		return ""
+		return out
 	}
 	for _, ch := range channels {
-		if ch.Type == "slack" && ch.Config.BotToken != "" {
-			return ch.Config.BotToken
+		if ch.Type != channelType {
+			continue
 		}
+		for k, v := range ch.Config {
+			if str, ok := v.(string); ok {
+				out[k] = str
+			}
+		}
+		return out
 	}
-	return ""
+	return out
 }
 
 // ── Teams Bot Framework webhook ─────────────────────────────────────
