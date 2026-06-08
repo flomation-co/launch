@@ -197,6 +197,7 @@ func (s *Service) configure() error {
 
 	// Google OAuth2 (public, browser-facing)
 	s.engine.GET("/auth/google/callback", s.handleGoogleAuthCallback)
+	s.engine.GET("/auth/google/identity", s.handleGoogleAuthInitiateIdentity)
 	s.engine.GET("/auth/google/trigger/:trigger_id", s.handleGoogleAuthInitiateTrigger)
 	s.engine.GET("/auth/google/:agent_user_id", s.handleGoogleAuthInitiate)
 

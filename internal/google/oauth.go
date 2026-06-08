@@ -29,6 +29,10 @@ var PurposeScopes = map[string]string{
 	"email_read": "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email",
 	"email_send": "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/userinfo.email",
 	"drive":      "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email",
+	// identity: minimal scopes just to verify "who you are at Google" so
+	// the user_identity row can record their canonical email address.
+	// Used by R3 Phase 2's profile-side "Connect with Google" button.
+	"identity": "https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
 }
 
 // DefaultScopes for backwards compatibility (calendar).

@@ -59,5 +59,12 @@ type GoogleAuthState struct {
 	AgentID     string
 	AgentUserID string
 	TriggerID   string // non-empty for trigger-scoped connections
-	Purpose     string // "calendar", "email_read", "email_send"
+	Purpose     string // "calendar", "email_read", "email_send", "identity"
+	// Set only for the identity-OAuth flow (R3 Phase 2). When UserID is
+	// non-empty the callback routes the resolved external_id to the API's
+	// user_identity endpoint rather than the existing agent_user / trigger
+	// endpoints. OrganisationID is empty for personal-mode declarations.
+	UserID         string
+	OrganisationID string
+	ChannelType    string
 }
