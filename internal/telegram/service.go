@@ -40,10 +40,15 @@ func NewService(webhookBase string) *Service {
 	}
 }
 
-// RegisterWebhook calls the Telegram Bot API to set the webhook URL for an agent.
-// The webhook points to: {webhookBase}/webhook/telegram/{agentID}
-func (s *Service) RegisterWebhook(agentID string, botToken string) error {
-	webhookURL := fmt.Sprintf("%s/webhook/telegram/%s", s.webhookBase, agentID)
+// RegisterWebhook calls the Telegram Bot API to set the webhook URL.
+// The webhook points to: {webhookBase}/webhook/telegram/{id}
+//
+// id is whatever identifier the channel handler will read from the URL
+// — historically an agent_id, currently transitioning to trigger_id as
+// part of the trigger-keyed webhook refactor. The handler itself looks
+// up whichever interpretation applies.
+func (s *Service) RegisterWebhook(id string, botToken string) error {
+	webhookURL := fmt.Sprintf("%s/webhook/telegram/%s", s.webhookBase, id)
 
 	payload, err := json.Marshal(map[string]interface{}{
 		"url":                  webhookURL,
@@ -71,21 +76,22 @@ func (s *Service) RegisterWebhook(agentID string, botToken string) error {
 	}
 
 	s.mu.Lock()
-	s.registered[agentID] = botToken
+	s.registered[id] = botToken
 	s.mu.Unlock()
 
 	log.WithFields(log.Fields{
-		"agent_id":    agentID,
+		"id":          id,
 		"webhook_url": webhookURL,
 	}).Info("telegram webhook registered")
 
 	return nil
 }
 
-// DeregisterWebhook removes the Telegram webhook for an agent.
-func (s *Service) DeregisterWebhook(agentID string) error {
+// DeregisterWebhook removes the Telegram webhook for the given id
+// (agent_id or trigger_id — see RegisterWebhook).
+func (s *Service) DeregisterWebhook(id string) error {
 	s.mu.RLock()
-	botToken, exists := s.registered[agentID]
+	botToken, exists := s.registered[id]
 	s.mu.RUnlock()
 
 	if !exists {
@@ -100,11 +106,11 @@ func (s *Service) DeregisterWebhook(agentID string) error {
 	defer func() { _ = resp.Body.Close() }()
 
 	s.mu.Lock()
-	delete(s.registered, agentID)
+	delete(s.registered, id)
 	s.mu.Unlock()
 
 	log.WithFields(log.Fields{
-		"agent_id": agentID,
+		"id": id,
 	}).Info("telegram webhook deregistered")
 
 	return nil

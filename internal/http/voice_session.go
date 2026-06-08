@@ -20,11 +20,16 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// handleTwilioVoiceWebhook handles POST /webhook/twilio/voice/:agent_id
-// This is the initial voice call webhook from Twilio. Responds with TwiML
-// that starts a bidirectional Media Stream.
+// handleTwilioVoiceWebhook handles POST /webhook/twilio/voice/:id
+// Initial voice call webhook from Twilio. Responds with TwiML that
+// starts a bidirectional Media Stream.
+//
+// :id is currently always interpreted as an agent_id (voice is realtime
+// + WebSocket-bridged, which requires the agent session loop). Trigger-
+// only voice flows are out of scope for the trigger-keyed refactor and
+// could be added later as a follow-up.
 func (s *Service) handleTwilioVoiceWebhook(c *gin.Context) {
-	agentID := c.Param("agent_id")
+	agentID := c.Param("id")
 	if err := uuid.Validate(agentID); err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return

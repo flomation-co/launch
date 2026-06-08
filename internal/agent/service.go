@@ -1082,21 +1082,20 @@ func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 	for _, ch := range channels {
 		switch ch.Type {
 		case "telegram":
-			var cfg struct {
-				BotToken string `json:"bot_token"`
-			}
-			if err := json.Unmarshal(ch.Config, &cfg); err != nil || cfg.BotToken == "" {
-				log.WithFields(log.Fields{
-					"agent_id": reg.AgentID,
-				}).Warn("telegram channel missing bot_token")
-				continue
-			}
-			if err := s.telegram.RegisterWebhook(reg.AgentID, cfg.BotToken); err != nil {
-				log.WithFields(log.Fields{
-					"agent_id": reg.AgentID,
-					"error":    err,
-				}).Error("failed to register telegram webhook")
-			}
+			// Telegram webhook registration is now owned by the
+			// trigger-upsert path (POST /trigger/:id calls Telegram's
+			// setWebhook with the trigger_id-keyed URL). Re-registering
+			// here on agent startup would clobber any standalone
+			// trigger's registration that shares the same bot token —
+			// Telegram allows one webhook URL per bot, so last-write-
+			// wins makes the agent-side path actively harmful when
+			// multiple flows share a bot.
+			//
+			// Existing legacy agent_id-keyed webhook URLs already on
+			// Telegram's side continue to work via the handler's
+			// agent-id fallback path; the URL gets upgraded to a
+			// trigger_id-keyed one the next time the flow is saved
+			// (trigger upsert).
 		case "slack":
 			var cfg struct {
 				BotToken string `json:"bot_token"`

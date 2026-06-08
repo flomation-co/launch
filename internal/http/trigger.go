@@ -49,10 +49,40 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// Update Facebook page index for Facebook triggers
 	s.updateFacebookIndex(&tr)
 
+	// Telegram triggers: programmatically set the Bot API webhook URL to
+	// /webhook/telegram/{trigger_id}. The handler also accepts the
+	// legacy /webhook/telegram/{agent_id} URL via fallback, but new
+	// trigger-keyed registrations route through the unified dispatch.
+	s.registerTelegramTriggerWebhook(&tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
 		c.JSON(http.StatusOK, r)
+	}
+}
+
+// registerTelegramTriggerWebhook calls Telegram's setWebhook API for a
+// telegram-type trigger, pointing at /webhook/telegram/{trigger_id}.
+// Errors are logged but don't fail the trigger upsert — the agent
+// service may also register the webhook from its side for agent-owned
+// triggers, and the user can hit /api/v1/internal/trigger/:id again to
+// retry.
+func (s *Service) registerTelegramTriggerWebhook(tr *launch.Trigger) {
+	if tr == nil || tr.Type != launch.TriggerTypeTelegram || s.telegram == nil {
+		return
+	}
+	creds := s.resolveTriggerCreds(tr.ID)
+	botToken := creds["bot_token"]
+	if botToken == "" {
+		log.WithField("trigger_id", tr.ID).Warn("telegram trigger upsert: no bot_token resolved; skipping webhook registration")
+		return
+	}
+	if err := s.telegram.RegisterWebhook(tr.ID, botToken); err != nil {
+		log.WithFields(log.Fields{
+			"trigger_id": tr.ID,
+			"error":      err,
+		}).Warn("failed to register Telegram webhook for trigger")
 	}
 }
 
@@ -76,6 +106,17 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 
 	// Remove from Facebook page index before deleting
 	s.facebookIndex.RemoveTrigger(t.ID)
+
+	// Deregister Telegram webhook if this is a telegram trigger we
+	// previously registered.
+	if t.Type == launch.TriggerTypeTelegram && s.telegram != nil {
+		if err := s.telegram.DeregisterWebhook(t.ID); err != nil {
+			log.WithFields(log.Fields{
+				"trigger_id": t.ID,
+				"error":      err,
+			}).Warn("failed to deregister Telegram webhook for trigger")
+		}
+	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {
 		log.WithFields(log.Fields{
