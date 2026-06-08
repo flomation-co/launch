@@ -1144,38 +1144,20 @@ func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 	for _, ch := range channels {
 		switch ch.Type {
 		case "telegram":
-			// Post-R1 the bot_token has moved from agent.channels to the
-			// trigger node's input. We still read agent.channels as the
-			// primary source for backward compat, but fall back to the
-			// trigger-node config when it's empty. When the fallback
-			// fires we also register under the trigger_id URL so that
-			// new trigger-keyed dispatch takes effect on next webhook.
-			var cfg struct {
-				BotToken string `json:"bot_token"`
-			}
-			_ = json.Unmarshal(ch.Config, &cfg)
-
-			registrationID := reg.AgentID
-			if cfg.BotToken == "" {
-				botToken, triggerID := s.resolveTriggerBotToken(reg)
-				if botToken == "" {
-					// Neither agent.channels nor trigger node carries a
-					// bot_token. Expected for non-Telegram agents that
-					// happen to have a stale agent.channels entry.
-					continue
-				}
-				cfg.BotToken = botToken
-				if triggerID != "" {
-					registrationID = triggerID
-				}
-			}
-			if err := s.telegram.RegisterWebhook(registrationID, cfg.BotToken); err != nil {
-				log.WithFields(log.Fields{
-					"agent_id":        reg.AgentID,
-					"registration_id": registrationID,
-					"error":           err,
-				}).Error("failed to register telegram webhook")
-			}
+			// Telegram webhook registration is now owned by the
+			// trigger-upsert path (POST /trigger/:id calls Telegram's
+			// setWebhook with the trigger_id-keyed URL). Re-registering
+			// here on agent startup would clobber any standalone
+			// trigger's registration that shares the same bot token —
+			// Telegram allows one webhook URL per bot, so last-write-
+			// wins makes the agent-side path actively harmful when
+			// multiple flows share a bot.
+			//
+			// Existing legacy agent_id-keyed webhook URLs already on
+			// Telegram's side continue to work via the handler's
+			// agent-id fallback path; the URL gets upgraded to a
+			// trigger_id-keyed one the next time the flow is saved
+			// (trigger upsert).
 		case "slack":
 			var cfg struct {
 				BotToken string `json:"bot_token"`
