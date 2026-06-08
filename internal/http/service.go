@@ -204,6 +204,9 @@ func (s *Service) configure() error {
 	s.engine.GET("/auth/microsoft/identity", s.handleMicrosoftAuthInitiateIdentity)
 	s.engine.GET("/auth/microsoft/callback", s.handleMicrosoftAuthCallback)
 
+	s.engine.GET("/auth/slack/identity", s.handleSlackAuthInitiateIdentity)
+	s.engine.GET("/auth/slack/callback", s.handleSlackAuthCallback)
+
 	return nil
 }
 

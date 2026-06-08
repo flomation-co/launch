@@ -70,6 +70,15 @@ type FacebookConfig struct {
 	VerifyToken string `json:"verify_token"` // hub.challenge verification
 }
 
+// SlackConfig holds the "Sign in with Slack" OAuth client used by the
+// R3 Phase 2 identity flow. The bot-token-based webhook flow lives on
+// individual agents via their trigger configs — this client is solely
+// for verifying who a user is at Slack.
+type SlackConfig struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
+
 type Config struct {
 	Database         DatabaseConfig   `json:"database"`
 	HttpListenConfig HttpListenConfig `json:"http"`
@@ -78,6 +87,7 @@ type Config struct {
 	Google           *GoogleConfig    `json:"google"`
 	Microsoft        *MicrosoftConfig `json:"microsoft"`
 	Facebook         *FacebookConfig  `json:"facebook"`
+	Slack            *SlackConfig     `json:"slack"`
 	Embedding        *EmbeddingConfig `json:"embedding"`
 	PublicURL        string           `json:"public_url"` // e.g. "https://launch.flomation.app"
 	TLS              *mtls.TLSConfig  `json:"tls,omitempty"`
