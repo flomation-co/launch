@@ -23,7 +23,7 @@ import (
 
 const (
 	slackOIDCAuthURL     = "https://slack.com/openid/connect/authorize"
-	slackOIDCTokenURL    = "https://slack.com/api/openid.connect.token"
+	slackOIDCTokenURL    = "https://slack.com/api/openid.connect.token" // #nosec G101 -- public Slack OIDC token endpoint URL, not a credential
 	slackOIDCUserInfoURL = "https://slack.com/api/openid.connect.userInfo"
 )
 
