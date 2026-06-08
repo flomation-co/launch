@@ -1065,6 +1065,68 @@ func (s *Service) dispatchExtraction(
 	}
 }
 
+// resolveTriggerBotToken looks for a Telegram trigger on the agent's
+// orchestrator flow and returns its resolved bot_token (substituting any
+// ${secrets.X} references via the trigger-scoped resolve endpoint).
+// Returns the trigger's ID alongside so the caller can register under
+// the trigger-keyed URL.
+//
+// Returns ("", "") when no Telegram trigger is configured or its token
+// is empty.
+func (s *Service) resolveTriggerBotToken(reg *launch.AgentRegistration) (string, string) {
+	if reg == nil || reg.OrchestratorFlowID == nil || *reg.OrchestratorFlowID == "" {
+		return "", ""
+	}
+	triggers, err := s.trigger.GetTriggersByFlowID(*reg.OrchestratorFlowID)
+	if err != nil {
+		return "", ""
+	}
+	for _, tr := range triggers {
+		if tr == nil || tr.Type != "telegram" || tr.DisabledAt != nil {
+			continue
+		}
+		var data map[string]interface{}
+		if err := json.Unmarshal(tr.Data, &data); err != nil {
+			continue
+		}
+		raw, _ := data["bot_token"].(string)
+		if raw == "" {
+			continue
+		}
+		// Resolve any ${secrets.X} / ${env.X} references via the
+		// trigger-scoped resolve endpoint. We scan for ${...} occurrences
+		// inline rather than pull in the http package's extractVarRefs.
+		var refs []string
+		s2 := raw
+		for {
+			i := strings.Index(s2, "${")
+			if i < 0 {
+				break
+			}
+			s2 = s2[i+2:]
+			j := strings.Index(s2, "}")
+			if j < 0 {
+				break
+			}
+			refs = append(refs, s2[:j])
+			s2 = s2[j+1:]
+		}
+		resolved := raw
+		if len(refs) > 0 {
+			if mapped, err := s.trigger.ResolveVariables(tr.ID, refs); err == nil {
+				for k, v := range mapped {
+					resolved = strings.ReplaceAll(resolved, "${"+k+"}", v)
+				}
+			}
+		}
+		if resolved == "" {
+			continue
+		}
+		return resolved, tr.ID
+	}
+	return "", ""
+}
+
 // activateChannels sets up external channel integrations for an agent.
 func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 	var channels []struct {
@@ -1082,19 +1144,36 @@ func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 	for _, ch := range channels {
 		switch ch.Type {
 		case "telegram":
+			// Post-R1 the bot_token has moved from agent.channels to the
+			// trigger node's input. We still read agent.channels as the
+			// primary source for backward compat, but fall back to the
+			// trigger-node config when it's empty. When the fallback
+			// fires we also register under the trigger_id URL so that
+			// new trigger-keyed dispatch takes effect on next webhook.
 			var cfg struct {
 				BotToken string `json:"bot_token"`
 			}
-			if err := json.Unmarshal(ch.Config, &cfg); err != nil || cfg.BotToken == "" {
-				log.WithFields(log.Fields{
-					"agent_id": reg.AgentID,
-				}).Warn("telegram channel missing bot_token")
-				continue
+			_ = json.Unmarshal(ch.Config, &cfg)
+
+			registrationID := reg.AgentID
+			if cfg.BotToken == "" {
+				botToken, triggerID := s.resolveTriggerBotToken(reg)
+				if botToken == "" {
+					// Neither agent.channels nor trigger node carries a
+					// bot_token. Expected for non-Telegram agents that
+					// happen to have a stale agent.channels entry.
+					continue
+				}
+				cfg.BotToken = botToken
+				if triggerID != "" {
+					registrationID = triggerID
+				}
 			}
-			if err := s.telegram.RegisterWebhook(reg.AgentID, cfg.BotToken); err != nil {
+			if err := s.telegram.RegisterWebhook(registrationID, cfg.BotToken); err != nil {
 				log.WithFields(log.Fields{
-					"agent_id": reg.AgentID,
-					"error":    err,
+					"agent_id":        reg.AgentID,
+					"registration_id": registrationID,
+					"error":           err,
 				}).Error("failed to register telegram webhook")
 			}
 		case "slack":
