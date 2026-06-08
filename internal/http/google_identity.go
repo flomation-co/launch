@@ -63,8 +63,17 @@ func (s *Service) handleGoogleAuthInitiateIdentity(c *gin.Context) {
 
 // identityFromCookieOrHeader resolves the calling user via the
 // flomation-token cookie (browser popup flow), falling back to the
-// Authorization header for completeness. Returns an empty string with a
-// non-nil error if neither source produces a valid token.
+// Authorization header, and finally to a ?token= query parameter.
+//
+// The query-string fallback exists for dev environments where the
+// editor and Launch sit on different origins (e.g. localhost editor +
+// ngrok-tunnelled Launch) and the cookie cannot cross domains. In
+// production both services live under *.flomation.app and the
+// Domain=.flomation.app cookie is sent to the popup natively, so the
+// fallback is unused.
+//
+// Returns an empty string with a non-nil error if no source produces a
+// valid token.
 func (s *Service) identityFromCookieOrHeader(c *gin.Context) (string, error) {
 	var token string
 	if cookie, err := c.Cookie("flomation-token"); err == nil && cookie != "" {
@@ -74,6 +83,8 @@ func (s *Service) identityFromCookieOrHeader(c *gin.Context) (string, error) {
 		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
 			token = parts[1]
 		}
+	} else if qp := c.Query("token"); qp != "" {
+		token = qp
 	}
 	if token == "" {
 		return "", nil
