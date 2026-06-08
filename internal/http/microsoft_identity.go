@@ -93,25 +93,13 @@ func (s *Service) handleMicrosoftAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// Pick the right external_id for the requested channel type. The
-	// Teams trigger emits AAD Object ID as its user_id, so identity
-	// declarations for `teams` must record the same value. Outlook
-	// email + similar email-based channels would use the resolved
-	// email — wire those up here when the channels are added.
-	var externalID string
-	switch authState.ChannelType {
-	case "teams":
-		externalID = ident.ID
-	default:
-		// Defensive default: assume email for any future Microsoft
-		// channel type that isn't `teams`. The editor only surfaces
-		// `teams` for Microsoft today, but a typo on a future channel
-		// shouldn't silently 500.
-		externalID = ident.Email
-		if externalID == "" {
-			externalID = ident.ID
-		}
-	}
+	// The Teams trigger emits AAD Object ID as its user_id and the API
+	// normalises the inbound channel_type from "teams" to "microsoft"
+	// (see normaliseChannelType in api/internal/agent/inbound.go), so
+	// the identity row records the AAD Object ID under channel_type
+	// "microsoft" — covering Teams today and any future Microsoft
+	// surface that also identifies users by AAD Object ID.
+	externalID := ident.ID
 	if externalID == "" {
 		c.String(http.StatusBadRequest, "Microsoft did not return a usable identifier")
 		return

@@ -93,7 +93,7 @@ type MicrosoftAuthState struct {
 	Purpose        string // "identity" — only purpose currently in use
 	UserID         string
 	OrganisationID string // empty for personal mode
-	ChannelType    string // "teams" — the user_identity row's channel_type
+	ChannelType    string // "microsoft" — the user_identity row's channel_type
 }
 
 type GoogleAuthState struct {
