@@ -1065,68 +1065,6 @@ func (s *Service) dispatchExtraction(
 	}
 }
 
-// resolveTriggerBotToken looks for a Telegram trigger on the agent's
-// orchestrator flow and returns its resolved bot_token (substituting any
-// ${secrets.X} references via the trigger-scoped resolve endpoint).
-// Returns the trigger's ID alongside so the caller can register under
-// the trigger-keyed URL.
-//
-// Returns ("", "") when no Telegram trigger is configured or its token
-// is empty.
-func (s *Service) resolveTriggerBotToken(reg *launch.AgentRegistration) (string, string) {
-	if reg == nil || reg.OrchestratorFlowID == nil || *reg.OrchestratorFlowID == "" {
-		return "", ""
-	}
-	triggers, err := s.trigger.GetTriggersByFlowID(*reg.OrchestratorFlowID)
-	if err != nil {
-		return "", ""
-	}
-	for _, tr := range triggers {
-		if tr == nil || tr.Type != "telegram" || tr.DisabledAt != nil {
-			continue
-		}
-		var data map[string]interface{}
-		if err := json.Unmarshal(tr.Data, &data); err != nil {
-			continue
-		}
-		raw, _ := data["bot_token"].(string)
-		if raw == "" {
-			continue
-		}
-		// Resolve any ${secrets.X} / ${env.X} references via the
-		// trigger-scoped resolve endpoint. We scan for ${...} occurrences
-		// inline rather than pull in the http package's extractVarRefs.
-		var refs []string
-		s2 := raw
-		for {
-			i := strings.Index(s2, "${")
-			if i < 0 {
-				break
-			}
-			s2 = s2[i+2:]
-			j := strings.Index(s2, "}")
-			if j < 0 {
-				break
-			}
-			refs = append(refs, s2[:j])
-			s2 = s2[j+1:]
-		}
-		resolved := raw
-		if len(refs) > 0 {
-			if mapped, err := s.trigger.ResolveVariables(tr.ID, refs); err == nil {
-				for k, v := range mapped {
-					resolved = strings.ReplaceAll(resolved, "${"+k+"}", v)
-				}
-			}
-		}
-		if resolved == "" {
-			continue
-		}
-		return resolved, tr.ID
-	}
-	return "", ""
-}
-
 // activateChannels sets up external channel integrations for an agent.
 func (s *Service) activateChannels(reg *launch.AgentRegistration) {
 	var channels []struct {
