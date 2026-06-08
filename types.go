@@ -54,10 +54,59 @@ type AgentRegistration struct {
 
 // GoogleAuthState represents a pending OAuth flow linking a browser
 // consent redirect back to the agent_user who initiated it.
+// FacebookAuthState records a pending Login-with-Facebook consent flow.
+// Identity-only at the start; future Facebook OAuth purposes can extend.
+type FacebookAuthState struct {
+	State          string
+	Purpose        string // "identity" — only purpose currently in use
+	UserID         string
+	OrganisationID string // empty for personal mode
+	ChannelType    string // "facebook_messenger"
+}
+
+// LinkedInAuthState records a pending Sign-in-with-LinkedIn consent flow.
+// Identity-only at the start; future LinkedIn OAuth purposes can extend.
+type LinkedInAuthState struct {
+	State          string
+	Purpose        string // "identity" — only purpose currently in use
+	UserID         string
+	OrganisationID string // empty for personal mode
+	ChannelType    string // "linkedin"
+}
+
+// SlackAuthState records a pending Slack "Sign in with Slack" (OIDC)
+// consent flow. Identity-only at the start; future Slack OAuth purposes
+// (e.g. workspace install via bot tokens for personal use) can extend.
+type SlackAuthState struct {
+	State          string
+	Purpose        string // "identity" — only purpose currently in use
+	UserID         string
+	OrganisationID string // empty for personal mode
+	ChannelType    string // "slack"
+}
+
+// MicrosoftAuthState records a pending Microsoft OAuth consent flow.
+// Currently only used for the R3 Phase 2 identity flow; agent / trigger
+// Microsoft flows can extend this struct (and the table) when added.
+type MicrosoftAuthState struct {
+	State          string
+	Purpose        string // "identity" — only purpose currently in use
+	UserID         string
+	OrganisationID string // empty for personal mode
+	ChannelType    string // "microsoft" — the user_identity row's channel_type
+}
+
 type GoogleAuthState struct {
 	State       string
 	AgentID     string
 	AgentUserID string
 	TriggerID   string // non-empty for trigger-scoped connections
-	Purpose     string // "calendar", "email_read", "email_send"
+	Purpose     string // "calendar", "email_read", "email_send", "identity"
+	// Set only for the identity-OAuth flow (R3 Phase 2). When UserID is
+	// non-empty the callback routes the resolved external_id to the API's
+	// user_identity endpoint rather than the existing agent_user / trigger
+	// endpoints. OrganisationID is empty for personal-mode declarations.
+	UserID         string
+	OrganisationID string
+	ChannelType    string
 }

@@ -110,7 +110,10 @@ func (s *Service) handleGoogleAuthCallback(c *gin.Context) {
 		c.String(http.StatusInternalServerError, fmt.Sprintf("Connection failed: %v", err))
 		return
 	}
-	if tokenResp.RefreshToken == "" {
+	// Identity-purpose flows don't need refresh tokens (one-shot read of
+	// userinfo.email is enough); only the long-lived agent/trigger flows
+	// require offline access for ongoing API calls.
+	if tokenResp.RefreshToken == "" && authState.Purpose != "identity" {
 		c.String(http.StatusBadRequest, "No refresh token received. Please revoke access at https://myaccount.google.com/permissions and try again.")
 		return
 	}
@@ -124,21 +127,42 @@ func (s *Service) handleGoogleAuthCallback(c *gin.Context) {
 
 	label := google.InferLabel(email)
 
-	payload, _ := json.Marshal(map[string]string{
-		"google_email":  email,
-		"refresh_token": tokenResp.RefreshToken,
-		"label":         label,
-		"purpose":       authState.Purpose,
-	})
-
-	// Route to the correct storage endpoint based on auth state
+	// Route to the correct storage endpoint based on auth state. Three
+	// flows share this callback now: identity (R3 Phase 2), trigger-scoped,
+	// and agent-user-scoped. Identity wins when state.UserID is set.
 	var apiURL string
-	if authState.TriggerID != "" {
+	var payload []byte
+	switch {
+	case authState.UserID != "":
+		apiURL = fmt.Sprintf("%s/api/v1/internal/user-identity", s.config.InternalAPIURL())
+		body := map[string]interface{}{
+			"user_id":      authState.UserID,
+			"channel_type": authState.ChannelType,
+			"external_id":  email,
+			"display_name": label,
+		}
+		if authState.OrganisationID != "" {
+			body["organisation_id"] = authState.OrganisationID
+		}
+		payload, _ = json.Marshal(body)
+	case authState.TriggerID != "":
 		apiURL = fmt.Sprintf("%s/api/v1/internal/trigger/%s/google-account",
 			s.config.InternalAPIURL(), authState.TriggerID)
-	} else {
+		payload, _ = json.Marshal(map[string]string{
+			"google_email":  email,
+			"refresh_token": tokenResp.RefreshToken,
+			"label":         label,
+			"purpose":       authState.Purpose,
+		})
+	default:
 		apiURL = fmt.Sprintf("%s/api/v1/internal/agent-user/%s/google-account",
 			s.config.InternalAPIURL(), authState.AgentUserID)
+		payload, _ = json.Marshal(map[string]string{
+			"google_email":  email,
+			"refresh_token": tokenResp.RefreshToken,
+			"label":         label,
+			"purpose":       authState.Purpose,
+		})
 	}
 
 	apiResp, err := s.apiClient.Post(apiURL, "application/json", bytes.NewReader(payload)) // #nosec G107 — internal service-to-service call
