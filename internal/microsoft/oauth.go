@@ -33,6 +33,11 @@ var PurposeScopes = map[string]string{
 	"teams":      "offline_access ChannelMessage.Send Team.ReadBasic.All Channel.ReadBasic.All Chat.ReadWrite User.Read",
 	"sharepoint": "offline_access Sites.ReadWrite.All User.Read",
 	"calendar":   "offline_access Calendars.ReadWrite User.Read",
+	// identity: minimal scopes (just User.Read, no offline_access) so the
+	// callback can resolve the AAD Object ID + email + display name once
+	// and store them in user_identity. Used by R3 Phase 2's "Connect with
+	// Microsoft" button on the profile Identities tab.
+	"identity": "User.Read",
 }
 
 // DefaultScopes for general-purpose access.
@@ -191,6 +196,58 @@ func (s *Service) FetchUserEmail(accessToken string) (string, string, error) {
 		return "", "", fmt.Errorf("no email in Microsoft Graph /me response")
 	}
 	return email, info.DisplayName, nil
+}
+
+// UserIdentity is the canonical "who is this person at Microsoft" tuple
+// resolved from Microsoft Graph /me. Used by the identity-purpose OAuth
+// flow: the Teams channel uses ID (AAD Object ID) as external_id; the
+// Outlook email channel uses Email. DisplayName is always the human-
+// readable label.
+type UserIdentity struct {
+	ID          string // AAD Object ID — stable across renames, the canonical Microsoft user identifier
+	Email       string // mail OR userPrincipalName (falls back if mail is unset)
+	DisplayName string
+}
+
+// FetchUserIdentity returns the full identity tuple from Microsoft Graph
+// /me. Used by the identity-OAuth callback; existing callers that only
+// need the email keep using FetchUserEmail unchanged.
+func (s *Service) FetchUserIdentity(accessToken string) (*UserIdentity, error) {
+	req, err := http.NewRequest(http.MethodGet, MicrosoftGraphMe, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := s.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var info struct {
+		ID                string `json:"id"`
+		Mail              string `json:"mail"`
+		UserPrincipalName string `json:"userPrincipalName"`
+		DisplayName       string `json:"displayName"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, err
+	}
+
+	if info.ID == "" {
+		return nil, fmt.Errorf("no id (AAD Object ID) in Microsoft Graph /me response")
+	}
+
+	email := info.Mail
+	if email == "" {
+		email = info.UserPrincipalName
+	}
+	return &UserIdentity{
+		ID:          info.ID,
+		Email:       email,
+		DisplayName: info.DisplayName,
+	}, nil
 }
 
 // InferLabel guesses a label ("Work" or "Personal") from the email domain.

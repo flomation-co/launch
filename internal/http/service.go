@@ -202,8 +202,21 @@ func (s *Service) configure() error {
 
 	// Google OAuth2 (public, browser-facing)
 	s.engine.GET("/auth/google/callback", s.handleGoogleAuthCallback)
+	s.engine.GET("/auth/google/identity", s.handleGoogleAuthInitiateIdentity)
 	s.engine.GET("/auth/google/trigger/:trigger_id", s.handleGoogleAuthInitiateTrigger)
 	s.engine.GET("/auth/google/:agent_user_id", s.handleGoogleAuthInitiate)
+
+	s.engine.GET("/auth/microsoft/identity", s.handleMicrosoftAuthInitiateIdentity)
+	s.engine.GET("/auth/microsoft/callback", s.handleMicrosoftAuthCallback)
+
+	s.engine.GET("/auth/slack/identity", s.handleSlackAuthInitiateIdentity)
+	s.engine.GET("/auth/slack/callback", s.handleSlackAuthCallback)
+
+	s.engine.GET("/auth/facebook/identity", s.handleFacebookAuthInitiateIdentity)
+	s.engine.GET("/auth/facebook/callback", s.handleFacebookAuthCallback)
+
+	s.engine.GET("/auth/linkedin/identity", s.handleLinkedInAuthInitiateIdentity)
+	s.engine.GET("/auth/linkedin/callback", s.handleLinkedInAuthCallback)
 
 	return nil
 }
