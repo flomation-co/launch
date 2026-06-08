@@ -64,10 +64,24 @@ type MetricsConfig struct {
 	AllowedIPs []string `json:"allowed_ips"`
 }
 
-// FacebookConfig holds credentials for Facebook webhook verification.
+// FacebookConfig holds credentials for the Facebook integration. The
+// AppSecret/VerifyToken pair is used for Messenger webhook verification;
+// ClientID/ClientSecret are used for the "Login with Facebook" identity
+// flow (R3 Phase 2). Both surfaces live on the same Facebook app, so a
+// single config block carries both credential pairs.
 type FacebookConfig struct {
-	AppSecret   string `json:"app_secret"`   // X-Hub-Signature-256 verification
-	VerifyToken string `json:"verify_token"` // hub.challenge verification
+	AppSecret    string `json:"app_secret"`    // X-Hub-Signature-256 verification
+	VerifyToken  string `json:"verify_token"`  // hub.challenge verification
+	ClientID     string `json:"client_id"`     // Login with Facebook OAuth
+	ClientSecret string `json:"client_secret"` // Login with Facebook OAuth
+}
+
+// LinkedInConfig holds the "Sign in with LinkedIn" OAuth client used by
+// the R3 Phase 2 identity flow. Mirrors Sentinel's existing LinkedIn
+// social-login wiring.
+type LinkedInConfig struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
 }
 
 // SlackConfig holds the "Sign in with Slack" OAuth client used by the
@@ -88,6 +102,7 @@ type Config struct {
 	Microsoft        *MicrosoftConfig `json:"microsoft"`
 	Facebook         *FacebookConfig  `json:"facebook"`
 	Slack            *SlackConfig     `json:"slack"`
+	LinkedIn         *LinkedInConfig  `json:"linkedin"`
 	Embedding        *EmbeddingConfig `json:"embedding"`
 	PublicURL        string           `json:"public_url"` // e.g. "https://launch.flomation.app"
 	TLS              *mtls.TLSConfig  `json:"tls,omitempty"`

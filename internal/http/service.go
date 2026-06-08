@@ -207,6 +207,12 @@ func (s *Service) configure() error {
 	s.engine.GET("/auth/slack/identity", s.handleSlackAuthInitiateIdentity)
 	s.engine.GET("/auth/slack/callback", s.handleSlackAuthCallback)
 
+	s.engine.GET("/auth/facebook/identity", s.handleFacebookAuthInitiateIdentity)
+	s.engine.GET("/auth/facebook/callback", s.handleFacebookAuthCallback)
+
+	s.engine.GET("/auth/linkedin/identity", s.handleLinkedInAuthInitiateIdentity)
+	s.engine.GET("/auth/linkedin/callback", s.handleLinkedInAuthCallback)
+
 	return nil
 }
 

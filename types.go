@@ -54,6 +54,26 @@ type AgentRegistration struct {
 
 // GoogleAuthState represents a pending OAuth flow linking a browser
 // consent redirect back to the agent_user who initiated it.
+// FacebookAuthState records a pending Login-with-Facebook consent flow.
+// Identity-only at the start; future Facebook OAuth purposes can extend.
+type FacebookAuthState struct {
+	State          string
+	Purpose        string // "identity" — only purpose currently in use
+	UserID         string
+	OrganisationID string // empty for personal mode
+	ChannelType    string // "facebook_messenger"
+}
+
+// LinkedInAuthState records a pending Sign-in-with-LinkedIn consent flow.
+// Identity-only at the start; future LinkedIn OAuth purposes can extend.
+type LinkedInAuthState struct {
+	State          string
+	Purpose        string // "identity" — only purpose currently in use
+	UserID         string
+	OrganisationID string // empty for personal mode
+	ChannelType    string // "linkedin"
+}
+
 // SlackAuthState records a pending Slack "Sign in with Slack" (OIDC)
 // consent flow. Identity-only at the start; future Slack OAuth purposes
 // (e.g. workspace install via bot tokens for personal use) can extend.
