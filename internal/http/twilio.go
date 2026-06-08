@@ -13,14 +13,18 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// handleTwilioSMSWebhook handles POST /webhook/twilio/sms/:agent_id
-// Receives incoming SMS messages from Twilio.
+// handleTwilioSMSWebhook handles POST /webhook/twilio/sms/:id
+// Receives incoming SMS messages from Twilio. :id is a trigger_id for
+// new trigger-keyed registrations or an agent_id for legacy.
 func (s *Service) handleTwilioSMSWebhook(c *gin.Context) {
-	agentID := c.Param("agent_id")
-	if err := uuid.Validate(agentID); err != nil {
+	id := c.Param("id")
+	if err := uuid.Validate(id); err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
+
+	tr, _ := s.trigger.GetTriggerByID(id)
+	isTrigger := tr != nil && (tr.Type == "twilio-sms" || tr.Type == "twilio_sms")
 
 	// Parse form-encoded webhook data
 	if err := c.Request.ParseForm(); err != nil {
@@ -40,15 +44,19 @@ func (s *Service) handleTwilioSMSWebhook(c *gin.Context) {
 		return
 	}
 
-	// Validate Twilio signature
-	reg, err := s.agent.GetRegistration(agentID)
-	if err != nil || reg == nil {
-		log.WithField("agent_id", agentID).Warn("SMS webhook for unknown agent")
-		c.Data(http.StatusOK, "application/xml", []byte(twilio.EmptyResponse()))
-		return
+	// Resolve auth token for signature validation.
+	var authToken string
+	if isTrigger {
+		authToken = s.resolveTriggerCreds(id)["auth_token"]
+	} else {
+		reg, err := s.agent.GetRegistration(id)
+		if err != nil || reg == nil {
+			log.WithField("agent_id", id).Warn("SMS webhook for unknown agent")
+			c.Data(http.StatusOK, "application/xml", []byte(twilio.EmptyResponse()))
+			return
+		}
+		authToken = extractTwilioAuthToken(reg.Channels, accountSID)
 	}
-
-	authToken := extractTwilioAuthToken(reg.Channels, accountSID)
 	if authToken != "" {
 		signature := c.GetHeader("X-Twilio-Signature")
 		params := make(map[string]string)
@@ -59,7 +67,7 @@ func (s *Service) handleTwilioSMSWebhook(c *gin.Context) {
 		}
 		requestURL := fmt.Sprintf("%s%s", s.config.PublicURL, c.Request.URL.Path)
 		if !twilio.ValidateSignature(authToken, requestURL, signature, params) {
-			log.WithField("agent_id", agentID).Warn("invalid Twilio signature on SMS webhook")
+			log.WithField("id", id).Warn("invalid Twilio signature on SMS webhook")
 			c.AbortWithStatus(http.StatusForbidden)
 			return
 		}
@@ -83,19 +91,22 @@ func (s *Service) handleTwilioSMSWebhook(c *gin.Context) {
 		"date":        time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 	}
 
-	msg := agent.InboundMessage{
-		ChannelType: "twilio_sms",
-		Sender:      sender,
-		Content:     body,
-		Metadata:    metadata,
-	}
-
 	// Dispatch asynchronously — Twilio expects a quick response
 	appmetrics.InboundMessagesTotal.WithLabelValues("twilio_sms").Inc()
 	go func() {
-		if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
+		if isTrigger {
+			s.postTriggerDispatch(id, "twilio_sms", sender, body, metadata)
+			return
+		}
+		msg := agent.InboundMessage{
+			ChannelType: "twilio_sms",
+			Sender:      sender,
+			Content:     body,
+			Metadata:    metadata,
+		}
+		if err := s.agent.HandleInboundMessage(id, msg); err != nil {
 			log.WithFields(log.Fields{
-				"agent_id": agentID,
+				"agent_id": id,
 				"error":    err,
 				"from":     from,
 			}).Error("failed to handle Twilio SMS message")

@@ -20,6 +20,7 @@ import (
 
 	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/facebook"
+	telegrampkg "flomation.app/automate/launch/internal/telegram"
 	githubwh "flomation.app/automate/launch/internal/github"
 	gitlabwh "flomation.app/automate/launch/internal/gitlab"
 	"flomation.app/automate/launch/internal/google"
@@ -46,12 +47,13 @@ type Service struct {
 	trigger        *trigger.Service
 	agent          *agent.Service
 	google         *google.Service
+	telegram       *telegrampkg.Service
 	db             *persistence.Service
 	facebookIndex  *facebook.PageIndex
 	voiceCalls     *twilio.VoiceCallManager
 }
 
-func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, db *persistence.Service) (*Service, error) {
+func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, telegramSvc *telegrampkg.Service, db *persistence.Service) (*Service, error) {
 	gin.SetMode(gin.ReleaseMode)
 
 	apiClient, err := mtls.ClientOrDefault(config.TLS, 15*time.Second)
@@ -64,6 +66,7 @@ func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent
 		engine:        gin.New(),
 		apiClient:     apiClient,
 		google:        googleSvc,
+		telegram:      telegramSvc,
 		db:            db,
 		trigger:       trigger,
 		agent:         agentSvc,
@@ -177,13 +180,15 @@ func (s *Service) configure() error {
 
 	// Agent inbound webhooks (edge-facing, no auth — validated by agent ID)
 	// These stay on the public engine — external services hit them directly.
+	// :id is a trigger_id for new registrations or an agent_id for
+	// legacy. Handlers try trigger lookup first, fall back to agent.
 	s.engine.POST("/webhook/agent/:agent_id", s.handleAgentWebhook)
-	s.engine.POST("/webhook/telegram/:agent_id", s.handleTelegramWebhook)
-	s.engine.POST("/webhook/slack/:agent_id", s.handleSlackWebhook)
-	s.engine.POST("/webhook/teams/:agent_id", s.handleTeamsWebhook)
-	s.engine.POST("/webhook/twilio/sms/:agent_id", s.handleTwilioSMSWebhook)
-	s.engine.POST("/webhook/twilio/voice/:agent_id", s.handleTwilioVoiceWebhook)
-	s.engine.POST("/webhook/twilio/voice/:agent_id/status", s.handleTwilioVoiceStatus)
+	s.engine.POST("/webhook/telegram/:id", s.handleTelegramWebhook)
+	s.engine.POST("/webhook/slack/:id", s.handleSlackWebhook)
+	s.engine.POST("/webhook/teams/:id", s.handleTeamsWebhook)
+	s.engine.POST("/webhook/twilio/sms/:id", s.handleTwilioSMSWebhook)
+	s.engine.POST("/webhook/twilio/voice/:id", s.handleTwilioVoiceWebhook)
+	s.engine.POST("/webhook/twilio/voice/:id/status", s.handleTwilioVoiceStatus)
 	s.engine.GET("/ws/twilio/voice/:agent_id", s.handleTwilioVoiceWS)
 	s.engine.GET("/ws/twilio/voice-outbound/:session_id", s.handleTwilioVoiceOutboundWS)
 

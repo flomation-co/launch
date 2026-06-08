@@ -124,7 +124,7 @@ func main() {
 		log.Info("Google Drive poll service started")
 	}
 
-	r, err := http.NewService(cfg, t, agentSvc, googleSvc, db)
+	r, err := http.NewService(cfg, t, agentSvc, googleSvc, telegramSvc, db)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err,

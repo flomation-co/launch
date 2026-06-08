@@ -102,13 +102,21 @@ func (s *Service) handleAgentWebhook(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "received"})
 }
 
-// handleTelegramWebhook handles POST /webhook/telegram/:agent_id — receives Telegram Bot API updates.
+// handleTelegramWebhook handles POST /webhook/telegram/:id — receives
+// Telegram Bot API updates. The :id is a trigger_id for new
+// trigger-keyed registrations or an agent_id for legacy agent-scoped
+// registrations; the handler tries the trigger lookup first, falls back
+// to the agent dispatch path if not found.
 func (s *Service) handleTelegramWebhook(c *gin.Context) {
-	agentID := c.Param("agent_id")
-	if err := uuid.Validate(agentID); err != nil {
+	id := c.Param("id")
+	if err := uuid.Validate(id); err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
+
+	// Routing decision: is :id a known trigger?
+	tr, _ := s.trigger.GetTriggerByID(id)
+	isTrigger := tr != nil && tr.Type == launch.TriggerTypeTelegram
 
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20)) // 1 MB limit
 	if err != nil {
@@ -155,20 +163,25 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 		metadata["voice_duration"] = parsed.VoiceDuration
 		metadata["voice_mime_type"] = parsed.VoiceMimeType
 
-		botToken := s.resolveTelegramCreds(agentID)["bot_token"]
+		var botToken string
+		if isTrigger {
+			botToken = s.resolveTriggerCreds(id)["bot_token"]
+		} else {
+			botToken = s.resolveTelegramCreds(id)["bot_token"]
+		}
 		if botToken != "" {
 			audioData, err := telegram.DownloadFile(botToken, parsed.VoiceFileID)
 			if err != nil {
 				log.WithFields(log.Fields{
-					"agent_id": agentID,
-					"error":    err,
-					"file_id":  parsed.VoiceFileID,
+					"id":      id,
+					"error":   err,
+					"file_id": parsed.VoiceFileID,
 				}).Warn("failed to download telegram voice file")
 			} else {
 				metadata["voice_audio_base64"] = base64.StdEncoding.EncodeToString(audioData)
 				metadata["voice_audio_size"] = len(audioData)
 				log.WithFields(log.Fields{
-					"agent_id":   agentID,
+					"id":         id,
 					"duration_s": parsed.VoiceDuration,
 					"size_bytes": len(audioData),
 				}).Info("downloaded telegram voice message")
@@ -181,19 +194,23 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 		channelType = "telegram_voice"
 	}
 
-	msg := agent.InboundMessage{
-		ChannelType: channelType,
-		Sender:      sender,
-		Content:     parsed.Text,
-		Metadata:    metadata,
-	}
-
 	// Dispatch asynchronously — Telegram expects a quick 200 response
 	appmetrics.InboundMessagesTotal.WithLabelValues("telegram").Inc()
 	go func() {
-		if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
+		if isTrigger {
+			s.postTriggerDispatch(id, channelType, sender, parsed.Text, metadata)
+			return
+		}
+		// Legacy agent-keyed fallback.
+		msg := agent.InboundMessage{
+			ChannelType: channelType,
+			Sender:      sender,
+			Content:     parsed.Text,
+			Metadata:    metadata,
+		}
+		if err := s.agent.HandleInboundMessage(id, msg); err != nil {
 			log.WithFields(log.Fields{
-				"agent_id": agentID,
+				"agent_id": id,
 				"error":    err,
 				"chat_id":  parsed.ChatID,
 			}).Error("failed to handle telegram message")
@@ -203,15 +220,25 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
-// handleSlackWebhook handles POST /webhook/slack/:agent_id — receives Slack Events API payloads.
+// handleSlackWebhook handles POST /webhook/slack/:id — receives Slack
+// Events API payloads. :id is a trigger_id for new registrations or an
+// agent_id for legacy.
 func (s *Service) handleSlackWebhook(c *gin.Context) {
-	agentID := c.Param("agent_id")
-	if err := uuid.Validate(agentID); err != nil {
+	id := c.Param("id")
+	if err := uuid.Validate(id); err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
-	creds := s.resolveSlackCreds(agentID)
+	tr, _ := s.trigger.GetTriggerByID(id)
+	isTrigger := tr != nil && tr.Type == "slack"
+
+	var creds map[string]string
+	if isTrigger {
+		creds = s.resolveTriggerCreds(id)
+	} else {
+		creds = s.resolveSlackCreds(id)
+	}
 	botToken := creds["bot_token"]
 	signingSecret := creds["signing_secret"]
 
@@ -223,8 +250,8 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 		verified, err := slackpkg.VerifyRequest(signingSecret, c.Request)
 		if err != nil {
 			log.WithFields(log.Fields{
-				"agent_id": agentID,
-				"error":    err,
+				"id":    id,
+				"error": err,
 			}).Warn("slack signature verification failed")
 			c.AbortWithStatus(http.StatusUnauthorized)
 			return
@@ -268,35 +295,40 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 		}
 	}
 
-	msg := agent.InboundMessage{
-		ChannelType: "slack",
-		Sender:      senderDisplay,
-		Content:     parsed.Text,
-		Metadata: map[string]interface{}{
-			// Canonical keys (consistent across all providers)
-			"channel_id": parsed.ChannelID,
-			"thread_id":  parsed.ThreadTS,
-			"user_id":    parsed.UserID,
-			"user_name":  senderDisplay,
-			// Provider-specific keys (kept for backwards compatibility)
-			"display_name": senderDisplay,
-			"real_name":    senderReal,
-			"timestamp":    parsed.Timestamp,
-			"thread_ts":    parsed.ThreadTS,
-			"team_id":      parsed.TeamID,
-			"event_id":     parsed.EventID,
-			"event_type":   parsed.EventType,
-			// Alias: Telegram flows that use chat_id will also work
-			"chat_id": parsed.ChannelID,
-		},
+	metadata := map[string]interface{}{
+		// Canonical keys (consistent across all providers)
+		"channel_id": parsed.ChannelID,
+		"thread_id":  parsed.ThreadTS,
+		"user_id":    parsed.UserID,
+		"user_name":  senderDisplay,
+		// Provider-specific keys (kept for backwards compatibility)
+		"display_name": senderDisplay,
+		"real_name":    senderReal,
+		"timestamp":    parsed.Timestamp,
+		"thread_ts":    parsed.ThreadTS,
+		"team_id":      parsed.TeamID,
+		"event_id":     parsed.EventID,
+		"event_type":   parsed.EventType,
+		// Alias: Telegram flows that use chat_id will also work
+		"chat_id": parsed.ChannelID,
 	}
 
 	// Dispatch asynchronously — Slack expects a quick 200
 	appmetrics.InboundMessagesTotal.WithLabelValues("slack").Inc()
 	go func() {
-		if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
+		if isTrigger {
+			s.postTriggerDispatch(id, "slack", senderDisplay, parsed.Text, metadata)
+			return
+		}
+		msg := agent.InboundMessage{
+			ChannelType: "slack",
+			Sender:      senderDisplay,
+			Content:     parsed.Text,
+			Metadata:    metadata,
+		}
+		if err := s.agent.HandleInboundMessage(id, msg); err != nil {
 			log.WithFields(log.Fields{
-				"agent_id": agentID,
+				"agent_id": id,
 				"error":    err,
 				"channel":  parsed.ChannelID,
 			}).Error("failed to handle slack message")
@@ -361,7 +393,10 @@ func parseLegacyChannelConfig(channelsRaw json.RawMessage, channelType string) m
 // ── Teams Bot Framework webhook ─────────────────────────────────────
 
 func (s *Service) handleTeamsWebhook(c *gin.Context) {
-	agentID := c.Param("agent_id")
+	id := c.Param("id")
+
+	tr, _ := s.trigger.GetTriggerByID(id)
+	isTrigger := tr != nil && tr.Type == launch.TriggerTypeTeams
 
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
 	if err != nil {
@@ -384,10 +419,10 @@ func (s *Service) handleTeamsWebhook(c *gin.Context) {
 	}
 
 	log.WithFields(log.Fields{
-		"agent_id":      agentID,
-		"user":          parsed.UserName,
-		"conversation":  parsed.ConversationType,
-		"text_preview":  truncateText(parsed.Text, 50),
+		"id":           id,
+		"user":         parsed.UserName,
+		"conversation": parsed.ConversationType,
+		"text_preview": truncateText(parsed.Text, 50),
 	}).Info("[teams] received message")
 
 	// Send typing indicator
@@ -402,26 +437,20 @@ func (s *Service) handleTeamsWebhook(c *gin.Context) {
 		}()
 	}
 
-	// Build inbound message with canonical + provider-specific metadata
-	msg := agent.InboundMessage{
-		ChannelType: "teams",
-		Sender:      parsed.UserName,
-		Content:     parsed.Text,
-		Metadata: map[string]interface{}{
-			// Canonical keys (consistent across all providers)
-			"channel_id": parsed.ConversationID,
-			"user_id":    parsed.UserID,
-			"user_name":  parsed.UserName,
-			// Provider-specific keys
-			"conversation_type": parsed.ConversationType,
-			"teams_channel_id":  parsed.ChannelID,
-			"teams_team_id":     parsed.TeamID,
-			"activity_id":       parsed.ActivityID,
-			"service_url":       parsed.ServiceURL,
-			"tenant_id":         parsed.TenantID,
-			// Alias for cross-provider compatibility
-			"chat_id": parsed.ConversationID,
-		},
+	metadata := map[string]interface{}{
+		// Canonical keys (consistent across all providers)
+		"channel_id": parsed.ConversationID,
+		"user_id":    parsed.UserID,
+		"user_name":  parsed.UserName,
+		// Provider-specific keys
+		"conversation_type": parsed.ConversationType,
+		"teams_channel_id":  parsed.ChannelID,
+		"teams_team_id":     parsed.TeamID,
+		"activity_id":       parsed.ActivityID,
+		"service_url":       parsed.ServiceURL,
+		"tenant_id":         parsed.TenantID,
+		// Alias for cross-provider compatibility
+		"chat_id": parsed.ConversationID,
 	}
 
 	_ = activity // reserved for future use (e.g., adaptive card handling)
@@ -429,9 +458,19 @@ func (s *Service) handleTeamsWebhook(c *gin.Context) {
 	// Dispatch asynchronously — Bot Framework expects a quick 200/201
 	appmetrics.InboundMessagesTotal.WithLabelValues("teams").Inc()
 	go func() {
-		if err := s.agent.HandleInboundMessage(agentID, msg); err != nil {
+		if isTrigger {
+			s.postTriggerDispatch(id, "teams", parsed.UserName, parsed.Text, metadata)
+			return
+		}
+		msg := agent.InboundMessage{
+			ChannelType: "teams",
+			Sender:      parsed.UserName,
+			Content:     parsed.Text,
+			Metadata:    metadata,
+		}
+		if err := s.agent.HandleInboundMessage(id, msg); err != nil {
 			log.WithFields(log.Fields{
-				"agent_id": agentID,
+				"agent_id": id,
 				"error":    err,
 				"user":     parsed.UserName,
 			}).Error("[teams] failed to handle message")
