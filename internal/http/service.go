@@ -201,6 +201,9 @@ func (s *Service) configure() error {
 	s.engine.GET("/auth/google/trigger/:trigger_id", s.handleGoogleAuthInitiateTrigger)
 	s.engine.GET("/auth/google/:agent_user_id", s.handleGoogleAuthInitiate)
 
+	s.engine.GET("/auth/microsoft/identity", s.handleMicrosoftAuthInitiateIdentity)
+	s.engine.GET("/auth/microsoft/callback", s.handleMicrosoftAuthCallback)
+
 	return nil
 }
 

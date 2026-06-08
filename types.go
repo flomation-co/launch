@@ -54,6 +54,17 @@ type AgentRegistration struct {
 
 // GoogleAuthState represents a pending OAuth flow linking a browser
 // consent redirect back to the agent_user who initiated it.
+// MicrosoftAuthState records a pending Microsoft OAuth consent flow.
+// Currently only used for the R3 Phase 2 identity flow; agent / trigger
+// Microsoft flows can extend this struct (and the table) when added.
+type MicrosoftAuthState struct {
+	State          string
+	Purpose        string // "identity" — only purpose currently in use
+	UserID         string
+	OrganisationID string // empty for personal mode
+	ChannelType    string // "teams" — the user_identity row's channel_type
+}
+
 type GoogleAuthState struct {
 	State       string
 	AgentID     string
