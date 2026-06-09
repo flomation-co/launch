@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 
 	"flomation.app/automate/launch"
@@ -21,8 +22,21 @@ import (
 var bankHolidaysData []byte
 
 const (
-	tickInterval = 15 * time.Second
+	tickInterval  = 15 * time.Second
+	leaseDuration = 2 * time.Minute
+
+	// stateKeyLastFired is the trigger_state row Launch persists per
+	// trigger to record when the schedule last fired. Without this, an
+	// in-memory map would lose the day's fire-record on every restart
+	// and any restart that happens to land in the fire-window of a daily
+	// schedule would re-fire it.
+	stateKeyLastFired = "last_fired"
 )
+
+// lastFiredState is the JSON shape persisted under stateKeyLastFired.
+type lastFiredState struct {
+	At time.Time `json:"at"`
+}
 
 // ScheduleConfig represents the configuration stored in a schedule trigger's Data field.
 type ScheduleConfig struct {
@@ -55,9 +69,15 @@ type Service struct {
 	trigger *trigger.Service
 	db      *persistence.Service
 
+	// instanceID identifies this Launch process when acquiring trigger
+	// leases. Generated once at startup; never persisted across
+	// restarts (a new instanceID after restart is exactly what lets the
+	// new process eventually take over an expired lease).
+	instanceID string
+
 	mu           sync.Mutex
-	lastFired    map[string]time.Time
-	bankHolidays map[string]bool // "YYYY-MM-DD" → true
+	lastFired    map[string]time.Time // cache of stateKeyLastFired per trigger ID
+	bankHolidays map[string]bool      // "YYYY-MM-DD" → true
 }
 
 func NewService(cfg *config.Config, triggerSvc *trigger.Service, db *persistence.Service) *Service {
@@ -65,6 +85,7 @@ func NewService(cfg *config.Config, triggerSvc *trigger.Service, db *persistence
 		config:       cfg,
 		trigger:      triggerSvc,
 		db:           db,
+		instanceID:   uuid.New().String(),
 		lastFired:    make(map[string]time.Time),
 		bankHolidays: make(map[string]bool),
 	}
@@ -150,15 +171,48 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 
 	now = now.In(loc)
 
-	s.mu.Lock()
-	last, seen := s.lastFired[tr.ID]
-	s.mu.Unlock()
+	// Acquire a per-trigger lease before any decision/state mutation.
+	// With multiple Launch instances the lease ensures only one
+	// evaluates this trigger per tick; with a single instance the call
+	// always succeeds and is effectively free. Either way the
+	// lease-acquire + persisted lastFired pair makes the firing
+	// decision authoritative across restarts and horizontal scale.
+	acquired, err := s.db.TryAcquireLease(tr.ID, s.instanceID, leaseDuration)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"trigger_id": tr.ID,
+			"error":      err,
+		}).Warn("schedule trigger: unable to acquire lease, skipping tick")
+		return
+	}
+	if !acquired {
+		// Another Launch instance owns this trigger right now — they
+		// will evaluate and fire if needed.
+		return
+	}
+
+	// Hydrate lastFired from trigger_state on first sight per process,
+	// then keep it in memory for cheap subsequent reads. We deliberately
+	// do NOT treat absence of state as "fire now" — bootstrap silently
+	// records the current time and bails (same first-seen semantics as
+	// before), but persists it so a restart 10 seconds later doesn't
+	// re-fire just because the in-memory map is empty.
+	last, seen, err := s.readLastFired(tr.ID, now)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"trigger_id": tr.ID,
+			"error":      err,
+		}).Warn("schedule trigger: unable to read last_fired state, skipping tick")
+		return
+	}
 
 	if !seen {
-		// First time seeing this trigger — record state without firing
-		s.mu.Lock()
-		s.lastFired[tr.ID] = now
-		s.mu.Unlock()
+		if err := s.writeLastFired(tr.ID, now); err != nil {
+			log.WithFields(log.Fields{
+				"trigger_id": tr.ID,
+				"error":      err,
+			}).Warn("schedule trigger: unable to persist bootstrap last_fired")
+		}
 		return
 	}
 
@@ -180,9 +234,18 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 		"mode":       cfg.Mode,
 	}).Info("schedule trigger fired")
 
-	s.mu.Lock()
-	s.lastFired[tr.ID] = now
-	s.mu.Unlock()
+	// Persist BEFORE the HTTP fire so a crash between the two leaves us
+	// in the "already fired" state, not the "fire again on restart"
+	// state. The API's TriggerExecution is itself idempotent at the
+	// execution-row level only insofar as it accepts every request, so
+	// the safer failure mode is one missed reminder, not six duplicates.
+	if err := s.writeLastFired(tr.ID, now); err != nil {
+		log.WithFields(log.Fields{
+			"trigger_id": tr.ID,
+			"error":      err,
+		}).Warn("schedule trigger: unable to persist last_fired before fire — aborting to avoid re-fire on restart")
+		return
+	}
 
 	payload := SchedulePayload{
 		TriggeredAt:  now.Format(time.RFC3339),
@@ -195,6 +258,72 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 			"error":      err,
 		}).Warn("unable to fire schedule trigger")
 	}
+}
+
+// readLastFired returns the persisted last-fired timestamp for the given
+// trigger, populating the in-memory cache on first call per process.
+//
+// Returns (zero, false, nil) when no state row exists yet — the caller
+// treats this as "first sight, just record now and bail" (preserving
+// the previous boot-time-don't-fire behaviour). Returns (t, true, nil)
+// when a previous fire has been recorded.
+func (s *Service) readLastFired(triggerID string, now time.Time) (time.Time, bool, error) {
+	s.mu.Lock()
+	cached, ok := s.lastFired[triggerID]
+	s.mu.Unlock()
+	if ok {
+		return cached, true, nil
+	}
+
+	state, err := s.db.GetTriggerState(triggerID)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	raw, ok := state[stateKeyLastFired]
+	if !ok || len(raw) == 0 {
+		return time.Time{}, false, nil
+	}
+
+	var lf lastFiredState
+	if err := json.Unmarshal(raw, &lf); err != nil {
+		// Treat corrupt state as missing — bootstrap will overwrite it.
+		log.WithFields(log.Fields{
+			"trigger_id": triggerID,
+			"raw":        string(raw),
+			"error":      err,
+		}).Warn("schedule trigger: corrupt last_fired state, treating as missing")
+		return time.Time{}, false, nil
+	}
+
+	// Re-anchor the loaded time into the same location as `now` so
+	// the daily/weekly target-time arithmetic works the same way it did
+	// when the value was originally written. We store RFC3339 with the
+	// configured timezone offset, so the location round-trips correctly
+	// here.
+	loaded := lf.At.In(now.Location())
+
+	s.mu.Lock()
+	s.lastFired[triggerID] = loaded
+	s.mu.Unlock()
+
+	return loaded, true, nil
+}
+
+// writeLastFired persists last_fired to trigger_state and updates the
+// in-memory cache. Atomic upsert at the DB level.
+func (s *Service) writeLastFired(triggerID string, at time.Time) error {
+	raw, err := json.Marshal(lastFiredState{At: at})
+	if err != nil {
+		return err
+	}
+	if err := s.db.UpsertTriggerState(triggerID, stateKeyLastFired, raw); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.lastFired[triggerID] = at
+	s.mu.Unlock()
+	return nil
 }
 
 // ShouldFire determines whether a schedule trigger should fire based on its
