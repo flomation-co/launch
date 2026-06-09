@@ -1,11 +1,51 @@
 package schedule
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
 )
+
+func Test_LastFiredState_RoundTrip(t *testing.T) {
+	// lastFiredState is persisted to trigger_state as JSON and must
+	// round-trip cleanly across a process restart, otherwise the new
+	// process can't tell whether today's schedule has already fired
+	// and would re-fire on the next tick — exactly the failure mode
+	// the previous in-memory-only implementation was vulnerable to.
+	RegisterTestingT(t)
+
+	orig := lastFiredState{At: time.Date(2026, 6, 9, 8, 0, 0, 0, time.UTC)}
+	raw, err := json.Marshal(orig)
+	Expect(err).NotTo(HaveOccurred())
+
+	var back lastFiredState
+	Expect(json.Unmarshal(raw, &back)).To(Succeed())
+	Expect(back.At.Equal(orig.At)).To(BeTrue())
+}
+
+func Test_LastFiredState_RoundTripWithTimezone(t *testing.T) {
+	// Re-anchoring across timezones: store London time, read back, then
+	// project into the schedule's location to verify the wall-clock
+	// matches. This is the exact path readLastFired walks when a daily
+	// schedule with a non-UTC timezone restarts.
+	RegisterTestingT(t)
+
+	london, err := time.LoadLocation("Europe/London")
+	Expect(err).NotTo(HaveOccurred())
+	at := time.Date(2026, 6, 9, 8, 0, 0, 0, london)
+
+	raw, err := json.Marshal(lastFiredState{At: at})
+	Expect(err).NotTo(HaveOccurred())
+
+	var back lastFiredState
+	Expect(json.Unmarshal(raw, &back)).To(Succeed())
+
+	rehomed := back.At.In(london)
+	Expect(rehomed.Hour()).To(Equal(8))
+	Expect(rehomed.Minute()).To(Equal(0))
+}
 
 func Test_ShouldFire_Interval_Minutes(t *testing.T) {
 	t.Parallel()
