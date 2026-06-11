@@ -20,12 +20,12 @@ import (
 
 	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/facebook"
-	telegrampkg "flomation.app/automate/launch/internal/telegram"
 	githubwh "flomation.app/automate/launch/internal/github"
 	gitlabwh "flomation.app/automate/launch/internal/gitlab"
 	"flomation.app/automate/launch/internal/google"
 	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
+	telegrampkg "flomation.app/automate/launch/internal/telegram"
 	"flomation.app/automate/launch/internal/trigger"
 	"flomation.app/automate/launch/internal/twilio"
 
@@ -598,7 +598,17 @@ func (s *Service) submitForm(c *gin.Context) {
 		return
 	}
 
-	var body interface{}
+	def, _ := parseFormDefinition(tr.Data)
+
+	cookie, _ := c.Cookie("flomation-token")
+	token := extractSessionToken(c.GetHeader("Authorization"), cookie)
+	userID := s.resolveSessionUser(token)
+	if def.RequireLogin && userID == "" {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+
+	var body map[string]interface{}
 	if err := c.BindJSON(&body); err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
@@ -607,8 +617,25 @@ func (s *Service) submitForm(c *gin.Context) {
 		return
 	}
 
+	// Restore the baked-at-render values for read-only fields, ignoring
+	// any client-supplied values. This is the security check that
+	// matches the render-time guarantee — if the user saw "Name: Andy"
+	// as read-only, the trigger receives "Andy" regardless of what the
+	// HTTP body says.
+	ctx := substitutionContext{QueryParams: queryParamsMap(c)}
+	if userID != "" {
+		if vars, err := s.loadUserVariables(userID); err == nil {
+			ctx.UserVariables = vars
+		}
+	}
+	resolved := resolveFormForRender(def, ctx)
+	final := stripReadOnlySubmissions(body, resolved)
+	if userID != "" {
+		final["user_id"] = userID
+	}
+
 	go func() {
-		if err := s.trigger.Trigger(tr, body); err != nil {
+		if err := s.trigger.Trigger(tr, final); err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
 			}).Error("unable to execute trigger")
@@ -659,9 +686,62 @@ func (s *Service) handleForm(c *gin.Context) {
 		return
 	}
 
+	def, parseErr := parseFormDefinition(tr.Data)
+	if parseErr != nil {
+		log.WithFields(log.Fields{"error": parseErr}).Warn("could not parse form definition; serving raw")
+	}
+
+	// Login gate. If the form requires a session and none resolves, show
+	// the "Please log in" landing card with a return-to URL that takes
+	// the user straight back to this form after they authenticate.
+	cookie, _ := c.Cookie("flomation-token")
+	token := extractSessionToken(c.GetHeader("Authorization"), cookie)
+	userID := s.resolveSessionUser(token)
+	if def.RequireLogin && userID == "" {
+		returnTo := s.config.Security.EditorURL
+		c.HTML(http.StatusOK, "form.html", gin.H{
+			"LoginRequired": true,
+			"Title":         def.Title,
+			"ReturnTo":      returnTo,
+			"FormURL":       c.Request.URL.RequestURI(),
+		})
+		return
+	}
+
+	// Render-time substitution. Only logged-in users get ${user.X};
+	// ${query.X} comes from the URL regardless of auth state.
+	ctx := substitutionContext{QueryParams: queryParamsMap(c)}
+	if userID != "" {
+		if vars, err := s.loadUserVariables(userID); err == nil {
+			ctx.UserVariables = vars
+		} else {
+			log.WithFields(log.Fields{"error": err}).Warn("failed to load user variables for form; rendering without ${user.X}")
+		}
+	}
+	resolved := resolveFormForRender(def, ctx)
+
+	resolvedBytes, _ := json.Marshal(resolved)
 	c.HTML(http.StatusOK, "form.html", gin.H{
-		"Form": base64.StdEncoding.EncodeToString(tr.Data),
+		"Form":   base64.StdEncoding.EncodeToString(resolvedBytes),
+		"FormID": id,
 	})
+}
+
+// queryParamsMap flattens c.Request.URL.Query() to a string→string map
+// (the first value of each key wins). Used to source ${query.X}
+// substitutions.
+func queryParamsMap(c *gin.Context) map[string]string {
+	if c.Request == nil {
+		return nil
+	}
+	q := c.Request.URL.Query()
+	out := make(map[string]string, len(q))
+	for k, v := range q {
+		if len(v) > 0 {
+			out[k] = v[0]
+		}
+	}
+	return out
 }
 
 func (s *Service) jwtMiddleware(c *gin.Context) {

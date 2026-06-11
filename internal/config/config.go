@@ -33,6 +33,11 @@ type ServiceConfig struct {
 
 type SecurityConfig struct {
 	IdentityService string `json:"identity_service"`
+	// EditorURL is the base URL of the editor; used as the return target
+	// when require_login forms redirect anonymous visitors to log in.
+	// Optional — when empty, the login card surfaces the raw Sentinel
+	// login URL with no return-to hint.
+	EditorURL string `json:"editor_url"`
 }
 
 type GoogleConfig struct {
