@@ -267,13 +267,15 @@
     <div class="form-card login-card">
         <div class="form-title">{{ if .Title }}{{ .Title }}{{ else }}Sign in to continue{{ end }}</div>
         <div class="form-description">
-            This form requires you to be signed in. Once you sign in we'll bring you straight back.
+            This form requires you to be signed in. {{ if .ReturnTo }}Once you sign in we'll bring you straight back.{{ else }}Please sign in to your Flomation account from another tab, then refresh this page.{{ end }}
         </div>
+        {{ if .ReturnTo }}
         <div class="button-row">
-            <a class="btn btn-submit" href="{{ if .ReturnTo }}{{ .ReturnTo }}/?return={{ .FormURL }}{{ else }}/login?return={{ .FormURL }}{{ end }}">
+            <a class="btn btn-submit" href="{{ .ReturnTo }}?return={{ .FormURL }}">
                 Sign in
             </a>
         </div>
+        {{ end }}
     </div>
     {{ else }}
     <div class="form-card" id="form-container">
@@ -526,6 +528,11 @@
 
         container.appendChild(buttons);
         setPage(form, 0);
+        // Initial pass — read-only required fields are pre-filled via
+        // default_value but the user can't type, so oninput never fires.
+        // Without this, Submit stays disabled even when every required
+        // field already has a valid value.
+        validateForm(form);
     }
 
     function submitForm(form) {
