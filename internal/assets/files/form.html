@@ -190,6 +190,31 @@
             color: #fff;
         }
 
+        /* Read-only field styling — visually distinguishable from editable
+           fields without the harsh "disabled" greyout that browsers default to.
+           The user knows it's read-only but the value remains highly readable. */
+        .field-group input.readonly,
+        .field-group textarea.readonly {
+            background: rgba(255, 255, 255, 0.02);
+            color: rgba(255, 255, 255, 0.7);
+            cursor: not-allowed;
+            border-style: dashed;
+            opacity: 1;
+        }
+        .checkbox-group.readonly { opacity: 0.7; cursor: not-allowed; }
+
+        /* Login-required landing card — uses the same form-card chrome but
+           with an inline sign-in CTA in place of form fields. */
+        .login-card { text-align: center; }
+        .login-card .form-description { margin-bottom: 28px; }
+        .login-card .button-row { justify-content: center; }
+        .login-card .btn-submit {
+            display: inline-block;
+            padding: 12px 32px;
+            text-decoration: none;
+            text-align: center;
+        }
+
         #page-indicator {
             text-align: center;
             font-size: 12px;
@@ -238,12 +263,26 @@
 </head>
 <body>
 <div class="page-container">
+    {{ if .LoginRequired }}
+    <div class="form-card login-card">
+        <div class="form-title">{{ if .Title }}{{ .Title }}{{ else }}Sign in to continue{{ end }}</div>
+        <div class="form-description">
+            This form requires you to be signed in. Once you sign in we'll bring you straight back.
+        </div>
+        <div class="button-row">
+            <a class="btn btn-submit" href="{{ if .ReturnTo }}{{ .ReturnTo }}/?return={{ .FormURL }}{{ else }}/login?return={{ .FormURL }}{{ end }}">
+                Sign in
+            </a>
+        </div>
+    </div>
+    {{ else }}
     <div class="form-card" id="form-container">
         <div class="form-title" id="form-header">Form</div>
         <div class="form-description" id="form-description"></div>
         <div id="page-indicator"></div>
         <div id="form-body"></div>
     </div>
+    {{ end }}
     <div class="footer">
         <a href="https://www.flomation.co" target="_blank" title="Powered by Flomation">
             <img src="/flomation-wordtype-small-white.png" alt="Powered by Flomation"/>
@@ -251,6 +290,7 @@
     </div>
 </div>
 
+{{ if not .LoginRequired }}
 <script>
     const formData = atob("{{ .Form }}");
     let formValues = {};
@@ -269,6 +309,19 @@
         return el;
     }
 
+    // applyReadOnly disables the element when the component is read_only.
+    // The server resolves and bakes the default_value at render time, so
+    // the user sees the resolved value but can't edit it. The submit
+    // path strips client-supplied values for read_only fields and
+    // restores the server's resolved value, so tampering is harmless.
+    function applyReadOnly(el, component) {
+        if (component.read_only) {
+            el.readOnly = true;
+            el.disabled = true;
+            el.classList.add("readonly");
+        }
+    }
+
     function renderTextbox(form, container, component) {
         const group = document.createElement("div");
         group.classList.add("field-group");
@@ -279,7 +332,9 @@
         el.placeholder = component.placeholder || "";
         el.required = !!component.required;
         el.id = "input-" + component.name;
+        if (component.default_value) el.value = component.default_value;
         el.oninput = (e) => { formValues[component.name] = e.target.value; validateForm(form); };
+        applyReadOnly(el, component);
 
         group.appendChild(el);
         container.appendChild(group);
@@ -294,7 +349,9 @@
         el.placeholder = component.placeholder || "";
         el.required = !!component.required;
         el.id = "input-" + component.name;
+        if (component.default_value) el.value = component.default_value;
         el.oninput = (e) => { formValues[component.name] = e.target.value; validateForm(form); };
+        applyReadOnly(el, component);
 
         group.appendChild(el);
         container.appendChild(group);
@@ -310,7 +367,9 @@
         el.placeholder = component.placeholder || "";
         el.required = !!component.required;
         el.id = "input-" + component.name;
+        if (component.default_value) el.value = component.default_value;
         el.oninput = (e) => { formValues[component.name] = e.target.value; validateForm(form); };
+        applyReadOnly(el, component);
 
         group.appendChild(el);
         container.appendChild(group);
@@ -326,7 +385,12 @@
         const el = document.createElement("input");
         el.type = "checkbox";
         el.id = "input-" + component.name;
+        if (component.default_value === "true" || component.default_value === true) el.checked = true;
         el.onchange = (e) => { formValues[component.name] = e.target.checked; validateForm(form); };
+        if (component.read_only) {
+            el.disabled = true;
+            wrapper.classList.add("readonly");
+        }
 
         const label = document.createElement("label");
         label.htmlFor = "input-" + component.name;
@@ -364,7 +428,16 @@
         const components = [...page.components].sort((a, b) => (a.order || 0) - (b.order || 0));
 
         for (const component of components) {
-            formValues[component.name] = component.type === "boolean" ? false : null;
+            // Seed formValues with default_value when set, so unedited
+            // read-only fields submit the resolved value and editable
+            // fields submit the prefilled value unless the user changes it.
+            if (component.type === "boolean") {
+                formValues[component.name] = component.default_value === "true" || component.default_value === true;
+            } else if (component.default_value !== undefined && component.default_value !== "") {
+                formValues[component.name] = component.default_value;
+            } else {
+                formValues[component.name] = null;
+            }
 
             switch (component.type) {
                 case "text": renderTextbox(form, pageContainer, component); break;
@@ -484,5 +557,6 @@
 
     renderForm();
 </script>
+{{ end }}
 </body>
 </html>
