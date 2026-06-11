@@ -722,7 +722,8 @@ func (s *Service) handleForm(c *gin.Context) {
 
 	resolvedBytes, _ := json.Marshal(resolved)
 	c.HTML(http.StatusOK, "form.html", gin.H{
-		"Form": base64.StdEncoding.EncodeToString(resolvedBytes),
+		"Form":   base64.StdEncoding.EncodeToString(resolvedBytes),
+		"FormID": id,
 	})
 }
 

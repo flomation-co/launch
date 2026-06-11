@@ -295,6 +295,10 @@
 {{ if not .LoginRequired }}
 <script>
     const formData = atob("{{ .Form }}");
+    // Trigger ID lives in the URL path. Thread it through to the
+    // submit fetch — relying on form.id failed because the form
+    // definition doesn't carry one, which caused POST /form/undefined.
+    const FORM_ID = "{{ .FormID }}";
     let formValues = {};
     let currentPage = 0;
 
@@ -540,8 +544,7 @@
         submit.disabled = true;
         submit.textContent = "Submitting...";
 
-        const id = form.id;
-        fetch("/form/" + id, {
+        fetch("/form/" + FORM_ID, {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify(formValues)
