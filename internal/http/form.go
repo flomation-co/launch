@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strings"
 
-	"flomation.app/automate/launch"
 	sentinel "github.com/flomation-co/sentinel-client"
 	log "github.com/sirupsen/logrus"
 )
@@ -16,10 +15,10 @@ import (
 // the older shape (no migrations) — older saved forms have nil RequireLogin
 // and missing per-field flags which decode cleanly to zero values.
 type formDefinition struct {
-	Title        string         `json:"title"`
-	Description  string         `json:"description"`
-	Pages        []formPage     `json:"pages"`
-	RequireLogin bool           `json:"require_login,omitempty"`
+	Title        string     `json:"title"`
+	Description  string     `json:"description"`
+	Pages        []formPage `json:"pages"`
+	RequireLogin bool       `json:"require_login,omitempty"`
 }
 
 type formPage struct {
@@ -152,7 +151,7 @@ func (s *Service) loadUserVariables(userID string) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("user variables fetch: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("user variables endpoint returned %d", resp.StatusCode)
 	}
@@ -202,16 +201,4 @@ func parseFormDefinition(data []byte) (formDefinition, error) {
 		return def, err
 	}
 	return def, nil
-}
-
-// formIsLoginGated returns true when the form's require_login flag is set.
-// Defined as a helper so the same check happens identically in handleForm
-// and submitForm (drift between them would create a security hole where
-// the GET is gated but the POST is not, or vice versa).
-func formIsLoginGated(tr *launch.Trigger) bool {
-	def, err := parseFormDefinition(tr.Data)
-	if err != nil {
-		return false
-	}
-	return def.RequireLogin
 }

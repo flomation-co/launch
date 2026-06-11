@@ -20,12 +20,12 @@ import (
 
 	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/facebook"
-	telegrampkg "flomation.app/automate/launch/internal/telegram"
 	githubwh "flomation.app/automate/launch/internal/github"
 	gitlabwh "flomation.app/automate/launch/internal/gitlab"
 	"flomation.app/automate/launch/internal/google"
 	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
+	telegrampkg "flomation.app/automate/launch/internal/telegram"
 	"flomation.app/automate/launch/internal/trigger"
 	"flomation.app/automate/launch/internal/twilio"
 
