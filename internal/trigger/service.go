@@ -147,17 +147,32 @@ func (s *Service) ResolveString(triggerID string, value string) string {
 }
 
 func (s *Service) Trigger(trigger *launch.Trigger, data interface{}) error {
+	return s.TriggerAs(trigger, data, "")
+}
+
+// TriggerAs invokes the trigger with an explicit triggerer user ID. The
+// API's TriggerExecution overwrites invocation.OwnerID with this value
+// when non-empty, surfacing the actual submitter / sender on the
+// Executions page's "Triggered By" column. Forms with require_login
+// pass the form submitter; channel webhooks can pass the resolved
+// sender. Empty string preserves the historical behaviour where the
+// invocation owner falls back to the trigger row's author.
+func (s *Service) TriggerAs(trigger *launch.Trigger, data interface{}, triggererUserID string) error {
 	if trigger.DisabledAt != nil {
 		return nil
 	}
 
 	log.WithFields(log.Fields{
-		"id":   trigger.ID,
-		"type": trigger.Type,
-		"data": data,
+		"id":        trigger.ID,
+		"type":      trigger.Type,
+		"data":      data,
+		"triggerer": triggererUserID,
 	}).Info("invoking trigger")
 
 	url := fmt.Sprintf("%v/api/v1/internal/flo/%v/trigger/%v/execute", s.config.InternalAPIURL(), trigger.FlowID, trigger.ID)
+	if triggererUserID != "" {
+		url += "?triggerer=" + triggererUserID
+	}
 
 	b, err := json.Marshal(data)
 	if err != nil {

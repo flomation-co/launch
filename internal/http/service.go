@@ -635,7 +635,7 @@ func (s *Service) submitForm(c *gin.Context) {
 	}
 
 	go func() {
-		if err := s.trigger.Trigger(tr, final); err != nil {
+		if err := s.trigger.TriggerAs(tr, final, userID); err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
 			}).Error("unable to execute trigger")
