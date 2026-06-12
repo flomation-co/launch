@@ -54,10 +54,16 @@ func (s *Service) refreshAndRespond(c *gin.Context, apiURL string) {
 		return
 	}
 
+	// AccessToken is included by the API when it has a still-valid
+	// cached token (TokenExpiresAt > now + 30s and status='active').
+	// Honouring it skips the round-trip to Google's token endpoint —
+	// previously we ignored the field entirely and hammered Google on
+	// every single agent tool call, wasting quota and adding latency.
 	type apiAccount struct {
 		Email        string `json:"email"`
 		Label        string `json:"label"`
 		RefreshToken string `json:"refresh_token"`
+		AccessToken  string `json:"access_token"`
 	}
 
 	var accounts []apiAccount
@@ -69,11 +75,26 @@ func (s *Service) refreshAndRespond(c *gin.Context, apiURL string) {
 
 	var results []tokenResponse
 	for _, acct := range accounts {
+		// Cached access token wins when the API said it's still valid.
+		// The API already gates this behind a 30-second safety margin
+		// against the recorded expiry, so the worst case is one
+		// in-flight request landing just after Google considers the
+		// token dead — the caller will see a 401 and a retry will
+		// re-fetch through the no-cache poller path.
+		if acct.AccessToken != "" {
+			results = append(results, tokenResponse{
+				Email:       acct.Email,
+				Label:       acct.Label,
+				AccessToken: acct.AccessToken,
+			})
+			continue
+		}
+
 		if acct.RefreshToken == "" {
 			results = append(results, tokenResponse{
 				Email: acct.Email,
 				Label: acct.Label,
-				Error: "no refresh token",
+				Error: "no refresh token — please re-link this Google account",
 			})
 			continue
 		}

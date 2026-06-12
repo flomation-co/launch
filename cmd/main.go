@@ -118,7 +118,17 @@ func main() {
 	var googleSvc *google.Service
 	if cfg.Google != nil && cfg.Google.ClientID != "" {
 		googleSvc = google.NewService(cfg)
-		log.Info("google calendar oauth service started")
+		// Log a redacted form of the client_id so an operator can
+		// compare it against the API service's
+		// oauth.google.client_id and catch silent config drift.
+		// A mismatch there means refresh tokens minted here will
+		// be rejected when the API's poller tries to use them.
+		clientIDPrefix := cfg.Google.ClientID
+		if len(clientIDPrefix) > 12 {
+			clientIDPrefix = clientIDPrefix[:12] + "…"
+		}
+		log.WithField("client_id", clientIDPrefix).Info(
+			"google calendar oauth service started (compare client_id against API oauth.google.client_id)")
 
 		_ = drivepoll.NewService(cfg, db, t, googleSvc)
 		log.Info("Google Drive poll service started")
