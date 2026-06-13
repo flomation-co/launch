@@ -56,6 +56,9 @@ type Service struct {
 
 	mu            sync.RWMutex
 	managedAgents map[string]*managedAgent // agentID → active management state
+
+	botIDMu     sync.RWMutex
+	slackBotIDs map[string]string // agentID → Slack bot user ID (cached)
 }
 
 // embeddingProvider is the subset of embedding.Provider that the agent
@@ -103,6 +106,7 @@ func NewService(config *config.Config, db *persistence.Service, trigger *trigger
 		apiClient:     apiClient,
 		instanceID:    uuid.New().String(),
 		managedAgents: make(map[string]*managedAgent),
+		slackBotIDs:   make(map[string]string),
 	}
 
 	go s.watchdog()

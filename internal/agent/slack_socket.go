@@ -64,6 +64,28 @@ func (s *Service) handleSlackSocketMessage(agentID, botToken string, msg *slackP
 		return
 	}
 
+	// Dispatch gate. When a message @-mentions one or more users, it is
+	// directed at those users; an agent that is not among them must stay
+	// out entirely and never dispatch its orchestrator flow. This is
+	// enforced in code rather than left to each agent's "stay silent"
+	// prompt instructions: every agent receives every channel message on
+	// its own Socket Mode connection, so self-policed silence does not
+	// reliably stop several agents from piling on the same message.
+	// Messages with no mention fall through to the normal pipeline.
+	if mentions := slackPkg.ParseMentions(msg.Text); len(mentions) > 0 {
+		botUserID, err := s.resolveSlackBotUserID(agentID, botToken)
+		switch {
+		case err != nil:
+			// Fail open: if we can't resolve the bot's identity, allow the
+			// message through rather than silencing the agent entirely.
+			l.WithError(err).Warn("dispatch gate: could not resolve bot user id; allowing dispatch")
+		case !mentions[botUserID]:
+			l.WithField("mentioned_user_ids", mentionKeys(mentions)).
+				Info("dispatch gate: message addressed to other user(s); skipping")
+			return
+		}
+	}
+
 	// Resolve user display name
 	senderName := msg.UserID
 	if info, err := slackPkg.LookupUser(botToken, msg.UserID); err == nil && info != nil {
@@ -98,6 +120,38 @@ func (s *Service) handleSlackSocketMessage(agentID, botToken string, msg *slackP
 	appmetrics.InboundMessagesTotal.WithLabelValues("slack").Inc()
 	l.Info("dispatching socket mode message")
 	go func() { _ = s.HandleInboundMessage(agentID, inbound) }()
+}
+
+// resolveSlackBotUserID returns the Slack bot user ID for an agent,
+// resolving it via auth.test on first use and caching the result. The bot
+// user ID is stable for the life of the token, so it is cached for the
+// lifetime of the process.
+func (s *Service) resolveSlackBotUserID(agentID, botToken string) (string, error) {
+	s.botIDMu.RLock()
+	id, ok := s.slackBotIDs[agentID]
+	s.botIDMu.RUnlock()
+	if ok {
+		return id, nil
+	}
+
+	id, err := slackPkg.BotUserID(botToken)
+	if err != nil {
+		return "", err
+	}
+
+	s.botIDMu.Lock()
+	s.slackBotIDs[agentID] = id
+	s.botIDMu.Unlock()
+	return id, nil
+}
+
+// mentionKeys returns the mentioned user IDs as a slice, for logging.
+func mentionKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // handleSlackSocketInteraction converts a Socket Mode interaction event
