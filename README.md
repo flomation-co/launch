@@ -2,20 +2,6 @@
 
 > Ingress service — turns external events (webhooks, QR scans, forms, pixels) into trigger fires.
 
-## The Flomation Automate platform
-
-Flomation Automate lets non-technical, front-of-house users build and run automation
-workflows ("flos") from a visual editor. This repository is one of five services that
-make up the platform:
-
-| Service | Role |
-|---------|------|
-| [API](https://gitlab.tooling.flomation.app/flomation/automate/api) | Backend REST API — manages flos, executions, runners, and environments/secrets |
-| [Editor](https://gitlab.tooling.flomation.app/flomation/automate/editor) | Visual web app for building, running, and monitoring flos |
-| **Launch** (this repository) | Ingress service — turns external events (webhooks, QR scans, forms, pixels) into trigger fires |
-| [Runner](https://gitlab.tooling.flomation.app/flomation/automate/runner) | Remote agent — polls the API for pending executions and runs them |
-| [Executor](https://gitlab.tooling.flomation.app/flomation/automate/executor) | Runtime engine — executes a flo's node graph and reports results |
-
 ## Overview
 
 Flomation Launch is a Go HTTP service that acts as the ingress layer for the Flomation
@@ -28,7 +14,6 @@ execution. Triggers are persisted in PostgreSQL and identified by UUID.
 
 - Go 1.26.1+
 - PostgreSQL
-- A running Flomation API (for trigger execution)
 - (Optional) Google OAuth2 credentials for Google Drive integration
 - Docker (optional, for containerised deployment)
 
