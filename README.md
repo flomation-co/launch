@@ -7,7 +7,7 @@
 Flomation Launch is a Go HTTP service that acts as the ingress layer for the Flomation
 Automate platform. It accepts incoming webhooks, QR code scans, form submissions,
 image-load tracking pixels, and other trigger types, then forwards them to the
-[API](https://gitlab.tooling.flomation.app/flomation/automate/api) for workflow
+API for workflow
 execution. Triggers are persisted in PostgreSQL and identified by UUID.
 
 ## Prerequisites
