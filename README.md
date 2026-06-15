@@ -1,17 +1,36 @@
 # Flomation Launch
 
-Launch service for Flomation Automate — receives external events and triggers workflow execution.
+> Ingress service — turns external events (webhooks, QR scans, forms, pixels) into trigger fires.
+
+## The Flomation Automate platform
+
+Flomation Automate lets non-technical, front-of-house users build and run automation
+workflows ("flos") from a visual editor. This repository is one of five services that
+make up the platform:
+
+| Service | Role |
+|---------|------|
+| [API](https://gitlab.tooling.flomation.app/flomation/automate/api) | Backend REST API — manages flos, executions, runners, and environments/secrets |
+| [Editor](https://gitlab.tooling.flomation.app/flomation/automate/editor) | Visual web app for building, running, and monitoring flos |
+| **Launch** (this repository) | Ingress service — turns external events (webhooks, QR scans, forms, pixels) into trigger fires |
+| [Runner](https://gitlab.tooling.flomation.app/flomation/automate/runner) | Remote agent — polls the API for pending executions and runs them |
+| [Executor](https://gitlab.tooling.flomation.app/flomation/automate/executor) | Runtime engine — executes a flo's node graph and reports results |
 
 ## Overview
 
-Flomation Launch is a Go HTTP service that acts as the ingress layer for the Flomation automation platform. It accepts incoming webhooks, QR code scans, form submissions, image-load tracking pixels, and other trigger types, then forwards them to the Automate service for workflow execution. Triggers are persisted in PostgreSQL and identified by UUID.
+Flomation Launch is a Go HTTP service that acts as the ingress layer for the Flomation
+Automate platform. It accepts incoming webhooks, QR code scans, form submissions,
+image-load tracking pixels, and other trigger types, then forwards them to the
+[API](https://gitlab.tooling.flomation.app/flomation/automate/api) for workflow
+execution. Triggers are persisted in PostgreSQL and identified by UUID.
 
 ## Prerequisites
 
 - Go 1.26.1+
 - PostgreSQL
-- A running instance of Flomation Automate (for trigger execution)
+- A running Flomation API (for trigger execution)
 - (Optional) Google OAuth2 credentials for Google Drive integration
+- Docker (optional, for containerised deployment)
 
 ## Installation
 
@@ -25,9 +44,6 @@ go mod download
 # Copy and edit the configuration file
 cp config.json.example config.json
 # Edit config.json with your database and service settings
-
-# Run the service
-go run flomation.app/automate/launch/cmd
 ```
 
 ## Configuration
@@ -95,36 +111,12 @@ Example `config.json`:
 }
 ```
 
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/version` | Returns service version, build date, and git hash |
-| `GET/POST` | `/webhook/:id` | Receives webhook payloads and fires the associated trigger |
-| `GET` | `/qr/:id` | Fires a QR code trigger |
-| `GET` | `/form/:id` | Renders a dynamic form for the trigger |
-| `POST` | `/form/:id` | Submits form data and fires the trigger |
-| `GET` | `/image/:id` | Returns a 1x1 tracking pixel and fires the image trigger |
-| `POST` | `/trigger/:id` | Creates or updates a trigger |
-| `GET` | `/google/credential` | Google OAuth2 callback handler |
-
-All trigger IDs are UUIDs. The service validates the trigger type matches the endpoint before firing.
-
-## Trigger Types
-
-| Type | Constant | Description |
-|------|----------|-------------|
-| `manual` | `TriggerTypeManual` | Manually invoked |
-| `schedule` | `TriggerTypeScheduled` | Time-based schedule |
-| `qr` | `TriggerTypeQR` | QR code scan |
-| `image` | `TriggerTypeImage` | Invisible pixel tracking |
-| `email` | `TriggerTypeEmail` | Email-based trigger |
-| `telegram` | `TriggerTypeTelegram` | Telegram message trigger |
-| `form` | `TriggerTypeForm` | HTML form submission |
-| `webhook` | `TriggerTypeWebhook` | HTTP webhook |
-| `git-poll` | `TriggerTypeGitPoll` | Git repository polling |
-
 ## Usage
+
+```bash
+# Run the service
+go run flomation.app/automate/launch/cmd
+```
 
 **Fire a webhook trigger:**
 
@@ -146,11 +138,35 @@ curl http://localhost:8080/qr/550e8400-e29b-41d4-a716-446655440000
 <img src="http://localhost:8080/image/550e8400-e29b-41d4-a716-446655440000" width="1" height="1" />
 ```
 
-**Check service version:**
+## API Endpoints
 
-```bash
-curl http://localhost:8080/version
-```
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/version` | Returns service version, build date, and git hash |
+| `GET/POST` | `/webhook/:id` | Receives webhook payloads and fires the associated trigger |
+| `GET` | `/qr/:id` | Fires a QR code trigger |
+| `GET` | `/form/:id` | Renders a dynamic form for the trigger |
+| `POST` | `/form/:id` | Submits form data and fires the trigger |
+| `GET` | `/image/:id` | Returns a 1x1 tracking pixel and fires the image trigger |
+| `POST` | `/trigger/:id` | Creates or updates a trigger |
+| `GET` | `/google/credential` | Google OAuth2 callback handler |
+
+All trigger IDs are UUIDs. The service validates the trigger type matches the endpoint
+before firing.
+
+## Trigger Types
+
+| Type | Constant | Description |
+|------|----------|-------------|
+| `manual` | `TriggerTypeManual` | Manually invoked |
+| `schedule` | `TriggerTypeScheduled` | Time-based schedule |
+| `qr` | `TriggerTypeQR` | QR code scan |
+| `image` | `TriggerTypeImage` | Invisible pixel tracking |
+| `email` | `TriggerTypeEmail` | Email-based trigger |
+| `telegram` | `TriggerTypeTelegram` | Telegram message trigger |
+| `form` | `TriggerTypeForm` | HTML form submission |
+| `webhook` | `TriggerTypeWebhook` | HTTP webhook |
+| `git-poll` | `TriggerTypeGitPoll` | Git repository polling |
 
 ## Development
 
@@ -161,10 +177,10 @@ go run flomation.app/automate/launch/cmd
 # Run tests with coverage
 make test
 
-# Run linters (goimports, golangci-lint, vet, gosec, govulncheck)
+# Lint (runs goimports, golangci-lint, go vet, gosec, govulncheck)
 make lint
 
-# Build for all platforms (linux, darwin, windows × amd64/arm64/arm)
+# Build for all platforms (linux, darwin, windows — amd64/arm64/arm)
 make build
 ```
 
@@ -182,22 +198,24 @@ docker run -v $(pwd)/config.json:/config.json flomation-launch
 ## Project Structure
 
 ```
-cmd/
-  main.go                  Entry point
-internal/
-  config/                  Configuration loader (config.json)
-  http/                    Gin HTTP server, routes, and handlers
-  trigger/                 Trigger business logic and Automate API client
-  persistence/             PostgreSQL access layer and migrations
-  google/                  Google Drive OAuth2 integration
-  git/poll/                Git repository polling (stub)
-  version/                 Build version injection
-  assets/                  Embedded static files and HTML templates
-types.go                   Trigger type constants and domain model
-Makefile                   Build, lint, and test targets
-Dockerfile                 Container image definition
+.
+├── cmd/
+│   └── main.go                  # Entry point
+├── types.go                     # Trigger type constants and domain model
+├── internal/
+│   ├── config/                  # Configuration loader (config.json)
+│   ├── http/                    # Gin HTTP server, routes, and handlers
+│   ├── trigger/                 # Trigger business logic and Automate API client
+│   ├── persistence/             # PostgreSQL access layer and migrations
+│   ├── google/                  # Google Drive OAuth2 integration
+│   ├── git/poll/                # Git repository polling (stub)
+│   ├── assets/                  # Embedded static files and HTML templates
+│   └── version/                 # Build version injection
+├── Dockerfile
+├── Makefile
+└── go.mod
 ```
 
 ## Licence
 
-MIT — see [LICENCE.md](LICENCE.md).
+MIT — Flomation LTD. See [LICENCE.md](LICENCE.md).
