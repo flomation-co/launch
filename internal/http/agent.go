@@ -189,6 +189,65 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 		}
 	}
 
+	// Non-voice attachments (photos, documents, videos). Each is
+	// downloaded inline and forwarded to the API as base64 bytes
+	// alongside their metadata. The API uploads to the blob tier
+	// server-side (where org_id is known) and replaces the base64
+	// with a flo:blob:... token before the agent_message is written.
+	// Launch never touches the blob store directly — keeps the auth
+	// surface single-sourced.
+	if len(parsed.Attachments) > 0 {
+		var botToken string
+		if isTrigger {
+			botToken = s.resolveTriggerCreds(id)["bot_token"]
+		} else {
+			botToken = s.resolveTelegramCreds(id)["bot_token"]
+		}
+		if botToken != "" {
+			inbound := make([]map[string]interface{}, 0, len(parsed.Attachments))
+			for _, att := range parsed.Attachments {
+				bytes, err := telegram.DownloadFile(botToken, att.FileID)
+				if err != nil {
+					log.WithFields(log.Fields{
+						"id":      id,
+						"file_id": att.FileID,
+						"kind":    att.Kind,
+						"error":   err,
+					}).Warn("failed to download telegram attachment")
+					continue
+				}
+				entry := map[string]interface{}{
+					"name":           att.Name,
+					"mime":           att.Mime,
+					"size":           len(bytes),
+					"kind":           att.Kind,
+					"source_id":      att.FileID,
+					"source_kind":    "telegram",
+					"content_base64": base64.StdEncoding.EncodeToString(bytes),
+				}
+				if att.Width > 0 {
+					entry["width"] = att.Width
+				}
+				if att.Height > 0 {
+					entry["height"] = att.Height
+				}
+				if att.Duration > 0 {
+					entry["duration"] = att.Duration
+				}
+				inbound = append(inbound, entry)
+				log.WithFields(log.Fields{
+					"id":         id,
+					"kind":       att.Kind,
+					"name":       att.Name,
+					"size_bytes": len(bytes),
+				}).Info("downloaded telegram attachment")
+			}
+			if len(inbound) > 0 {
+				metadata["inbound_attachments"] = inbound
+			}
+		}
+	}
+
 	channelType := "telegram"
 	if parsed.IsVoice {
 		channelType = "telegram_voice"
@@ -311,6 +370,47 @@ func (s *Service) handleSlackWebhook(c *gin.Context) {
 		"event_type":   parsed.EventType,
 		// Alias: Telegram flows that use chat_id will also work
 		"chat_id": parsed.ChannelID,
+	}
+
+	// File attachments (file_share events). Each url_private requires
+	// a Bearer-auth GET to download — Slack's auth model is different
+	// from Telegram's public file URLs, but the resulting shape
+	// forwarded to the API is identical: the same inbound_attachments
+	// array M2 introduced. A missing bot_token (rare in production but
+	// possible in dev) skips the download with a logged warning rather
+	// than dropping the whole message.
+	if len(parsed.Attachments) > 0 && botToken != "" {
+		inbound := make([]map[string]interface{}, 0, len(parsed.Attachments))
+		for _, att := range parsed.Attachments {
+			bytes, err := slackpkg.DownloadFile(botToken, att.URLPrivate)
+			if err != nil {
+				log.WithFields(log.Fields{
+					"id":      id,
+					"file_id": att.FileID,
+					"kind":    att.Kind,
+					"error":   err,
+				}).Warn("failed to download slack attachment")
+				continue
+			}
+			inbound = append(inbound, map[string]interface{}{
+				"name":           att.Name,
+				"mime":           att.Mime,
+				"size":           len(bytes),
+				"kind":           att.Kind,
+				"source_id":      att.FileID,
+				"source_kind":    "slack",
+				"content_base64": base64.StdEncoding.EncodeToString(bytes),
+			})
+			log.WithFields(log.Fields{
+				"id":         id,
+				"kind":       att.Kind,
+				"name":       att.Name,
+				"size_bytes": len(bytes),
+			}).Info("downloaded slack attachment")
+		}
+		if len(inbound) > 0 {
+			metadata["inbound_attachments"] = inbound
+		}
 	}
 
 	// Dispatch asynchronously — Slack expects a quick 200

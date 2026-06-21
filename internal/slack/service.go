@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -93,14 +94,15 @@ func ParseEvent(body []byte) (*ParsedMessage, *URLVerification) {
 
 	var event struct {
 		Event struct {
-			Type     string `json:"type"`
-			SubType  string `json:"subtype"`
-			Text     string `json:"text"`
-			User     string `json:"user"`
-			Channel  string `json:"channel"`
-			TS       string `json:"ts"`
-			ThreadTS string `json:"thread_ts,omitempty"`
-			BotID    string `json:"bot_id,omitempty"`
+			Type     string      `json:"type"`
+			SubType  string      `json:"subtype"`
+			Text     string      `json:"text"`
+			User     string      `json:"user"`
+			Channel  string      `json:"channel"`
+			TS       string      `json:"ts"`
+			ThreadTS string      `json:"thread_ts,omitempty"`
+			BotID    string      `json:"bot_id,omitempty"`
+			Files    []slackFile `json:"files,omitempty"`
 		} `json:"event"`
 		TeamID    string `json:"team_id"`
 		EventID   string `json:"event_id"`
@@ -114,11 +116,17 @@ func ParseEvent(body []byte) (*ParsedMessage, *URLVerification) {
 	if event.Event.Type != "message" && event.Event.Type != "app_mention" {
 		return nil, nil
 	}
-	if event.Event.SubType != "" || event.Event.BotID != "" {
-		return nil, nil // Skip bot messages and subtypes
+	if event.Event.BotID != "" {
+		return nil, nil // Skip bot messages
+	}
+	// SubType filter: drop generic edits/joins/leaves but allow
+	// "file_share" so messages carrying file attachments — both text
+	// + file and file-only — flow through to the agent.
+	if event.Event.SubType != "" && event.Event.SubType != "file_share" {
+		return nil, nil
 	}
 
-	return &ParsedMessage{
+	parsed := &ParsedMessage{
 		Text:      event.Event.Text,
 		UserID:    event.Event.User,
 		ChannelID: event.Event.Channel,
@@ -127,7 +135,64 @@ func ParseEvent(body []byte) (*ParsedMessage, *URLVerification) {
 		TeamID:    event.TeamID,
 		EventID:   event.EventID,
 		EventType: event.Event.Type,
-	}, nil
+	}
+	if len(event.Event.Files) > 0 {
+		parsed.Attachments = extractSlackAttachments(event.Event.Files)
+	}
+	return parsed, nil
+}
+
+// extractSlackAttachments folds the Slack `files` array into the
+// channel-agnostic ParsedAttachment shape Launch ships to the API.
+// Photo / document / video are the kinds we surface; everything else
+// (canvas, snippet, external file, audio note) collapses to
+// "document" with whatever mime Slack supplied — the dispatch path
+// downloads them as-is and lets the AI decide what to do.
+func extractSlackAttachments(files []slackFile) []ParsedAttachment {
+	out := make([]ParsedAttachment, 0, len(files))
+	for _, f := range files {
+		if f.URLPrivate == "" {
+			continue // skip files we can't download (Slack tombstoned, expired, etc.)
+		}
+		name := f.Name
+		if name == "" {
+			if f.Title != "" {
+				name = f.Title
+			} else {
+				name = "file_" + f.ID
+			}
+		}
+		mime := f.Mimetype
+		if mime == "" {
+			mime = "application/octet-stream"
+		}
+		kind := slackKindForMime(mime)
+		out = append(out, ParsedAttachment{
+			FileID:     f.ID,
+			URLPrivate: f.URLPrivate,
+			Name:       name,
+			Mime:       mime,
+			Size:       f.Size,
+			Kind:       kind,
+		})
+	}
+	return out
+}
+
+// slackKindForMime collapses the mimetype into the same kind values
+// Telegram uses (photo / document / video / audio) so downstream
+// consumers see one consistent vocabulary.
+func slackKindForMime(mime string) string {
+	switch {
+	case strings.HasPrefix(mime, "image/"):
+		return "photo"
+	case strings.HasPrefix(mime, "video/"):
+		return "video"
+	case strings.HasPrefix(mime, "audio/"):
+		return "audio"
+	default:
+		return "document"
+	}
 }
 
 // ParsedMessage contains extracted fields from a Slack event.
@@ -140,6 +205,38 @@ type ParsedMessage struct {
 	TeamID    string `json:"team_id"`
 	EventID   string `json:"event_id"`
 	EventType string `json:"event_type"` // message or app_mention
+	// Attachments is the unified non-text payload list — populated
+	// when the Slack message includes a `files` array (file_share
+	// subtype). Same shape Telegram populates so the API's
+	// inbound_attachments processing handles both channels uniformly.
+	Attachments []ParsedAttachment `json:"attachments,omitempty"`
+}
+
+// ParsedAttachment is a single Slack file attachment. URLPrivate is
+// the per-file download URL; resolving it requires the bot token as
+// a Bearer header (unlike Telegram where the URL is public after
+// getFile). Kind classifies the source — same vocabulary as Telegram
+// (photo / document / video / audio) so downstream consumers see one
+// consistent shape across channels.
+type ParsedAttachment struct {
+	FileID     string `json:"file_id"`
+	URLPrivate string `json:"url_private"`
+	Name       string `json:"name,omitempty"`
+	Mime       string `json:"mime,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	Kind       string `json:"kind"`
+}
+
+// slackFile is the subset of Slack's file object we care about. The
+// real shape is much wider (thumbnail variants, preview text,
+// permission scopes, etc.) — we ignore everything we don't need.
+type slackFile struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Title      string `json:"title"`
+	Mimetype   string `json:"mimetype"`
+	Size       int64  `json:"size"`
+	URLPrivate string `json:"url_private"`
 }
 
 // URLVerification is returned when Slack sends a challenge for endpoint verification.
@@ -151,6 +248,41 @@ type URLVerification struct {
 type UserInfo struct {
 	DisplayName string // Short name (e.g. "Andy")
 	RealName    string // Full name (e.g. "Andy Esser")
+}
+
+// DownloadFile fetches the bytes of a Slack file via its url_private.
+// Unlike Telegram's public file URLs, Slack file downloads require
+// the bot token as an Authorization: Bearer header — without it the
+// server returns the workspace's login HTML instead of the file.
+//
+// Limits the response body to 25 MB (matches the blob service's hard
+// cap) so an outsized file can't pin the process during the download.
+func DownloadFile(botToken, urlPrivate string) ([]byte, error) {
+	// #nosec G107 — URL comes from an authenticated Slack webhook
+	// payload we've already signature-verified upstream.
+	req, err := http.NewRequest(http.MethodGet, urlPrivate, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+botToken)
+	req.Header.Set("Accept", "*/*")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("slack file download: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		// Slack returns HTML (a login page) when the token is wrong;
+		// don't dump bytes into the error, just the status.
+		return nil, fmt.Errorf("slack file download returned %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 25<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read slack file: %w", err)
+	}
+	return data, nil
 }
 
 // LookupUser resolves a Slack user ID to their display and real names.
