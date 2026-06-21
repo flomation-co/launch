@@ -177,7 +177,108 @@ func ParseUpdate(body []byte) *ParsedMessage {
 		}
 	}
 
+	// Non-voice attachments. Telegram never combines voice with these
+	// in a single message, so the else-if-voice branches above and the
+	// attachment scan below cannot fire on the same Update — but the
+	// code reads each independently so a future API surface change can't
+	// silently start dropping data either way.
+	parsed.Attachments = extractAttachments(msg)
+	// If the message has attachments but no text, surface the caption so
+	// downstream handlers don't see an empty Content alongside the files.
+	if parsed.Text == "" && len(parsed.Attachments) > 0 {
+		parsed.Text = msg.Caption
+	}
+
 	return parsed
+}
+
+// extractAttachments folds Photo/Document/Video into a single ordered
+// list of ParsedAttachment entries.
+//
+//   - For photos, Telegram emits an array of resolutions sharing the
+//     same file_unique_id. We always take the largest by file_size (or
+//     by width when sizes are missing), since the LLM should see the
+//     most informative version. Lower resolutions exist for clients
+//     that need a thumbnail but are useless to a flow.
+//   - Documents and videos appear once each per message.
+//   - The Kind field disambiguates the original Telegram field, useful
+//     for downstream UIs that want to render a video player differently
+//     from a document badge.
+func extractAttachments(msg *telegramMessage) []ParsedAttachment {
+	if msg == nil {
+		return nil
+	}
+	var out []ParsedAttachment
+
+	if largest := largestPhoto(msg.Photo); largest != nil {
+		out = append(out, ParsedAttachment{
+			FileID: largest.FileID,
+			Name:   fmt.Sprintf("photo_%s.jpg", largest.FileUniqueID),
+			Mime:   "image/jpeg",
+			Size:   largest.FileSize,
+			Kind:   "photo",
+			Width:  largest.Width,
+			Height: largest.Height,
+		})
+	}
+	if msg.Document != nil {
+		name := msg.Document.FileName
+		if name == "" {
+			name = fmt.Sprintf("document_%s.bin", msg.Document.FileUniqueID)
+		}
+		mime := msg.Document.MimeType
+		if mime == "" {
+			mime = "application/octet-stream"
+		}
+		out = append(out, ParsedAttachment{
+			FileID: msg.Document.FileID,
+			Name:   name,
+			Mime:   mime,
+			Size:   msg.Document.FileSize,
+			Kind:   "document",
+		})
+	}
+	if msg.Video != nil {
+		name := msg.Video.FileName
+		if name == "" {
+			name = fmt.Sprintf("video_%s.mp4", msg.Video.FileUniqueID)
+		}
+		mime := msg.Video.MimeType
+		if mime == "" {
+			mime = "video/mp4"
+		}
+		out = append(out, ParsedAttachment{
+			FileID:   msg.Video.FileID,
+			Name:     name,
+			Mime:     mime,
+			Size:     msg.Video.FileSize,
+			Kind:     "video",
+			Width:    msg.Video.Width,
+			Height:   msg.Video.Height,
+			Duration: msg.Video.Duration,
+		})
+	}
+	return out
+}
+
+// largestPhoto picks the largest available resolution from the
+// Telegram photo_size array. Larger file_size wins; ties break on
+// width.
+func largestPhoto(sizes []telegramPhotoSize) *telegramPhotoSize {
+	if len(sizes) == 0 {
+		return nil
+	}
+	bestIdx := 0
+	for i := 1; i < len(sizes); i++ {
+		if sizes[i].FileSize > sizes[bestIdx].FileSize {
+			bestIdx = i
+			continue
+		}
+		if sizes[i].FileSize == sizes[bestIdx].FileSize && sizes[i].Width > sizes[bestIdx].Width {
+			bestIdx = i
+		}
+	}
+	return &sizes[bestIdx]
 }
 
 // ParsedMessage contains the extracted fields from a Telegram update.
@@ -195,6 +296,28 @@ type ParsedMessage struct {
 	VoiceFileID    string    `json:"voice_file_id,omitempty"`
 	VoiceDuration  int       `json:"voice_duration,omitempty"`
 	VoiceMimeType  string    `json:"voice_mime_type,omitempty"`
+	// Attachments is the unified non-voice file list — populated when
+	// the Telegram message includes Photo, Document, Video, or Audio
+	// (non-voice) entries. Voice is intentionally handled by the
+	// existing IsVoice/VoiceFileID path; it carries its own trigger
+	// data shape (`channel_type: telegram_voice`) that downstream
+	// flows already depend on.
+	Attachments []ParsedAttachment `json:"attachments,omitempty"`
+}
+
+// ParsedAttachment is a single non-voice file Telegram sent alongside
+// the message. Kind classifies the source (photo / document / video /
+// audio) so the dispatch path can render a helpful display name when
+// Telegram itself omits one (photos never carry a filename).
+type ParsedAttachment struct {
+	FileID    string `json:"file_id"`
+	Name      string `json:"name,omitempty"` // Telegram document/audio name; synthesised for photos/videos
+	Mime      string `json:"mime,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	Kind      string `json:"kind"` // "photo" | "document" | "video" | "audio"
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
+	Duration  int    `json:"duration,omitempty"`
 }
 
 // --- Telegram API types (minimal subset) ---
@@ -212,14 +335,47 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int64          `json:"message_id"`
-	From      *telegramUser  `json:"from,omitempty"`
-	Chat      telegramChat   `json:"chat"`
-	Date      int64          `json:"date"`
-	Text      string         `json:"text"`
-	Voice     *telegramVoice `json:"voice,omitempty"`
-	Audio     *telegramAudio `json:"audio,omitempty"`
-	Caption   string         `json:"caption,omitempty"`
+	MessageID int64             `json:"message_id"`
+	From      *telegramUser     `json:"from,omitempty"`
+	Chat      telegramChat      `json:"chat"`
+	Date      int64             `json:"date"`
+	Text      string             `json:"text"`
+	Voice     *telegramVoice     `json:"voice,omitempty"`
+	Audio     *telegramAudio     `json:"audio,omitempty"`
+	Caption   string             `json:"caption,omitempty"`
+	// Non-voice attachment fields. Telegram emits these as siblings
+	// of Voice; the parser surfaces them as a unified Attachments slice
+	// on ParsedMessage so the dispatch path can iterate uniformly.
+	Photo    []telegramPhotoSize `json:"photo,omitempty"`
+	Document *telegramDocument   `json:"document,omitempty"`
+	Video    *telegramVideo      `json:"video,omitempty"`
+}
+
+type telegramPhotoSize struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	FileSize     int64  `json:"file_size,omitempty"`
+}
+
+type telegramDocument struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileName     string `json:"file_name,omitempty"`
+	MimeType     string `json:"mime_type,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+}
+
+type telegramVideo struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	Duration     int    `json:"duration"`
+	MimeType     string `json:"mime_type,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+	FileName     string `json:"file_name,omitempty"`
 }
 
 type telegramVoice struct {
