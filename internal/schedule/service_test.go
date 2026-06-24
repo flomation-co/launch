@@ -183,6 +183,230 @@ func Test_ShouldFire_Weekly_WrongDay(t *testing.T) {
 	Expect(ShouldFire(cfg, lastFired, now)).To(BeFalse())
 }
 
+// --- Monthly (specific dates) ---------------------------------------------
+
+func Test_ShouldFire_Monthly_OnDate(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	cfg := ScheduleConfig{Mode: "monthly", TimeOfDay: "09:00", DaysOfMonth: "1,15,28"}
+
+	// 28th at 09:30, last fired 08:00 same day — should fire.
+	now := time.Date(2026, 6, 28, 9, 30, 0, 0, time.Local)
+	lastFired := time.Date(2026, 6, 28, 8, 0, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, lastFired, now)).To(BeTrue())
+
+	// 15th also configured.
+	now15 := time.Date(2026, 6, 15, 9, 30, 0, 0, time.Local)
+	last15 := time.Date(2026, 6, 15, 8, 0, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, last15, now15)).To(BeTrue())
+}
+
+func Test_ShouldFire_Monthly_WrongDate(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	cfg := ScheduleConfig{Mode: "monthly", TimeOfDay: "09:00", DaysOfMonth: "28"}
+
+	// 27th is not in the set — must not fire regardless of the time.
+	now := time.Date(2026, 6, 27, 9, 30, 0, 0, time.Local)
+	lastFired := time.Date(2026, 6, 27, 8, 0, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, lastFired, now)).To(BeFalse())
+}
+
+func Test_ShouldFire_Monthly_AlreadyFired(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	cfg := ScheduleConfig{Mode: "monthly", TimeOfDay: "09:00", DaysOfMonth: "28"}
+
+	now := time.Date(2026, 6, 28, 10, 0, 0, 0, time.Local)
+	lastFired := time.Date(2026, 6, 28, 9, 5, 0, 0, time.Local) // already fired after 09:00
+	Expect(ShouldFire(cfg, lastFired, now)).To(BeFalse())
+}
+
+func Test_ShouldFire_Monthly_31stSkippedInFebruary(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	// The confirmed edge case: a schedule on the 31st must NOT fire in
+	// February — the 31st does not exist, and the last day (28th) is not
+	// the 31st, so the month is skipped entirely.
+	cfg := ScheduleConfig{Mode: "monthly", TimeOfDay: "09:00", DaysOfMonth: "31"}
+
+	feb28 := time.Date(2026, 2, 28, 9, 30, 0, 0, time.Local) // last day of Feb 2026
+	Expect(feb28.Day()).To(Equal(28))
+	lastFired := time.Date(2026, 2, 28, 8, 0, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, lastFired, feb28)).To(BeFalse())
+
+	// Same schedule DOES fire on a real 31st (e.g. July).
+	jul31 := time.Date(2026, 7, 31, 9, 30, 0, 0, time.Local)
+	lastJul := time.Date(2026, 7, 31, 8, 0, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, lastJul, jul31)).To(BeTrue())
+}
+
+func Test_ShouldFire_Monthly_LastDay(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	cfg := ScheduleConfig{Mode: "monthly", TimeOfDay: "09:00", DaysOfMonth: "last"}
+
+	// June has 30 days — fires on the 30th, not the 29th.
+	jun30 := time.Date(2026, 6, 30, 9, 30, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, time.Date(2026, 6, 30, 8, 0, 0, 0, time.Local), jun30)).To(BeTrue())
+	jun29 := time.Date(2026, 6, 29, 9, 30, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, time.Date(2026, 6, 29, 8, 0, 0, 0, time.Local), jun29)).To(BeFalse())
+
+	// February non-leap (2026): last day is the 28th.
+	feb28 := time.Date(2026, 2, 28, 9, 30, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, time.Date(2026, 2, 28, 8, 0, 0, 0, time.Local), feb28)).To(BeTrue())
+
+	// February leap (2024): last day is the 29th, so the 28th must not fire.
+	leap29 := time.Date(2024, 2, 29, 9, 30, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, time.Date(2024, 2, 29, 8, 0, 0, 0, time.Local), leap29)).To(BeTrue())
+	leap28 := time.Date(2024, 2, 28, 9, 30, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, time.Date(2024, 2, 28, 8, 0, 0, 0, time.Local), leap28)).To(BeFalse())
+}
+
+// --- Monthly weekday (Nth weekday) -----------------------------------------
+//
+// June 2026 begins on a Monday, giving Mondays on the 1st, 8th, 15th, 22nd and
+// 29th and Fridays on the 5th, 12th, 19th and 26th.
+
+func Test_ShouldFire_MonthlyWeekday_FirstMonday(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	cfg := ScheduleConfig{Mode: "monthly_weekday", TimeOfDay: "09:00", WeekOrdinal: "first", Weekday: "monday"}
+
+	now := time.Date(2026, 6, 1, 9, 30, 0, 0, time.Local)
+	Expect(now.Weekday()).To(Equal(time.Monday))
+	Expect(ShouldFire(cfg, time.Date(2026, 6, 1, 8, 0, 0, 0, time.Local), now)).To(BeTrue())
+
+	// The second Monday (8th) must not fire for a "first" schedule.
+	second := time.Date(2026, 6, 8, 9, 30, 0, 0, time.Local)
+	Expect(second.Weekday()).To(Equal(time.Monday))
+	Expect(ShouldFire(cfg, time.Date(2026, 6, 8, 8, 0, 0, 0, time.Local), second)).To(BeFalse())
+}
+
+func Test_ShouldFire_MonthlyWeekday_LastFriday(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	cfg := ScheduleConfig{Mode: "monthly_weekday", TimeOfDay: "09:00", WeekOrdinal: "last", Weekday: "friday"}
+
+	last := time.Date(2026, 6, 26, 9, 30, 0, 0, time.Local) // last Friday of June 2026
+	Expect(last.Weekday()).To(Equal(time.Friday))
+	Expect(ShouldFire(cfg, time.Date(2026, 6, 26, 8, 0, 0, 0, time.Local), last)).To(BeTrue())
+
+	// An earlier Friday (19th) must not fire for a "last" schedule.
+	earlier := time.Date(2026, 6, 19, 9, 30, 0, 0, time.Local)
+	Expect(earlier.Weekday()).To(Equal(time.Friday))
+	Expect(ShouldFire(cfg, time.Date(2026, 6, 19, 8, 0, 0, 0, time.Local), earlier)).To(BeFalse())
+}
+
+func Test_ShouldFire_MonthlyWeekday_FifthMissing(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	// July 2026 has only four Mondays (6th, 13th, 20th, 27th), so a "fifth
+	// Monday" schedule never fires that month.
+	cfg := ScheduleConfig{Mode: "monthly_weekday", TimeOfDay: "09:00", WeekOrdinal: "fifth", Weekday: "monday"}
+
+	fourth := time.Date(2026, 7, 27, 9, 30, 0, 0, time.Local)
+	Expect(fourth.Weekday()).To(Equal(time.Monday))
+	Expect(ShouldFire(cfg, time.Date(2026, 7, 27, 8, 0, 0, 0, time.Local), fourth)).To(BeFalse())
+
+	// A "fourth Monday" schedule DOES fire on the 27th.
+	cfg.WeekOrdinal = "fourth"
+	Expect(ShouldFire(cfg, time.Date(2026, 7, 27, 8, 0, 0, 0, time.Local), fourth)).To(BeTrue())
+}
+
+// --- Yearly ----------------------------------------------------------------
+
+func Test_ShouldFire_Yearly_OnDate(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	cfg := ScheduleConfig{Mode: "yearly", TimeOfDay: "09:00", MonthOfYear: "1", DayOfMonth: "1"}
+
+	now := time.Date(2026, 1, 1, 9, 30, 0, 0, time.Local)
+	lastFired := time.Date(2025, 12, 31, 23, 0, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, lastFired, now)).To(BeTrue())
+
+	// Wrong day must not fire.
+	jan2 := time.Date(2026, 1, 2, 9, 30, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, time.Date(2026, 1, 2, 8, 0, 0, 0, time.Local), jan2)).To(BeFalse())
+
+	// Wrong month must not fire.
+	feb1 := time.Date(2026, 2, 1, 9, 30, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, time.Date(2026, 2, 1, 8, 0, 0, 0, time.Local), feb1)).To(BeFalse())
+}
+
+func Test_ShouldFire_Yearly_Feb29SkippedInNonLeap(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	cfg := ScheduleConfig{Mode: "yearly", TimeOfDay: "09:00", MonthOfYear: "2", DayOfMonth: "29"}
+
+	// 2026 is not a leap year: the 28th (last day of Feb) is not the 29th,
+	// so the schedule is skipped entirely.
+	feb28 := time.Date(2026, 2, 28, 9, 30, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, time.Date(2026, 2, 28, 8, 0, 0, 0, time.Local), feb28)).To(BeFalse())
+
+	// 2024 is a leap year: it fires on the 29th.
+	feb29 := time.Date(2024, 2, 29, 9, 30, 0, 0, time.Local)
+	Expect(ShouldFire(cfg, time.Date(2024, 2, 29, 8, 0, 0, 0, time.Local), feb29)).To(BeTrue())
+}
+
+// --- Weekly backward compatibility with the multi_select string format ------
+
+func Test_ShouldFire_Weekly_MultiSelectFormat(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	// The editor's multi_select stores an ordered comma-separated string,
+	// identical to the previous free-text format. A full-week selection must
+	// still match a Monday.
+	cfg := ScheduleConfig{
+		Mode:       "weekly",
+		TimeOfDay:  "10:00",
+		DaysOfWeek: "monday,tuesday,wednesday,thursday,friday,saturday,sunday",
+	}
+
+	monday := time.Date(2026, 6, 1, 10, 30, 0, 0, time.Local)
+	Expect(monday.Weekday()).To(Equal(time.Monday))
+	Expect(ShouldFire(cfg, time.Date(2026, 6, 1, 8, 0, 0, 0, time.Local), monday)).To(BeTrue())
+}
+
+// --- Helper unit tests ------------------------------------------------------
+
+func Test_DaysInMonth(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	Expect(daysInMonth(time.Date(2026, 2, 10, 0, 0, 0, 0, time.Local))).To(Equal(28))  // non-leap Feb
+	Expect(daysInMonth(time.Date(2024, 2, 10, 0, 0, 0, 0, time.Local))).To(Equal(29))  // leap Feb
+	Expect(daysInMonth(time.Date(2026, 4, 10, 0, 0, 0, 0, time.Local))).To(Equal(30))  // April
+	Expect(daysInMonth(time.Date(2026, 12, 10, 0, 0, 0, 0, time.Local))).To(Equal(31)) // December
+}
+
+func Test_ParseWeekday(t *testing.T) {
+	t.Parallel()
+	RegisterTestingT(t)
+
+	wd, ok := parseWeekday("Monday")
+	Expect(ok).To(BeTrue())
+	Expect(wd).To(Equal(time.Monday))
+
+	wd, ok = parseWeekday("  sunday ")
+	Expect(ok).To(BeTrue())
+	Expect(wd).To(Equal(time.Sunday))
+
+	_, ok = parseWeekday("notaday")
+	Expect(ok).To(BeFalse())
+}
+
 func Test_ShouldFire_UnknownMode(t *testing.T) {
 	t.Parallel()
 	RegisterTestingT(t)
