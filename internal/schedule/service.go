@@ -438,10 +438,10 @@ func dayOfMonthMatches(spec string, now time.Time) bool {
 	lastDay := daysInMonth(now)
 	for _, tok := range strings.Split(spec, ",") {
 		tok = strings.ToLower(strings.TrimSpace(tok))
-		switch {
-		case tok == "":
+		switch tok {
+		case "":
 			continue
-		case tok == "last":
+		case "last":
 			if now.Day() == lastDay {
 				return true
 			}
