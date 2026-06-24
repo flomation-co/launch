@@ -40,11 +40,16 @@ type lastFiredState struct {
 
 // ScheduleConfig represents the configuration stored in a schedule trigger's Data field.
 type ScheduleConfig struct {
-	Mode                string `json:"mode"`                            // "interval", "daily", "weekly"
+	Mode                string `json:"mode"`                            // "interval", "daily", "weekly", "monthly", "monthly_weekday", "yearly"
 	Interval            string `json:"interval,omitempty"`              // e.g. "15"
 	Unit                string `json:"unit,omitempty"`                  // "minutes", "hours", "days"
 	TimeOfDay           string `json:"time_of_day,omitempty"`           // "HH:MM" 24-hour format
 	DaysOfWeek          string `json:"days_of_week,omitempty"`          // "monday,wednesday"
+	DaysOfMonth         string `json:"days_of_month,omitempty"`         // "1,15,28" or "last" (monthly mode)
+	WeekOrdinal         string `json:"week_ordinal,omitempty"`          // "first".."fifth" or "last" (monthly_weekday mode)
+	Weekday             string `json:"weekday,omitempty"`               // "monday".."sunday" (monthly_weekday mode)
+	MonthOfYear         string `json:"month_of_year,omitempty"`         // "1".."12" (yearly mode)
+	DayOfMonth          string `json:"day_of_month,omitempty"`          // "1".."31" (yearly mode)
 	Timezone            string `json:"timezone,omitempty"`              // IANA timezone e.g. "Europe/London"
 	ExcludeBankHolidays string `json:"exclude_bank_holidays,omitempty"` // "true" to skip UK bank holidays
 }
@@ -336,6 +341,12 @@ func ShouldFire(cfg ScheduleConfig, lastFired time.Time, now time.Time) bool {
 		return shouldFireDaily(cfg, lastFired, now)
 	case "weekly":
 		return shouldFireWeekly(cfg, lastFired, now)
+	case "monthly":
+		return shouldFireMonthly(cfg, lastFired, now)
+	case "monthly_weekday":
+		return shouldFireMonthlyWeekday(cfg, lastFired, now)
+	case "yearly":
+		return shouldFireYearly(cfg, lastFired, now)
 	default:
 		return false
 	}
@@ -402,6 +413,141 @@ func shouldFireWeekly(cfg ScheduleConfig, lastFired time.Time, now time.Time) bo
 	}
 
 	return shouldFireDaily(cfg, lastFired, now)
+}
+
+// shouldFireMonthly fires on the configured dates of the month. Dates are a
+// comma-separated list of day numbers (1-31), optionally including "last" to
+// match the final day of the month. A date that does not exist in the current
+// month (e.g. the 31st in February) simply does not match and is skipped that
+// month — users wanting reliable month-end should select "last".
+func shouldFireMonthly(cfg ScheduleConfig, lastFired time.Time, now time.Time) bool {
+	if cfg.TimeOfDay == "" || cfg.DaysOfMonth == "" {
+		return false
+	}
+
+	if !dayOfMonthMatches(cfg.DaysOfMonth, now) {
+		return false
+	}
+
+	return shouldFireDaily(cfg, lastFired, now)
+}
+
+// dayOfMonthMatches reports whether now's day-of-month is in the comma-separated
+// set, honouring the special "last" token for the final day of the month.
+func dayOfMonthMatches(spec string, now time.Time) bool {
+	lastDay := daysInMonth(now)
+	for _, tok := range strings.Split(spec, ",") {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		switch tok {
+		case "":
+			continue
+		case "last":
+			if now.Day() == lastDay {
+				return true
+			}
+		default:
+			d, err := strconv.Atoi(tok)
+			if err == nil && d == now.Day() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// shouldFireMonthlyWeekday fires on the Nth weekday of the month, e.g. the first
+// Monday or the last Friday. Ordinals "first".."fifth" select the 1st-5th
+// occurrence; "last" selects the final occurrence. A "fifth" occurrence that
+// does not exist in a given month simply does not match and is skipped.
+func shouldFireMonthlyWeekday(cfg ScheduleConfig, lastFired time.Time, now time.Time) bool {
+	if cfg.TimeOfDay == "" || cfg.WeekOrdinal == "" || cfg.Weekday == "" {
+		return false
+	}
+
+	wd, ok := parseWeekday(cfg.Weekday)
+	if !ok || now.Weekday() != wd {
+		return false
+	}
+
+	if !weekOrdinalMatches(cfg.WeekOrdinal, now) {
+		return false
+	}
+
+	return shouldFireDaily(cfg, lastFired, now)
+}
+
+// weekOrdinalMatches reports whether now falls on the requested occurrence of
+// its weekday within the month. now.Weekday() is assumed to already match.
+func weekOrdinalMatches(ordinal string, now time.Time) bool {
+	occurrence := (now.Day()-1)/7 + 1 // 1-indexed: which same-weekday this is
+	switch strings.ToLower(strings.TrimSpace(ordinal)) {
+	case "first":
+		return occurrence == 1
+	case "second":
+		return occurrence == 2
+	case "third":
+		return occurrence == 3
+	case "fourth":
+		return occurrence == 4
+	case "fifth":
+		return occurrence == 5
+	case "last":
+		// No further same-weekday remains this month if a week ahead spills over.
+		return now.Day()+7 > daysInMonth(now)
+	default:
+		return false
+	}
+}
+
+// shouldFireYearly fires once a year on the configured month and day, e.g. the
+// 1st of January. Feb 29 in a non-leap year never matches and is skipped.
+func shouldFireYearly(cfg ScheduleConfig, lastFired time.Time, now time.Time) bool {
+	if cfg.TimeOfDay == "" || cfg.MonthOfYear == "" || cfg.DayOfMonth == "" {
+		return false
+	}
+
+	month, err := strconv.Atoi(cfg.MonthOfYear)
+	if err != nil {
+		return false
+	}
+	day, err := strconv.Atoi(cfg.DayOfMonth)
+	if err != nil {
+		return false
+	}
+
+	if int(now.Month()) != month || now.Day() != day {
+		return false
+	}
+
+	return shouldFireDaily(cfg, lastFired, now)
+}
+
+// daysInMonth returns the number of days in the month of t, in t's location.
+// Day 0 of the next month is the last day of the current month.
+func daysInMonth(t time.Time) int {
+	return time.Date(t.Year(), t.Month()+1, 0, 0, 0, 0, 0, t.Location()).Day()
+}
+
+// parseWeekday maps a lowercase English weekday name to a time.Weekday.
+func parseWeekday(name string) (time.Weekday, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "sunday":
+		return time.Sunday, true
+	case "monday":
+		return time.Monday, true
+	case "tuesday":
+		return time.Tuesday, true
+	case "wednesday":
+		return time.Wednesday, true
+	case "thursday":
+		return time.Thursday, true
+	case "friday":
+		return time.Friday, true
+	case "saturday":
+		return time.Saturday, true
+	default:
+		return time.Sunday, false
+	}
 }
 
 func parseTimeOfDay(tod string) (int, int) {
