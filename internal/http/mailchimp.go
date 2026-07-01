@@ -176,7 +176,9 @@ func (s *Service) deregisterMailchimpWebhook(tr *launch.Trigger) {
 	}
 	callback := fmt.Sprintf("%s/webhook/%s", s.config.PublicURL, tr.ID)
 	listURL := fmt.Sprintf("%s/lists/%s/webhooks", base, url.PathEscape(listID))
-	existing, _, err := mailchimpDo(apiKey, http.MethodGet, listURL, nil)
+	// count=1000 to match registration — Mailchimp's default webhook page size
+	// is 10, so without it a list with >10 webhooks could hide ours and leak it.
+	existing, _, err := mailchimpDo(apiKey, http.MethodGet, listURL+"?count=1000", nil)
 	if err != nil {
 		return
 	}
@@ -244,6 +246,9 @@ func (s *Service) handleMailchimpWebhook(c *gin.Context, tr *launch.Trigger) {
 		}
 	}
 
+	// body is the raw form payload flattened to single string values; nested
+	// fields keep Mailchimp's bracket-notation keys (e.g. "data[email]"), not a
+	// structured object. The fields consumers need are lifted into `data` below.
 	body := make(map[string]interface{}, len(form))
 	for k, v := range form {
 		if len(v) > 0 {
