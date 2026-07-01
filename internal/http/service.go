@@ -371,6 +371,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeGitLabWebhook, launch.TriggerTypeGitHubWebhook:
 		s.handleProviderWebhookForTrigger(c, tr)
 		return
+	case launch.TriggerTypeMailchimpWebhook:
+		s.handleMailchimpWebhook(c, tr)
+		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
 	default:
