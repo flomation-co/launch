@@ -55,6 +55,10 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// trigger-keyed registrations route through the unified dispatch.
 	s.registerTelegramTriggerWebhook(&tr)
 
+	// Mailchimp triggers: auto-register an audience webhook pointing at
+	// /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
+	s.registerMailchimpWebhook(&tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -116,6 +120,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 				"error":      err,
 			}).Warn("failed to deregister Telegram webhook for trigger")
 		}
+	}
+
+	// Deregister the Mailchimp audience webhook we previously created.
+	if t.Type == launch.TriggerTypeMailchimpWebhook {
+		s.deregisterMailchimpWebhook(t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {

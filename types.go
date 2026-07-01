@@ -24,6 +24,7 @@ const (
 	TriggerTypeGoogleDrive       = "google-drive"
 	TriggerTypeMicrosoftOutlook  = "microsoft-outlook"
 	TriggerTypeTeams             = "teams"
+	TriggerTypeMailchimpWebhook  = "mailchimp-webhook"
 )
 
 type Trigger struct {
