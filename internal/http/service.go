@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -142,6 +143,7 @@ func (s *Service) configure() error {
 	s.engine.GET("/qr/:id", s.handleQr)
 	s.engine.GET("/form/:id", s.handleForm)
 	s.engine.POST("/form/:id", s.submitForm)
+	s.engine.POST("/form/:id/upload", s.uploadFormBlob)
 	s.engine.GET("/image/:id", s.handleImageLoad)
 
 	// Internal routes — service-to-service calls from the API.
@@ -632,7 +634,16 @@ func (s *Service) submitForm(c *gin.Context) {
 		}
 	}
 	resolved := resolveFormForRender(def, ctx)
-	final := stripReadOnlySubmissions(body, resolved)
+	// Sanitisation pipeline, applied in this order:
+	//   1. Enforce option whitelist for radio/dropdown/checkboxes.
+	//   2. Drop any client-supplied values for display-only components
+	//      (section_header, divider, info_text) — they take no input.
+	//   3. Restore baked-at-render values for read-only components.
+	// Read-only stripping runs last so its overrides win over anything
+	// the earlier passes might have set to empty.
+	sanitised := sanitiseOptionSubmissions(body, resolved)
+	sanitised = stripDisplayOnlySubmissions(sanitised, resolved)
+	final := stripReadOnlySubmissions(sanitised, resolved)
 	if userID != "" {
 		final["user_id"] = userID
 	}
@@ -646,6 +657,197 @@ func (s *Service) submitForm(c *gin.Context) {
 	}()
 
 	c.Status(http.StatusOK)
+}
+
+// uploadFormBlob accepts a single file from an anonymous form
+// submitter, validates it against the corresponding form field's
+// declared MIME / size constraints, and proxies the upload to the
+// API's trigger-scoped blob endpoint. Returns the resolved
+// `flo:blob:...` token so the client can stash it into the form's
+// submission payload alongside the other field values.
+//
+// Body: multipart/form-data
+//   - field  (text)   the form_definition component name whose value
+//                     this file should become
+//   - file   (file)   the raw bytes (eSignature PNG, camera photo,
+//                     file upload)
+//
+// Response: 201 with {blob_token, size, mime}
+func (s *Service) uploadFormBlob(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" || uuid.Validate(id) != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	tr, err := s.trigger.GetTriggerByID(id)
+	if err != nil || tr == nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	if tr.Type != launch.TriggerTypeForm {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	def, _ := parseFormDefinition(tr.Data)
+
+	// 25 MB hard cap on incoming bytes to short-circuit DoS attempts
+	// before we touch API storage. The API also enforces this, but
+	// stopping earlier saves bandwidth. Leave headroom for the
+	// multipart boundary + form fields.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, blobMaxUploadBytes+1024*1024)
+
+	if err := c.Request.ParseMultipartForm(blobMaxUploadBytes); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "parse multipart: " + err.Error()})
+		return
+	}
+
+	fieldName := strings.TrimSpace(c.PostForm("field"))
+	if fieldName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "field name required"})
+		return
+	}
+
+	comp := findUploadComponent(def, fieldName)
+	if comp == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no upload-capable field named " + fieldName})
+		return
+	}
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file part missing: " + err.Error()})
+		return
+	}
+
+	// Per-field size cap wins if it's tighter than the global cap.
+	// max_size_bytes: 0 (or missing) means "use the global cap".
+	effectiveCap := int64(blobMaxUploadBytes)
+	if comp.MaxSizeBytes > 0 && comp.MaxSizeBytes < effectiveCap {
+		effectiveCap = comp.MaxSizeBytes
+	}
+	if fileHeader.Size > effectiveCap {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": fmt.Sprintf("file exceeds %d-byte cap", effectiveCap)})
+		return
+	}
+
+	// Per-field MIME allowlist. accept_mime is a comma-separated list
+	// following the HTML5 accept attribute convention: "image/*",
+	// "image/png,image/jpeg", "application/pdf", etc.
+	mime := fileHeader.Header.Get("Content-Type")
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+	if comp.AcceptMime != "" && !mimeMatchesAcceptList(mime, comp.AcceptMime) {
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "mime " + mime + " not allowed by field"})
+		return
+	}
+
+	// Forward the file to the API's trigger-scoped upload endpoint.
+	// Scope is derived server-side from the flow, so we don't set the
+	// org/owner header here.
+	upstreamURL := fmt.Sprintf("%v/api/v1/internal/flo/%v/trigger/%v/upload",
+		s.config.InternalAPIURL(), tr.FlowID, tr.ID)
+
+	f, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "open upload: " + err.Error()})
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	var proxyBody bytes.Buffer
+	proxyWriter := multipart.NewWriter(&proxyBody)
+	_ = proxyWriter.WriteField("mime", mime)
+	_ = proxyWriter.WriteField("purpose", "inbound")
+	part, err := proxyWriter.CreateFormFile("file", fileHeader.Filename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "build proxy body: " + err.Error()})
+		return
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "copy body: " + err.Error()})
+		return
+	}
+	if err := proxyWriter.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "close writer: " + err.Error()})
+		return
+	}
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstreamURL, &proxyBody)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "build request: " + err.Error()})
+		return
+	}
+	req.Header.Set("Content-Type", proxyWriter.FormDataContentType())
+
+	resp, err := s.apiClient.Do(req)
+	if err != nil {
+		log.WithError(err).Error("form upload: forward to API failed")
+		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream unreachable"})
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Pass the API's response through verbatim — the shape already
+	// matches what the client wants (blob_token, size, mime, handle).
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read upstream: " + err.Error()})
+		return
+	}
+	c.Data(resp.StatusCode, "application/json", body)
+}
+
+// blobMaxUploadBytes mirrors the API's persistence.BlobMaxSizeBytes
+// (25 MB). Kept as a local constant to avoid importing the whole api
+// package from Launch just for one integer.
+const blobMaxUploadBytes int64 = 25 * 1024 * 1024
+
+// findUploadComponent walks the form definition for a component whose
+// name matches and whose type is one of the upload-capable field types
+// (eSignature, camera, file_upload). Returns nil on no match so the
+// handler can 400 without leaking existence of other fields.
+func findUploadComponent(def formDefinition, name string) *formComponent {
+	for _, page := range def.Pages {
+		for i := range page.Components {
+			c := &page.Components[i]
+			if c.Name != name {
+				continue
+			}
+			switch c.Type {
+			case "esignature", "camera", "file_upload":
+				return c
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+// mimeMatchesAcceptList checks whether mime satisfies at least one
+// pattern in the comma-separated accept list. Supports:
+//   - Exact match: "image/png" matches "image/png"
+//   - Wildcards:   "image/*" matches any image/* MIME
+//   - Empty list:  treated as allow-all by the caller before calling
+func mimeMatchesAcceptList(mime, acceptList string) bool {
+	mime = strings.ToLower(strings.TrimSpace(mime))
+	for _, pattern := range strings.Split(acceptList, ",") {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if pattern == "" {
+			continue
+		}
+		if strings.HasSuffix(pattern, "/*") {
+			prefix := strings.TrimSuffix(pattern, "*")
+			if strings.HasPrefix(mime, prefix) {
+				return true
+			}
+		} else if pattern == mime {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) handleForm(c *gin.Context) {

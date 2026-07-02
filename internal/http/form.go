@@ -26,14 +26,71 @@ type formPage struct {
 }
 
 type formComponent struct {
-	Name         string `json:"name"`
-	Label        string `json:"label"`
-	Type         string `json:"type"`
-	Placeholder  string `json:"placeholder"`
-	Required     bool   `json:"required"`
-	Order        int    `json:"order"`
-	ReadOnly     bool   `json:"read_only,omitempty"`
-	DefaultValue string `json:"default_value,omitempty"`
+	Name         string       `json:"name"`
+	Label        string       `json:"label"`
+	Type         string       `json:"type"`
+	Placeholder  string       `json:"placeholder"`
+	Required     bool         `json:"required"`
+	Order        int          `json:"order"`
+	ReadOnly     bool         `json:"read_only,omitempty"`
+	DefaultValue string       `json:"default_value,omitempty"`
+	Options      []formOption `json:"options,omitempty"`
+
+	// Numeric constraints — apply to number, slider, and rating types.
+	// Pointer types distinguish "unset" from "zero", which matters:
+	// Min=0 is a legitimate constraint (e.g. non-negative quantity)
+	// that must survive round-tripping through JSON.
+	Min         *float64 `json:"min,omitempty"`
+	Max         *float64 `json:"max,omitempty"`
+	Step        *float64 `json:"step,omitempty"`
+	IntegerOnly bool     `json:"integer_only,omitempty"`
+	Scale       int      `json:"scale,omitempty"`
+
+	// Date/time bounds — ISO strings passed straight to the corresponding
+	// HTML5 input's min/max attributes.
+	MinDate string `json:"min_date,omitempty"`
+	MaxDate string `json:"max_date,omitempty"`
+
+	// Free paragraph text used by the info_text display-only component.
+	// Renders as a paragraph beneath the form label rather than an input.
+	DisplayText string `json:"display_text,omitempty"`
+
+	// Precision hint for location components. Accepted values: "coarse"
+	// (rounded to ~110m via 3 decimal places, client-side) or "fine"
+	// (raw lat/lng from navigator.geolocation). Empty means fine.
+	Precision string `json:"precision,omitempty"`
+
+	// Upload-field constraints — apply to esignature, camera, and
+	// file_upload types. AcceptMime uses HTML5 accept-attribute syntax
+	// (comma-separated exact MIMEs or category/* wildcards).
+	// MaxSizeBytes 0 means "use the global 25 MB cap".
+	AcceptMime   string `json:"accept_mime,omitempty"`
+	MaxSizeBytes int64  `json:"max_size_bytes,omitempty"`
+	// AllowGallery lets a camera field also accept an already-taken
+	// photo from the device's gallery instead of forcing capture.
+	AllowGallery bool `json:"allow_gallery,omitempty"`
+}
+
+// Display-only component types produce no response and take no user input;
+// they exist purely to structure the form (headings, dividers, help text).
+// Kept as a set so future additions (e.g. images, embeds) drop straight in.
+var displayOnlyTypes = map[string]struct{}{
+	"section_header": {},
+	"divider":        {},
+	"info_text":      {},
+}
+
+func isDisplayOnly(t string) bool {
+	_, ok := displayOnlyTypes[t]
+	return ok
+}
+
+// formOption is a single choice in radio / checkboxes / dropdown fields.
+// Value is what the trigger receives; Label is what the form viewer sees.
+// Two-column shape mirrors the SelectProperty pattern used by action inputs.
+type formOption struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
 }
 
 // substitutionContext bundles the inputs to ${X} substitution at render time.
@@ -106,6 +163,132 @@ func resolveFormForRender(def formDefinition, ctx substitutionContext) formDefin
 	return resolved
 }
 
+// sanitiseOptionSubmissions enforces the option whitelist for radio,
+// dropdown, and checkboxes fields. A client-supplied value that isn't in
+// the field's Options list is discarded — silently, matching the read-
+// only override philosophy of "trust the definition, not the client".
+//
+// - radio / dropdown: value must be a string matching an Options entry;
+//   anything else (wrong string, wrong type, missing) becomes "".
+// - checkboxes: value must be an array; entries outside the whitelist
+//   are filtered out; anything not-an-array becomes an empty array.
+//
+// Fields with no Options entries are passed through unchanged (older
+// forms without option-based fields shouldn't be affected).
+//
+// Returns a new map; does not mutate the input.
+func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	specs := map[string]formComponent{}
+	for _, page := range resolved.Pages {
+		for _, c := range page.Components {
+			if len(c.Options) > 0 && (c.Type == "radio" || c.Type == "dropdown" || c.Type == "checkboxes" || c.Type == "ranking") {
+				specs[c.Name] = c
+			}
+		}
+	}
+	if len(specs) == 0 {
+		return submission
+	}
+
+	out := make(map[string]interface{}, len(submission))
+	for k, v := range submission {
+		out[k] = v
+	}
+
+	for name, spec := range specs {
+		whitelist := map[string]struct{}{}
+		for _, o := range spec.Options {
+			whitelist[o.Value] = struct{}{}
+		}
+
+		switch spec.Type {
+		case "radio", "dropdown":
+			s, ok := out[name].(string)
+			if !ok {
+				out[name] = ""
+				continue
+			}
+			if _, hit := whitelist[s]; !hit {
+				out[name] = ""
+			}
+		case "checkboxes":
+			arr, ok := out[name].([]interface{})
+			if !ok {
+				out[name] = []interface{}{}
+				continue
+			}
+			filtered := make([]interface{}, 0, len(arr))
+			for _, entry := range arr {
+				s, ok := entry.(string)
+				if !ok {
+					continue
+				}
+				if _, hit := whitelist[s]; hit {
+					filtered = append(filtered, s)
+				}
+			}
+			out[name] = filtered
+		case "ranking":
+			// Ranking is checkboxes-with-order + dedupe: the client
+			// posts an ordered array, we filter to whitelisted values
+			// and drop repeats (a valid ranking has each option
+			// appear at most once). Order is preserved.
+			arr, ok := out[name].([]interface{})
+			if !ok {
+				out[name] = []interface{}{}
+				continue
+			}
+			seen := map[string]struct{}{}
+			filtered := make([]interface{}, 0, len(arr))
+			for _, entry := range arr {
+				s, ok := entry.(string)
+				if !ok {
+					continue
+				}
+				if _, dupe := seen[s]; dupe {
+					continue
+				}
+				if _, hit := whitelist[s]; hit {
+					seen[s] = struct{}{}
+					filtered = append(filtered, s)
+				}
+			}
+			out[name] = filtered
+		}
+	}
+	return out
+}
+
+// stripDisplayOnlySubmissions removes keys whose corresponding component
+// is a display-only type (section_header, divider, info_text). These
+// components exist to structure the form visually, not to collect input,
+// so a client-supplied value for them is nonsense and must not appear
+// in the trigger data map (where it would pollute ${trigger.X} names
+// and confuse downstream flow authors).
+//
+// Returns a new map; does not mutate the input.
+func stripDisplayOnlySubmissions(submission map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	displayNames := map[string]struct{}{}
+	for _, page := range resolved.Pages {
+		for _, c := range page.Components {
+			if isDisplayOnly(c.Type) {
+				displayNames[c.Name] = struct{}{}
+			}
+		}
+	}
+	if len(displayNames) == 0 {
+		return submission
+	}
+	out := make(map[string]interface{}, len(submission))
+	for k, v := range submission {
+		if _, isDisplay := displayNames[k]; isDisplay {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // stripReadOnlySubmissions removes any keys from submission that
 // correspond to read_only fields in the form definition. The baked-at-
 // render default_value is what the trigger should receive — restored
@@ -116,6 +299,13 @@ func stripReadOnlySubmissions(submission map[string]interface{}, resolved formDe
 	readOnly := map[string]string{}
 	for _, page := range resolved.Pages {
 		for _, c := range page.Components {
+			// Structured types (location, address) produce a nested object
+			// response and have no meaningful string DefaultValue — skipping
+			// them here means a hand-authored read_only: true is ignored
+			// rather than corrupting the response shape.
+			if c.Type == "location" || c.Type == "address" {
+				continue
+			}
 			if c.ReadOnly {
 				readOnly[c.Name] = c.DefaultValue
 			}

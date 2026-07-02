@@ -4,6 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0"/>
     <meta name="theme-color" content="#161019">
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="alternate icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="/favicon.png">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <title>Flomation Form</title>
     <style>
@@ -79,7 +82,15 @@
             margin-left: 2px;
         }
 
-        input[type="text"], input[type="number"], textarea {
+        input[type="text"],
+        input[type="number"],
+        input[type="email"],
+        input[type="tel"],
+        input[type="url"],
+        input[type="date"],
+        input[type="time"],
+        input[type="datetime-local"],
+        textarea {
             width: 100%;
             padding: 12px 14px;
             background: var(--input-bg);
@@ -92,9 +103,27 @@
             transition: border-color 0.15s ease, box-shadow 0.15s ease;
         }
 
-        input[type="text"]:focus, input[type="number"]:focus, textarea:focus {
+        input[type="text"]:focus,
+        input[type="number"]:focus,
+        input[type="email"]:focus,
+        input[type="tel"]:focus,
+        input[type="url"]:focus,
+        input[type="date"]:focus,
+        input[type="time"]:focus,
+        input[type="datetime-local"]:focus,
+        textarea:focus {
             border-color: var(--border-focus);
             box-shadow: 0 0 0 3px rgba(139,92,246,0.15);
+        }
+
+        /* Native date/time pickers show their calendar/clock indicator
+           in dark browsers as a black-on-black icon by default. Invert
+           makes it visible against the dark background. */
+        input[type="date"]::-webkit-calendar-picker-indicator,
+        input[type="time"]::-webkit-calendar-picker-indicator,
+        input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+            filter: invert(1) opacity(0.5);
+            cursor: pointer;
         }
 
         textarea {
@@ -203,6 +232,314 @@
         }
         .checkbox-group.readonly { opacity: 0.7; cursor: not-allowed; }
 
+        /* Option list — shared shell for radio and multi-checkbox groups.
+           Rows stack vertically with a single-column background container. */
+        .option-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 6px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+
+        .option-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.12s ease;
+        }
+
+        .option-row:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .option-row input[type="radio"],
+        .option-row input[type="checkbox"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px; height: 18px;
+            min-width: 18px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            background: transparent;
+            cursor: pointer;
+            position: relative;
+            margin: 0;
+        }
+
+        .option-row input[type="radio"] {
+            border-radius: 50%;
+        }
+        .option-row input[type="checkbox"] {
+            border-radius: 4px;
+        }
+
+        .option-row input[type="radio"]:checked,
+        .option-row input[type="checkbox"]:checked {
+            background: var(--primary);
+            border-color: var(--primary);
+        }
+
+        .option-row input[type="radio"]:checked::after {
+            content: '';
+            position: absolute;
+            top: 3px; left: 3px;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #fff;
+        }
+
+        .option-row input[type="checkbox"]:checked::after {
+            content: '';
+            position: absolute;
+            left: 4px; top: 1px;
+            width: 6px; height: 10px;
+            border: solid #fff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+
+        .option-row span {
+            font-size: 14px;
+            color: var(--text);
+        }
+
+        .option-row.readonly {
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
+
+        /* Dropdown restyle — the browser default is ugly and clashes with
+           the dark theme. Match the .field-group input chrome. */
+        .field-group select {
+            width: 100%;
+            padding: 12px 14px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+            cursor: pointer;
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff88' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 14px center;
+            padding-right: 40px;
+        }
+
+        .field-group select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .field-group select.readonly {
+            background-color: rgba(255, 255, 255, 0.02);
+            color: rgba(255, 255, 255, 0.7);
+            cursor: not-allowed;
+            border-style: dashed;
+            opacity: 1;
+        }
+
+        /* ── Slider ── */
+        .slider-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 14px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .slider-wrapper input[type="range"] {
+            flex: 1;
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+        }
+        .slider-wrapper input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            background: var(--primary);
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid #fff;
+        }
+        .slider-wrapper input[type="range"]::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            background: var(--primary);
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid #fff;
+        }
+        .slider-value {
+            min-width: 40px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.06);
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 12px;
+            color: var(--text);
+            text-align: center;
+        }
+
+        /* ── Rating stars ── */
+        .rating-stars {
+            display: flex;
+            gap: 6px;
+            padding: 12px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .rating-star {
+            background: transparent;
+            border: none;
+            padding: 4px 6px;
+            font-size: 26px;
+            line-height: 1;
+            color: rgba(255, 255, 255, 0.18);
+            cursor: pointer;
+            transition: color 0.12s ease, transform 0.12s ease;
+        }
+        .rating-star:hover:not(:disabled) {
+            transform: scale(1.15);
+            color: rgba(250, 204, 21, 0.6);
+        }
+        .rating-star.filled {
+            color: #facc15;
+        }
+        .rating-star:disabled {
+            cursor: not-allowed;
+        }
+
+        /* ── Structural elements ── */
+        .section-header {
+            margin: 28px 0 20px 0;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text);
+            letter-spacing: 0.2px;
+        }
+        .form-divider {
+            border: none;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            margin: 20px 0;
+        }
+        .info-text {
+            padding: 12px 14px;
+            background: rgba(139, 92, 246, 0.05);
+            border-left: 3px solid var(--primary);
+            border-radius: 4px;
+            font-size: 13px;
+            color: var(--text-muted);
+            line-height: 1.5;
+            /* Match .field-group's bottom margin so the callout doesn't
+               collapse into whatever sits below (label, next field, etc). */
+            margin-bottom: 20px;
+        }
+        .info-text strong {
+            display: block;
+            color: var(--text);
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+        .info-text p {
+            margin: 0;
+        }
+
+        /* ── Location ── */
+        .location-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 14px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .location-btn {
+            flex: 0 0 auto;
+            padding: 10px 16px;
+            font-size: 13px;
+        }
+        .location-readout {
+            flex: 1;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.4;
+            word-break: break-all;
+        }
+        .location-wrapper.readonly {
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
+
+        /* ── Address (5-field grid) ── */
+        .address-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            padding: 12px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .address-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .address-line1,
+        .address-line2,
+        .address-country {
+            grid-column: 1 / -1;
+        }
+        .address-cell-label {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            color: rgba(255, 255, 255, 0.35);
+        }
+        .address-cell input {
+            width: 100%;
+            padding: 10px 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 13px;
+            font-family: inherit;
+        }
+        .address-cell input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .address-cell input.readonly {
+            background-color: rgba(255, 255, 255, 0.02);
+            color: rgba(255, 255, 255, 0.7);
+            cursor: not-allowed;
+            border-style: dashed;
+            opacity: 1;
+        }
+
         /* Login-required landing card — uses the same form-card chrome but
            with an inline sign-in CTA in place of form fields. */
         .login-card { text-align: center; }
@@ -259,6 +596,169 @@
 
         .footer img { height: 20px; opacity: 0.3; }
         .footer img:hover { opacity: 0.6; }
+
+        /* ── Upload fields (eSignature, camera, file) ── */
+        .upload-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding: 14px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .upload-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .upload-status {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            word-break: break-all;
+        }
+        .upload-status.uploading {
+            color: rgba(139, 92, 246, 0.8);
+        }
+        .upload-status.error {
+            color: var(--danger);
+        }
+        .upload-status.done {
+            color: var(--success);
+        }
+        .upload-preview {
+            max-width: 100%;
+            max-height: 180px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+        }
+
+        /* Live camera preview */
+        .camera-video {
+            width: 100%;
+            max-height: 320px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: #000;
+            /* getUserMedia streams the raw camera image (usually mirrored
+               on the user-facing camera). Applying a subtle transform
+               here would make it feel "flipped like a mirror" — but we
+               leave it un-flipped so what's captured matches what the
+               user sees, which is important for ID / verification flows. */
+        }
+
+        /* Signature canvas */
+        .signature-canvas {
+            width: 100%;
+            height: 160px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px dashed rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            cursor: crosshair;
+            touch-action: none;
+        }
+        .signature-canvas.readonly {
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+
+        /* Hide the raw file input; we invoke it programmatically from
+           a styled button so the picker chrome matches the theme. */
+        input[type="file"] {
+            display: none;
+        }
+
+        /* ── Ranking list ── */
+        .ranking-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 8px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .ranking-row {
+            display: grid;
+            grid-template-columns: 32px 24px 1fr auto;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+            cursor: grab;
+            transition: background 0.12s ease, transform 0.12s ease, border-color 0.12s ease;
+        }
+        .ranking-row:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(255, 255, 255, 0.08);
+        }
+        .ranking-row.dragging {
+            opacity: 0.5;
+            cursor: grabbing;
+        }
+        .ranking-row.drop-target {
+            border-color: var(--primary);
+            background: rgba(139, 92, 246, 0.08);
+        }
+        .ranking-row.readonly {
+            cursor: not-allowed;
+            opacity: 0.75;
+        }
+        .ranking-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: var(--primary);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+        }
+        .ranking-grip {
+            color: rgba(255, 255, 255, 0.25);
+            font-size: 14px;
+            line-height: 1;
+            letter-spacing: -1px;
+            user-select: none;
+        }
+        .ranking-label {
+            font-size: 14px;
+            color: var(--text);
+        }
+        .ranking-actions {
+            display: flex;
+            gap: 4px;
+        }
+        .ranking-btn {
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 4px;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.1s ease;
+        }
+        .ranking-btn:hover:not(:disabled) {
+            background: rgba(139, 92, 246, 0.12);
+            border-color: rgba(139, 92, 246, 0.3);
+            color: #c4b5fd;
+        }
+        .ranking-btn:disabled {
+            opacity: 0.25;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -373,6 +873,16 @@
         el.placeholder = component.placeholder || "";
         el.required = !!component.required;
         el.id = "input-" + component.name;
+        // Numeric constraints — the browser enforces them at submit time
+        // when the field is inside a real <form>; we also stash the raw
+        // configured values so callers can reason about them if needed.
+        if (component.min !== undefined && component.min !== null) el.min = String(component.min);
+        if (component.max !== undefined && component.max !== null) el.max = String(component.max);
+        if (component.integer_only) {
+            el.step = "1";
+        } else if (component.step !== undefined && component.step !== null) {
+            el.step = String(component.step);
+        }
         if (component.default_value) el.value = component.default_value;
         el.oninput = (e) => { formValues[component.name] = e.target.value; validateForm(form); };
         applyReadOnly(el, component);
@@ -408,6 +918,1136 @@
         container.appendChild(group);
     }
 
+    // Option-based fields (radio / checkboxes / dropdown) share the
+    // "list of {label, value} choices" schema. The response shape
+    // differs: radio + dropdown submit a single string; checkboxes
+    // submits a string[]. Downstream, executor's ParseReference lets
+    // ${trigger.field_name[0]} drill into checkboxes arrays.
+    function optionsList(component) {
+        return Array.isArray(component.options) ? component.options : [];
+    }
+
+    function renderRadio(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const options = document.createElement("div");
+        options.classList.add("option-list");
+
+        optionsList(component).forEach((opt, idx) => {
+            const row = document.createElement("label");
+            row.classList.add("option-row");
+
+            const radio = document.createElement("input");
+            radio.type = "radio";
+            radio.name = "input-" + component.name;
+            radio.value = opt.value;
+            radio.id = "input-" + component.name + "-" + idx;
+            if (component.default_value === opt.value) {
+                radio.checked = true;
+            }
+            radio.onchange = (e) => {
+                if (e.target.checked) formValues[component.name] = opt.value;
+                validateForm(form);
+            };
+            if (component.read_only) {
+                radio.disabled = true;
+                row.classList.add("readonly");
+            }
+
+            const labelText = document.createElement("span");
+            labelText.textContent = opt.label;
+
+            row.appendChild(radio);
+            row.appendChild(labelText);
+            options.appendChild(row);
+        });
+
+        group.appendChild(options);
+        container.appendChild(group);
+    }
+
+    function renderCheckboxes(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const options = document.createElement("div");
+        options.classList.add("option-list");
+
+        // Parse default_value as CSV of values for pre-selection.
+        // Also accept a real JS array in case a future default_value shape
+        // reaches us — either way we end up with a Set of selected values.
+        const initialSelected = new Set();
+        if (Array.isArray(component.default_value)) {
+            for (const v of component.default_value) initialSelected.add(String(v));
+        } else if (typeof component.default_value === "string" && component.default_value !== "") {
+            component.default_value.split(",").forEach(v => initialSelected.add(v.trim()));
+        }
+
+        // Preserve source order of options in the response; a Set on the
+        // component's options[] preserves the definition's ordering
+        // regardless of the order the user clicks in.
+        const selected = new Set(initialSelected);
+        formValues[component.name] = optionsList(component)
+            .map(o => o.value)
+            .filter(v => selected.has(v));
+
+        optionsList(component).forEach((opt, idx) => {
+            const row = document.createElement("label");
+            row.classList.add("option-row");
+
+            const box = document.createElement("input");
+            box.type = "checkbox";
+            box.value = opt.value;
+            box.id = "input-" + component.name + "-" + idx;
+            if (initialSelected.has(opt.value)) box.checked = true;
+            box.onchange = () => {
+                if (box.checked) selected.add(opt.value);
+                else selected.delete(opt.value);
+                formValues[component.name] = optionsList(component)
+                    .map(o => o.value)
+                    .filter(v => selected.has(v));
+                validateForm(form);
+            };
+            if (component.read_only) {
+                box.disabled = true;
+                row.classList.add("readonly");
+            }
+
+            const labelText = document.createElement("span");
+            labelText.textContent = opt.label;
+
+            row.appendChild(box);
+            row.appendChild(labelText);
+            options.appendChild(row);
+        });
+
+        group.appendChild(options);
+        container.appendChild(group);
+    }
+
+    // renderNativeInput builds a text-derivative HTML5 input where the
+    // only variation is the `type` attribute (email, tel, url, date, time,
+    // datetime-local). Consolidating avoids six near-identical helpers.
+    function renderNativeInput(form, container, component, inputType, extra) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const el = document.createElement("input");
+        el.type = inputType;
+        el.placeholder = component.placeholder || "";
+        el.required = !!component.required;
+        el.id = "input-" + component.name;
+        if (component.default_value) el.value = component.default_value;
+        if (extra && extra.pattern) el.pattern = extra.pattern;
+        if (component.min_date) el.min = component.min_date;
+        if (component.max_date) el.max = component.max_date;
+        el.oninput = (e) => { formValues[component.name] = e.target.value; validateForm(form); };
+        applyReadOnly(el, component);
+
+        group.appendChild(el);
+        container.appendChild(group);
+    }
+
+    function renderEmail(form, container, component) {
+        renderNativeInput(form, container, component, "email");
+    }
+
+    function renderPhone(form, container, component) {
+        renderNativeInput(form, container, component, "tel");
+    }
+
+    function renderUrl(form, container, component) {
+        renderNativeInput(form, container, component, "url");
+    }
+
+    function renderDate(form, container, component) {
+        renderNativeInput(form, container, component, "date");
+    }
+
+    function renderTime(form, container, component) {
+        renderNativeInput(form, container, component, "time");
+    }
+
+    function renderDateTime(form, container, component) {
+        renderNativeInput(form, container, component, "datetime-local");
+    }
+
+    function renderSlider(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group", "slider-group");
+        group.appendChild(renderLabel(component));
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("slider-wrapper");
+
+        const el = document.createElement("input");
+        el.type = "range";
+        el.id = "input-" + component.name;
+        el.required = !!component.required;
+        // Sensible fallbacks — the FormBuilder seeds these on add, but
+        // hand-authored / imported forms might omit them.
+        el.min = (component.min !== undefined && component.min !== null) ? String(component.min) : "0";
+        el.max = (component.max !== undefined && component.max !== null) ? String(component.max) : "100";
+        el.step = (component.step !== undefined && component.step !== null) ? String(component.step) : "1";
+
+        const startVal = (component.default_value !== undefined && component.default_value !== "" && component.default_value !== null)
+            ? Number(component.default_value)
+            : Number(el.min);
+        el.value = String(startVal);
+        formValues[component.name] = startVal;
+
+        const readout = document.createElement("span");
+        readout.classList.add("slider-value");
+        readout.textContent = el.value;
+
+        el.oninput = (e) => {
+            const n = Number(e.target.value);
+            formValues[component.name] = n;
+            readout.textContent = String(n);
+            validateForm(form);
+        };
+        applyReadOnly(el, component);
+
+        wrapper.appendChild(el);
+        wrapper.appendChild(readout);
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
+    function renderRating(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const scale = component.scale || 5;
+        const stars = document.createElement("div");
+        stars.classList.add("rating-stars");
+        stars.setAttribute("role", "radiogroup");
+
+        // Track current value in a closure to keep re-render logic simple.
+        // Rating "value 0" means unrated; that's how a required rating
+        // shows Submit as disabled until the user clicks a star.
+        let currentValue = (component.default_value !== undefined && component.default_value !== "" && component.default_value !== null)
+            ? Number(component.default_value)
+            : 0;
+        formValues[component.name] = currentValue || null;
+
+        function paint() {
+            const nodes = stars.querySelectorAll(".rating-star");
+            nodes.forEach((node, idx) => {
+                if (idx < currentValue) node.classList.add("filled");
+                else node.classList.remove("filled");
+            });
+        }
+
+        for (let i = 1; i <= scale; i++) {
+            const star = document.createElement("button");
+            star.type = "button";
+            star.classList.add("rating-star");
+            star.setAttribute("aria-label", i + " of " + scale);
+            star.textContent = "★";
+            star.onclick = () => {
+                if (component.read_only) return;
+                currentValue = i;
+                formValues[component.name] = i;
+                paint();
+                validateForm(form);
+            };
+            if (component.read_only) {
+                star.disabled = true;
+            }
+            stars.appendChild(star);
+        }
+        paint();
+
+        group.appendChild(stars);
+        container.appendChild(group);
+    }
+
+    // Location: browser Geolocation API + optional coarse-precision rounding.
+    // Response is a nested object so downstream `${trigger.location.lat}`
+    // path drilling works via the executor's ParseReference + ResolvePath.
+    function renderLocation(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        // Explicit null seed — location is SELF_SEEDED so the outer loop
+        // skips its default. Null makes "required and not yet fetched"
+        // fail validation while the user hasn't clicked the button.
+        formValues[component.name] = null;
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("location-wrapper");
+
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.classList.add("btn", "btn-secondary", "location-btn");
+        btn.textContent = "Detect my location";
+
+        const readout = document.createElement("div");
+        readout.classList.add("location-readout");
+        readout.textContent = "Not yet detected";
+
+        function paint(coords) {
+            const round = (n, dp) => Math.round(n * Math.pow(10, dp)) / Math.pow(10, dp);
+            const dp = component.precision === "coarse" ? 3 : 6;
+            const lat = round(coords.lat, dp);
+            const lng = round(coords.lng, dp);
+            const acc = component.precision === "coarse" ? Math.max(coords.accuracy, 110) : coords.accuracy;
+            formValues[component.name] = {lat: lat, lng: lng, accuracy: acc};
+            readout.textContent = `${lat}, ${lng}  (±${Math.round(acc)} m)`;
+            validateForm(form);
+        }
+
+        btn.onclick = () => {
+            if (!navigator.geolocation) {
+                readout.textContent = "Geolocation is not supported by this browser";
+                return;
+            }
+            readout.textContent = "Requesting permission…";
+            navigator.geolocation.getCurrentPosition(
+                (pos) => paint({lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy}),
+                (err) => { readout.textContent = "Location unavailable: " + (err.message || err.code); }
+            );
+        };
+
+        if (component.read_only) {
+            btn.disabled = true;
+            wrapper.classList.add("readonly");
+        }
+
+        wrapper.appendChild(btn);
+        wrapper.appendChild(readout);
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
+    // Address: five plain text fields wrapped in a single component name,
+    // with the response shape `{line1, line2, city, postcode, country}`.
+    // No autocomplete (Google Places / MapBox / etc) by design — the plan
+    // is deliberately dependency-free to keep the form public-facing and
+    // free of third-party bootstraps.
+    function renderAddress(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("address-grid");
+
+        // Seed formValues here (SELF_SEEDED in the outer loop) so the
+        // downstream shape is always the object, even if the user
+        // submits without touching any sub-field.
+        const state = {line1: "", line2: "", city: "", postcode: "", country: ""};
+        formValues[component.name] = state;
+
+        const fields = [
+            {key: "line1",    label: "Line 1",    className: "address-line1"},
+            {key: "line2",    label: "Line 2",    className: "address-line2"},
+            {key: "city",     label: "City",      className: "address-city"},
+            {key: "postcode", label: "Postcode",  className: "address-postcode"},
+            {key: "country",  label: "Country",   className: "address-country"},
+        ];
+
+        for (const f of fields) {
+            const cell = document.createElement("div");
+            cell.classList.add("address-cell", f.className);
+
+            const cellLabel = document.createElement("span");
+            cellLabel.classList.add("address-cell-label");
+            cellLabel.textContent = f.label;
+
+            const input = document.createElement("input");
+            input.type = "text";
+            input.autocomplete = f.key === "line1" ? "address-line1"
+                : f.key === "line2" ? "address-line2"
+                : f.key === "city" ? "address-level2"
+                : f.key === "postcode" ? "postal-code"
+                : f.key === "country" ? "country-name"
+                : "off";
+            input.id = "input-" + component.name + "-" + f.key;
+            input.oninput = (e) => {
+                state[f.key] = e.target.value;
+                validateForm(form);
+            };
+            if (component.read_only) {
+                input.disabled = true;
+                input.readOnly = true;
+                input.classList.add("readonly");
+            }
+
+            cell.appendChild(cellLabel);
+            cell.appendChild(input);
+            wrapper.appendChild(cell);
+        }
+
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
+    // uploadFileToLauncher POSTs a blob to /form/{FORM_ID}/upload and
+    // resolves to the returned blob_token. Shared by eSignature (which
+    // materialises a canvas → PNG Blob), camera (which uses the native
+    // <input type="file" capture> element) and file_upload (arbitrary
+    // MIME). Threads the field name so the server-side handler can
+    // apply per-component accept_mime / max_size_bytes rules.
+    async function uploadFileToLauncher(fieldName, fileOrBlob, statusEl) {
+        statusEl.textContent = "Uploading…";
+        statusEl.className = "upload-status uploading";
+
+        const body = new FormData();
+        body.append("field", fieldName);
+        body.append("file", fileOrBlob);
+
+        try {
+            const resp = await fetch("/form/" + FORM_ID + "/upload", {method: "POST", body});
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({error: resp.statusText}));
+                statusEl.textContent = err.error || ("Upload failed (" + resp.status + ")");
+                statusEl.className = "upload-status error";
+                return null;
+            }
+            const data = await resp.json();
+            return data.blob_token;
+        } catch (e) {
+            statusEl.textContent = "Upload failed: " + (e.message || e);
+            statusEl.className = "upload-status error";
+            return null;
+        }
+    }
+
+    // eSignature — HTML5 canvas with pointer events (works for mouse,
+    // touch, and stylus). On "Save signature" we serialise the canvas
+    // to a PNG blob and upload it, replacing formValues[name] with the
+    // returned flo:blob:... token.
+    function renderESignature(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        formValues[component.name] = null;
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("upload-wrapper");
+
+        const canvas = document.createElement("canvas");
+        canvas.classList.add("signature-canvas");
+        canvas.width = 500;   // internal drawing surface — CSS scales it
+        canvas.height = 160;
+        if (component.read_only) canvas.classList.add("readonly");
+        const ctx = canvas.getContext("2d");
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+
+        // Pointer coordinates are relative to the viewport; we need them
+        // in canvas-pixel space to honour the width/height attributes.
+        function coord(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            return {x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY};
+        }
+
+        let drawing = false;
+        let hasStrokes = false;
+        canvas.onpointerdown = (e) => {
+            if (component.read_only) return;
+            drawing = true;
+            hasStrokes = true;
+            const p = coord(e);
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            canvas.setPointerCapture(e.pointerId);
+        };
+        canvas.onpointermove = (e) => {
+            if (!drawing) return;
+            const p = coord(e);
+            ctx.lineTo(p.x, p.y);
+            ctx.stroke();
+        };
+        canvas.onpointerup = (e) => {
+            drawing = false;
+            canvas.releasePointerCapture(e.pointerId);
+        };
+
+        const actions = document.createElement("div");
+        actions.classList.add("upload-actions");
+
+        const clearBtn = document.createElement("button");
+        clearBtn.type = "button";
+        clearBtn.classList.add("btn", "btn-secondary");
+        clearBtn.textContent = "Clear";
+        clearBtn.onclick = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            hasStrokes = false;
+            formValues[component.name] = null;
+            status.textContent = "Draw your signature above, then click Save.";
+            status.className = "upload-status";
+            validateForm(form);
+        };
+
+        const saveBtn = document.createElement("button");
+        saveBtn.type = "button";
+        saveBtn.classList.add("btn", "btn-secondary");
+        saveBtn.textContent = "Save signature";
+        saveBtn.onclick = async () => {
+            if (!hasStrokes) {
+                status.textContent = "Draw a signature before saving.";
+                status.className = "upload-status error";
+                return;
+            }
+            canvas.toBlob(async (blob) => {
+                if (!blob) return;
+                const token = await uploadFileToLauncher(component.name, new File([blob], "signature.png", {type: "image/png"}), status);
+                if (token) {
+                    formValues[component.name] = token;
+                    status.textContent = "Signature saved (" + Math.round(blob.size / 1024) + " KB)";
+                    status.className = "upload-status done";
+                    validateForm(form);
+                }
+            }, "image/png");
+        };
+
+        if (component.read_only) {
+            clearBtn.disabled = true;
+            saveBtn.disabled = true;
+        }
+
+        actions.appendChild(clearBtn);
+        actions.appendChild(saveBtn);
+
+        const status = document.createElement("span");
+        status.classList.add("upload-status");
+        status.textContent = "Draw your signature above, then click Save.";
+
+        wrapper.appendChild(canvas);
+        wrapper.appendChild(actions);
+        wrapper.appendChild(status);
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
+    // Camera — <input type="file" accept="image/*" capture> triggers
+    // the device's camera app on mobile, or a file picker on desktop.
+    // allow_gallery=false forces capture-only on mobile (no gallery
+    // fallback), which is the default: this is used most often for
+    // "take a photo of your ID" style flows where the source matters.
+    function renderCamera(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        formValues[component.name] = null;
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("upload-wrapper");
+
+        // Live video preview element for getUserMedia — used on desktop
+        // and any mobile browser that supports the MediaStream API.
+        // Hidden until the user clicks "Take photo" so we don't hold the
+        // camera hardware idle.
+        const video = document.createElement("video");
+        video.classList.add("camera-video");
+        video.playsInline = true;
+        video.muted = true;
+        video.autoplay = true;
+        video.style.display = "none";
+
+        const preview = document.createElement("img");
+        preview.classList.add("upload-preview");
+        preview.style.display = "none";
+
+        // File-picker fallback (used when getUserMedia is unavailable or
+        // the user explicitly wants to pick from gallery). capture=
+        // "environment" hints mobile browsers toward the rear camera;
+        // desktop ignores it and opens a picker.
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = "image/*";
+        if (!component.allow_gallery) {
+            fileInput.capture = "environment";
+        }
+        fileInput.id = "input-" + component.name;
+
+        const status = document.createElement("span");
+        status.classList.add("upload-status");
+        status.textContent = "No photo captured yet.";
+
+        // Actions row — the exact set of buttons visible depends on the
+        // capture state (idle → live → captured) and on whether the
+        // component allows gallery selection.
+        const actions = document.createElement("div");
+        actions.classList.add("upload-actions");
+
+        // Streaming state — kept in a closure so button handlers can
+        // stop the tracks cleanly on capture/cancel/unmount.
+        let stream = null;
+
+        function stopStream() {
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+                stream = null;
+            }
+            video.srcObject = null;
+            video.style.display = "none";
+        }
+
+        async function startLiveCapture() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                // Fall back to the file picker on browsers without
+                // getUserMedia (very old mobile browsers, embedded
+                // webviews with camera perms disabled).
+                fileInput.click();
+                return;
+            }
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: {facingMode: component.allow_gallery ? "user" : "environment"},
+                    audio: false,
+                });
+            } catch (err) {
+                // Permission denied / no camera / hardware busy — fall
+                // back to file picker so the user can still complete
+                // the form via an existing photo.
+                status.textContent = "Camera unavailable — using file picker";
+                status.className = "upload-status";
+                fileInput.click();
+                return;
+            }
+            video.srcObject = stream;
+            video.style.display = "block";
+            preview.style.display = "none";
+            renderCaptureActions();
+        }
+
+        async function capturePhoto() {
+            const canvas = document.createElement("canvas");
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            stopStream();
+
+            canvas.toBlob(async (blob) => {
+                if (!blob) return;
+                const file = new File([blob], "photo.png", {type: "image/png"});
+                preview.src = URL.createObjectURL(blob);
+                preview.style.display = "block";
+                const token = await uploadFileToLauncher(component.name, file, status);
+                if (token) {
+                    formValues[component.name] = token;
+                    status.textContent = "Photo captured (" + Math.round(blob.size / 1024) + " KB)";
+                    status.className = "upload-status done";
+                    validateForm(form);
+                }
+                renderIdleActions();
+            }, "image/png");
+        }
+
+        function renderIdleActions() {
+            actions.innerHTML = "";
+            const takeBtn = document.createElement("button");
+            takeBtn.type = "button";
+            takeBtn.classList.add("btn", "btn-secondary");
+            takeBtn.textContent = "Take photo";
+            takeBtn.onclick = startLiveCapture;
+            if (component.read_only) takeBtn.disabled = true;
+            actions.appendChild(takeBtn);
+
+            if (component.allow_gallery) {
+                const galleryBtn = document.createElement("button");
+                galleryBtn.type = "button";
+                galleryBtn.classList.add("btn", "btn-secondary");
+                galleryBtn.textContent = "Choose from gallery";
+                galleryBtn.onclick = () => fileInput.click();
+                if (component.read_only) galleryBtn.disabled = true;
+                actions.appendChild(galleryBtn);
+            }
+        }
+
+        function renderCaptureActions() {
+            actions.innerHTML = "";
+            const captureBtn = document.createElement("button");
+            captureBtn.type = "button";
+            captureBtn.classList.add("btn", "btn-secondary");
+            captureBtn.textContent = "Capture";
+            captureBtn.onclick = capturePhoto;
+            actions.appendChild(captureBtn);
+
+            const cancelBtn = document.createElement("button");
+            cancelBtn.type = "button";
+            cancelBtn.classList.add("btn", "btn-secondary");
+            cancelBtn.textContent = "Cancel";
+            cancelBtn.onclick = () => {
+                stopStream();
+                renderIdleActions();
+            };
+            actions.appendChild(cancelBtn);
+        }
+
+        fileInput.onchange = async (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            preview.src = URL.createObjectURL(file);
+            preview.style.display = "block";
+            const token = await uploadFileToLauncher(component.name, file, status);
+            if (token) {
+                formValues[component.name] = token;
+                status.textContent = "Photo uploaded (" + Math.round(file.size / 1024) + " KB, " + file.type + ")";
+                status.className = "upload-status done";
+                validateForm(form);
+            }
+        };
+
+        renderIdleActions();
+
+        wrapper.appendChild(video);
+        wrapper.appendChild(preview);
+        wrapper.appendChild(actions);
+        wrapper.appendChild(fileInput);
+        wrapper.appendChild(status);
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
+    // File upload — arbitrary MIME (subject to accept_mime allowlist).
+    // Same pattern as camera but without capture bias, and with a
+    // size read-out that respects max_size_bytes if the caller wants
+    // to enforce a stricter cap than the API's 25 MB.
+    function renderFileUpload(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        formValues[component.name] = null;
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("upload-wrapper");
+
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        if (component.accept_mime) fileInput.accept = component.accept_mime;
+        fileInput.id = "input-" + component.name;
+
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.classList.add("btn", "btn-secondary");
+        btn.textContent = "Choose file";
+        btn.onclick = () => fileInput.click();
+        if (component.read_only) btn.disabled = true;
+
+        const status = document.createElement("span");
+        status.classList.add("upload-status");
+        const limits = [];
+        if (component.accept_mime) limits.push(component.accept_mime);
+        if (component.max_size_bytes) limits.push("max " + Math.round(component.max_size_bytes / (1024 * 1024)) + " MB");
+        status.textContent = limits.length ? "Accepted: " + limits.join(" · ") : "Any file type.";
+
+        fileInput.onchange = async (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            if (component.max_size_bytes && file.size > component.max_size_bytes) {
+                status.textContent = "File too large — max " + Math.round(component.max_size_bytes / (1024 * 1024)) + " MB";
+                status.className = "upload-status error";
+                return;
+            }
+            const token = await uploadFileToLauncher(component.name, file, status);
+            if (token) {
+                formValues[component.name] = token;
+                status.textContent = file.name + " uploaded (" + Math.round(file.size / 1024) + " KB)";
+                status.className = "upload-status done";
+                validateForm(form);
+            }
+        };
+
+        wrapper.appendChild(btn);
+        wrapper.appendChild(fileInput);
+        wrapper.appendChild(status);
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
+    // Ranking — user reorders a fixed set of options to express
+    // preference. Response is `string[]` — option values in the user's
+    // chosen order. Two reorder mechanisms:
+    //   1. HTML5 drag-and-drop for mouse/pointer users.
+    //   2. Up/down arrow buttons per row — the universal fallback that
+    //      works on touch, keyboards, and assistive tech.
+    // Both drive the same state array, so switching between them
+    // mid-interaction produces no surprises.
+    function renderRanking(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const opts = Array.isArray(component.options) ? component.options : [];
+        // The response is derived directly from `order` — an array of
+        // indices into `opts` in the user's chosen order. Seed with
+        // definition order so an untouched required field is still
+        // valid (partial rankings are allowed; empty is not).
+        const order = opts.map((_, i) => i);
+        formValues[component.name] = order.map(i => opts[i].value);
+
+        function pushResponse() {
+            formValues[component.name] = order.map(i => opts[i].value);
+            validateForm(form);
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("ranking-list");
+
+        function paint() {
+            wrapper.innerHTML = "";
+            order.forEach((optIdx, pos) => {
+                const opt = opts[optIdx];
+                const row = document.createElement("div");
+                row.classList.add("ranking-row");
+                row.setAttribute("data-pos", String(pos));
+                row.draggable = !component.read_only;
+
+                // Rank badge on the left — 1, 2, 3, ... — updates every
+                // reorder so users see the current position at a glance.
+                const badge = document.createElement("span");
+                badge.classList.add("ranking-badge");
+                badge.textContent = String(pos + 1);
+
+                const grip = document.createElement("span");
+                grip.classList.add("ranking-grip");
+                grip.textContent = "⋮⋮";  // vertical dots — visual "drag me" hint
+                grip.setAttribute("aria-hidden", "true");
+
+                const label = document.createElement("span");
+                label.classList.add("ranking-label");
+                label.textContent = opt.label;
+
+                const actions = document.createElement("div");
+                actions.classList.add("ranking-actions");
+
+                const upBtn = document.createElement("button");
+                upBtn.type = "button";
+                upBtn.classList.add("ranking-btn");
+                upBtn.textContent = "▲";
+                upBtn.disabled = pos === 0 || component.read_only;
+                upBtn.setAttribute("aria-label", "Move up");
+                upBtn.onclick = () => {
+                    if (pos === 0) return;
+                    [order[pos - 1], order[pos]] = [order[pos], order[pos - 1]];
+                    paint();
+                    pushResponse();
+                };
+
+                const downBtn = document.createElement("button");
+                downBtn.type = "button";
+                downBtn.classList.add("ranking-btn");
+                downBtn.textContent = "▼";
+                downBtn.disabled = pos === order.length - 1 || component.read_only;
+                downBtn.setAttribute("aria-label", "Move down");
+                downBtn.onclick = () => {
+                    if (pos === order.length - 1) return;
+                    [order[pos], order[pos + 1]] = [order[pos + 1], order[pos]];
+                    paint();
+                    pushResponse();
+                };
+
+                actions.appendChild(upBtn);
+                actions.appendChild(downBtn);
+
+                if (!component.read_only) {
+                    // Native HTML5 drag-drop. Fine on desktop mice; on
+                    // touch, ondragstart never fires — the up/down
+                    // buttons above handle that path.
+                    row.ondragstart = (e) => {
+                        row.classList.add("dragging");
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", String(pos));
+                    };
+                    row.ondragend = () => {
+                        row.classList.remove("dragging");
+                    };
+                    row.ondragover = (e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        row.classList.add("drop-target");
+                    };
+                    row.ondragleave = () => {
+                        row.classList.remove("drop-target");
+                    };
+                    row.ondrop = (e) => {
+                        e.preventDefault();
+                        row.classList.remove("drop-target");
+                        const from = parseInt(e.dataTransfer.getData("text/plain"), 10);
+                        const to = pos;
+                        if (isNaN(from) || from === to) return;
+                        // Move `from` to `to` — supports drag both up and down.
+                        const [moved] = order.splice(from, 1);
+                        order.splice(to, 0, moved);
+                        paint();
+                        pushResponse();
+                    };
+                }
+                if (component.read_only) {
+                    row.classList.add("readonly");
+                }
+
+                row.appendChild(badge);
+                row.appendChild(grip);
+                row.appendChild(label);
+                row.appendChild(actions);
+                wrapper.appendChild(row);
+            });
+        }
+        paint();
+
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
+    // QR / barcode scanner — uses the browser-native BarcodeDetector
+    // API (Chrome, Edge, Safari 16.4+). Firefox and older browsers
+    // don't support it; those users get the manual-entry input.
+    //
+    // No third-party libraries — the whole scanner is <200 lines of
+    // vanilla JS on top of getUserMedia + BarcodeDetector. That keeps
+    // Launch's supply chain zero-dep, which matters for public forms.
+    function renderQrScanner(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        // Seeded null — the outer loop's SELF_SEEDED set skips this so
+        // we can start the scanner without stomping on a manually
+        // entered value.
+        formValues[component.name] = component.default_value || "";
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("upload-wrapper");
+
+        const video = document.createElement("video");
+        video.classList.add("camera-video");
+        video.playsInline = true;
+        video.muted = true;
+        video.autoplay = true;
+        video.style.display = "none";
+
+        const actions = document.createElement("div");
+        actions.classList.add("upload-actions");
+
+        // Manual-entry fallback — always present. If the user's device
+        // doesn't support live scanning (Firefox, old Safari, no
+        // camera), they can still type the code in manually. If live
+        // scanning DOES work, the detected code populates this input
+        // so the same value flows through validate + submit.
+        const manualInput = document.createElement("input");
+        manualInput.type = "text";
+        manualInput.placeholder = component.placeholder || "Enter code manually";
+        manualInput.id = "input-" + component.name;
+        if (component.default_value) manualInput.value = component.default_value;
+        manualInput.oninput = (e) => {
+            formValues[component.name] = e.target.value;
+            validateForm(form);
+        };
+        applyReadOnly(manualInput, component);
+
+        const status = document.createElement("span");
+        status.classList.add("upload-status");
+        const hasBarcodeDetector = typeof window.BarcodeDetector !== "undefined";
+        const hasMediaDevices = navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+        if (!hasBarcodeDetector || !hasMediaDevices) {
+            status.textContent = "Live scanning not supported on this device — enter the code manually.";
+        } else {
+            status.textContent = "Click Start scanning to use your camera, or type the code manually below.";
+        }
+
+        // Scanning state — kept in closure so start/stop are symmetric.
+        let stream = null;
+        let detector = null;
+        let scanFrameId = null;
+
+        function stopScanning() {
+            if (scanFrameId !== null) {
+                cancelAnimationFrame(scanFrameId);
+                scanFrameId = null;
+            }
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+                stream = null;
+            }
+            video.srcObject = null;
+            video.style.display = "none";
+            renderIdleActions();
+        }
+
+        async function startScanning() {
+            if (!hasBarcodeDetector || !hasMediaDevices) return;
+            try {
+                // "environment" biases the rear camera on mobile; on
+                // laptops it's ignored and the primary camera opens.
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: {facingMode: "environment"},
+                    audio: false,
+                });
+            } catch (err) {
+                status.textContent = "Camera unavailable — enter the code manually.";
+                status.className = "upload-status error";
+                return;
+            }
+            video.srcObject = stream;
+            video.style.display = "block";
+            status.textContent = "Point your camera at a QR code or barcode…";
+            status.className = "upload-status uploading";
+
+            // Detect QR + common linear barcodes. Any subset supported
+            // by the browser will be tried; unknown formats are silently
+            // ignored by the detector.
+            const formats = ["qr_code", "code_128", "code_39", "code_93", "ean_13", "ean_8", "upc_a", "upc_e", "codabar", "itf"];
+            try {
+                detector = new window.BarcodeDetector({formats});
+            } catch (_) {
+                // Fallback: no format filter, use whatever the browser supports.
+                detector = new window.BarcodeDetector();
+            }
+
+            renderScanActions();
+
+            const scanLoop = async () => {
+                if (!stream || video.readyState < 2) {
+                    scanFrameId = requestAnimationFrame(scanLoop);
+                    return;
+                }
+                try {
+                    const codes = await detector.detect(video);
+                    if (codes.length > 0) {
+                        const raw = codes[0].rawValue || "";
+                        if (raw) {
+                            manualInput.value = raw;
+                            formValues[component.name] = raw;
+                            status.textContent = "Detected: " + raw;
+                            status.className = "upload-status done";
+                            validateForm(form);
+                            stopScanning();
+                            return;
+                        }
+                    }
+                } catch (_) {
+                    // Detector may throw transient errors on some frames
+                    // (e.g. still buffering) — keep scanning.
+                }
+                scanFrameId = requestAnimationFrame(scanLoop);
+            };
+            scanFrameId = requestAnimationFrame(scanLoop);
+        }
+
+        function renderIdleActions() {
+            actions.innerHTML = "";
+            if (!hasBarcodeDetector || !hasMediaDevices) return;
+            const startBtn = document.createElement("button");
+            startBtn.type = "button";
+            startBtn.classList.add("btn", "btn-secondary");
+            startBtn.textContent = "Start scanning";
+            startBtn.onclick = startScanning;
+            if (component.read_only) startBtn.disabled = true;
+            actions.appendChild(startBtn);
+        }
+
+        function renderScanActions() {
+            actions.innerHTML = "";
+            const stopBtn = document.createElement("button");
+            stopBtn.type = "button";
+            stopBtn.classList.add("btn", "btn-secondary");
+            stopBtn.textContent = "Stop scanning";
+            stopBtn.onclick = stopScanning;
+            actions.appendChild(stopBtn);
+        }
+
+        renderIdleActions();
+
+        wrapper.appendChild(video);
+        wrapper.appendChild(actions);
+        wrapper.appendChild(manualInput);
+        wrapper.appendChild(status);
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
+    function renderSectionHeader(form, container, component) {
+        const heading = document.createElement("h2");
+        heading.classList.add("section-header");
+        heading.textContent = component.label || "";
+        container.appendChild(heading);
+    }
+
+    function renderDivider(form, container, component) {
+        const hr = document.createElement("hr");
+        hr.classList.add("form-divider");
+        container.appendChild(hr);
+    }
+
+    function renderInfoText(form, container, component) {
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("info-text");
+        if (component.label) {
+            const strong = document.createElement("strong");
+            strong.textContent = component.label;
+            wrapper.appendChild(strong);
+        }
+        const para = document.createElement("p");
+        para.textContent = component.display_text || "";
+        wrapper.appendChild(para);
+        container.appendChild(wrapper);
+    }
+
+    function renderDropdown(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const el = document.createElement("select");
+        el.id = "input-" + component.name;
+        el.required = !!component.required;
+
+        // A blank leading option gives the user a "no selection" state and
+        // keeps required-field validation honest — without it, the first
+        // real option is auto-selected on load and Submit unlocks before
+        // the user has done anything.
+        //
+        // Two subtleties:
+        // - The placeholder is `disabled` when required, so once the user
+        //   picks a real option they can't revert to "unselected".
+        // - The placeholder is marked `selected` when there's no matching
+        //   default_value. Without this, a disabled placeholder is
+        //   skipped by the browser and the first real option becomes the
+        //   apparent selection, which desyncs the visual state from
+        //   formValues (which is null-seeded).
+        const hasDefault = optionsList(component).some(o => o.value === component.default_value);
+        const placeholderOption = document.createElement("option");
+        placeholderOption.value = "";
+        placeholderOption.textContent = component.placeholder || "-- Select --";
+        placeholderOption.disabled = !!component.required;
+        if (!hasDefault) placeholderOption.selected = true;
+        el.appendChild(placeholderOption);
+
+        optionsList(component).forEach(opt => {
+            const o = document.createElement("option");
+            o.value = opt.value;
+            o.textContent = opt.label;
+            if (component.default_value === opt.value) o.selected = true;
+            el.appendChild(o);
+        });
+
+        el.onchange = (e) => { formValues[component.name] = e.target.value; validateForm(form); };
+        applyReadOnly(el, component);
+
+        group.appendChild(el);
+        container.appendChild(group);
+    }
+
     function renderPageIndicator(form) {
         const indicator = document.getElementById("page-indicator");
         if (!indicator || form.pages.length <= 1) return;
@@ -433,16 +2073,35 @@
 
         const components = [...page.components].sort((a, b) => (a.order || 0) - (b.order || 0));
 
+        // Display-only components are excluded from formValues entirely —
+        // they take no input. The server-side strip would drop any value
+        // anyway; keeping the map clean means downstream `${trigger.X}`
+        // consumers don't see spurious keys for structural elements.
+        const DISPLAY_ONLY = new Set(["section_header", "divider", "info_text"]);
+        // Types where the render function seeds formValues itself
+        // (needs runtime access to the options list, numeric bounds, or
+        // a structured object shape).
+        const SELF_SEEDED = new Set(["checkboxes", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "ranking"]);
+
         for (const component of components) {
             // Seed formValues with default_value when set, so unedited
             // read-only fields submit the resolved value and editable
             // fields submit the prefilled value unless the user changes it.
-            if (component.type === "boolean") {
-                formValues[component.name] = component.default_value === "true" || component.default_value === true;
-            } else if (component.default_value !== undefined && component.default_value !== "") {
-                formValues[component.name] = component.default_value;
-            } else {
-                formValues[component.name] = null;
+            //
+            // Type-specific seeds:
+            // - boolean: cast the string "true" to a real bool
+            // - checkboxes / slider / rating: set inside their render
+            //   functions (needs options list / numeric bounds)
+            // - display-only: skipped entirely
+            // - everything else: string default or null
+            if (!DISPLAY_ONLY.has(component.type) && !SELF_SEEDED.has(component.type)) {
+                if (component.type === "boolean") {
+                    formValues[component.name] = component.default_value === "true" || component.default_value === true;
+                } else if (component.default_value !== undefined && component.default_value !== "") {
+                    formValues[component.name] = component.default_value;
+                } else {
+                    formValues[component.name] = null;
+                }
             }
 
             switch (component.type) {
@@ -450,6 +2109,27 @@
                 case "multiline": renderMultiline(form, pageContainer, component); break;
                 case "number": renderNumber(form, pageContainer, component); break;
                 case "boolean": renderCheckbox(form, pageContainer, component); break;
+                case "radio": renderRadio(form, pageContainer, component); break;
+                case "checkboxes": renderCheckboxes(form, pageContainer, component); break;
+                case "dropdown": renderDropdown(form, pageContainer, component); break;
+                case "email": renderEmail(form, pageContainer, component); break;
+                case "phone": renderPhone(form, pageContainer, component); break;
+                case "url": renderUrl(form, pageContainer, component); break;
+                case "date": renderDate(form, pageContainer, component); break;
+                case "time": renderTime(form, pageContainer, component); break;
+                case "datetime": renderDateTime(form, pageContainer, component); break;
+                case "slider": renderSlider(form, pageContainer, component); break;
+                case "rating": renderRating(form, pageContainer, component); break;
+                case "section_header": renderSectionHeader(form, pageContainer, component); break;
+                case "divider": renderDivider(form, pageContainer, component); break;
+                case "info_text": renderInfoText(form, pageContainer, component); break;
+                case "location": renderLocation(form, pageContainer, component); break;
+                case "address": renderAddress(form, pageContainer, component); break;
+                case "esignature": renderESignature(form, pageContainer, component); break;
+                case "camera": renderCamera(form, pageContainer, component); break;
+                case "file_upload": renderFileUpload(form, pageContainer, component); break;
+                case "qr_scanner": renderQrScanner(form, pageContainer, component); break;
+                case "ranking": renderRanking(form, pageContainer, component); break;
                 default: renderTextbox(form, pageContainer, component); break;
             }
         }
@@ -457,11 +2137,51 @@
 
     function validateForm(form) {
         let valid = true;
+        const DISPLAY_ONLY = new Set(["section_header", "divider", "info_text"]);
         for (const page of form.pages) {
             for (const comp of page.components) {
-                if (comp.required) {
-                    const input = document.getElementById("input-" + comp.name);
-                    if (input && (input.value === "" || input.value === null)) valid = false;
+                if (!comp.required) continue;
+                if (DISPLAY_ONLY.has(comp.type)) continue;
+                const v = formValues[comp.name];
+                // Radio + dropdown: empty string means "not chosen".
+                // Checkboxes: an empty array means "none selected".
+                // Boolean: no requirement — the field is toggle-only.
+                // Rating: a value of 0 or null means "not rated yet".
+                // Slider: any value is inherently a selection.
+                // Everything else: treat null / "" as empty.
+                if (comp.type === "checkboxes") {
+                    if (!Array.isArray(v) || v.length === 0) valid = false;
+                } else if (comp.type === "boolean" || comp.type === "slider") {
+                    // no-op — booleans are always definitive; sliders
+                    // always carry a numeric value once rendered
+                } else if (comp.type === "rating") {
+                    if (v === null || v === undefined || Number(v) === 0) valid = false;
+                } else if (comp.type === "location") {
+                    // Location object is only present once the user clicks
+                    // the detect button and grants permission.
+                    if (!v || typeof v !== "object" || typeof v.lat !== "number") valid = false;
+                } else if (comp.type === "address") {
+                    // A required address must have at least Line 1 —
+                    // that's the minimum viable postal address in every
+                    // country we care about. City / postcode / country
+                    // are strongly recommended but not enforced here.
+                    if (!v || typeof v !== "object" || !v.line1) valid = false;
+                } else if (comp.type === "esignature" || comp.type === "camera" || comp.type === "file_upload") {
+                    // Upload fields are required-satisfied once the
+                    // upload proxy returns a blob token. Before that,
+                    // formValues[name] is null.
+                    if (typeof v !== "string" || !v.startsWith("flo:blob:")) valid = false;
+                } else if (comp.type === "qr_scanner") {
+                    // Required-satisfied once a code string is present,
+                    // either scanned or manually typed.
+                    if (typeof v !== "string" || v.trim() === "") valid = false;
+                } else if (comp.type === "ranking") {
+                    // Ranking always has a value (seeded from options
+                    // in definition order at render time); "required"
+                    // just enforces at-least-one option.
+                    if (!Array.isArray(v) || v.length === 0) valid = false;
+                } else {
+                    if (v === "" || v === null || v === undefined) valid = false;
                 }
             }
         }
