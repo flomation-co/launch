@@ -36,6 +36,10 @@ func VerifySignature(appSecret string, body []byte, r *http.Request) error {
 // headers; the resource id is lifted from the JSON body. The raw body is
 // preserved so downstream nodes can read any field.
 func ParseEvent(r *http.Request, body []byte) (map[string]interface{}, error) {
+	// event_type and topic are deliberately the same value. "event_type" is the
+	// canonical field every webhook trigger exposes for cross-integration flows
+	// (and what MatchesFilter reads); "topic" is kept alongside it as the
+	// Shopify-native name so a flow author familiar with Shopify's docs finds it.
 	data := map[string]interface{}{
 		"event_type":   r.Header.Get("X-Shopify-Topic"), // used by MatchesFilter
 		"topic":        r.Header.Get("X-Shopify-Topic"),
