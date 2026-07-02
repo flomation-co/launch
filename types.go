@@ -25,6 +25,7 @@ const (
 	TriggerTypeMicrosoftOutlook  = "microsoft-outlook"
 	TriggerTypeTeams             = "teams"
 	TriggerTypeMailchimpWebhook  = "mailchimp-webhook" // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeShopifyWebhook    = "shopify-webhook"   // #nosec G101 — trigger type identifier, not a credential
 )
 
 type Trigger struct {
