@@ -63,6 +63,10 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
 	s.registerCalendlyWebhook(&tr)
 
+	// Zendesk triggers: auto-register a webhook connector + business rule
+	// pointing at /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
+	s.registerZendeskWebhook(&tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -134,6 +138,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the Calendly webhook subscription we previously created.
 	if t.Type == launch.TriggerTypeCalendlyWebhook {
 		s.deregisterCalendlyWebhook(t)
+	}
+
+	// Deregister the Zendesk webhook connector + business rule we created.
+	if t.Type == launch.TriggerTypeZendeskWebhook {
+		s.deregisterZendeskWebhook(t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {
