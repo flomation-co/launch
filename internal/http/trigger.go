@@ -59,6 +59,10 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
 	s.registerMailchimpWebhook(&tr)
 
+	// Calendly triggers: auto-register a webhook subscription pointing at
+	// /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
+	s.registerCalendlyWebhook(&tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -125,6 +129,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the Mailchimp audience webhook we previously created.
 	if t.Type == launch.TriggerTypeMailchimpWebhook {
 		s.deregisterMailchimpWebhook(t)
+	}
+
+	// Deregister the Calendly webhook subscription we previously created.
+	if t.Type == launch.TriggerTypeCalendlyWebhook {
+		s.deregisterCalendlyWebhook(t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {
