@@ -9,6 +9,10 @@ import (
 	"testing"
 )
 
+// sign computes the expected header signature. It concatenates timestamp+"."
+// in one Write where VerifySignature uses two — deliberately, as HMAC is
+// stream-based and chunking doesn't affect the digest; the asymmetry also
+// guards against both sides sharing a chunking mistake.
 func sign(key, timestamp string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write([]byte(timestamp + "."))
