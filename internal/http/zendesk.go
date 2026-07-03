@@ -306,7 +306,9 @@ func (s *Service) deleteZendeskRemote(auth, subdomain string, state *zendeskWebh
 func (s *Service) handleZendeskWebhook(c *gin.Context, tr *launch.Trigger) {
 	id := tr.ID
 
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 8<<20))
+	// Zendesk's rendered webhook message is tiny (~200 bytes); cap the read
+	// well below that ceiling so an oversized POST can't balloon memory.
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 64<<10))
 	if err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
