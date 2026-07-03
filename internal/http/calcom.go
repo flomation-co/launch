@@ -118,7 +118,7 @@ func calcomEvents(sel string) []string {
 		}
 	} else {
 		for _, p := range strings.Split(sel, ",") {
-			if t := strings.Trim(strings.TrimSpace(p), `"`); t != "" {
+			if t := strings.TrimSpace(p); t != "" {
 				out = append(out, t)
 			}
 		}
@@ -242,6 +242,9 @@ func (s *Service) registerCalcomWebhook(tr *launch.Trigger) {
 		// Without the secret every delivery would be rejected; remove the
 		// orphaned webhook so the next save retries cleanly.
 		log.WithFields(log.Fields{"trigger_id": tr.ID, "error": err}).Error("calcom trigger: unable to persist webhook state; removing webhook")
+		// Best-effort teardown of the webhook we just created: without persisted
+		// state its secret is lost so deliveries would be rejected anyway. Return
+		// values are intentionally discarded — the state error above is the signal.
 		_, _, _ = calcomDo(token, http.MethodDelete, "/webhooks/"+webhookID, nil)
 	}
 }
