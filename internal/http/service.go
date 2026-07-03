@@ -390,6 +390,10 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeCalcomWebhook:
 		s.handleCalcomWebhook(c, tr)
 		return
+
+	case launch.TriggerTypeAcuityWebhook:
+		s.handleAcuityWebhook(c, tr)
+		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
 	default:

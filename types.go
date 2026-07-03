@@ -29,6 +29,7 @@ const (
 	TriggerTypeCalendlyWebhook   = "calendly-webhook"  // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeZendeskWebhook    = "zendesk-webhook"   // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeCalcomWebhook     = "calcom-webhook"    // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeAcuityWebhook     = "acuity-webhook"    // #nosec G101 — trigger type identifier, not a credential
 )
 
 type Trigger struct {

@@ -71,6 +71,10 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
 	s.registerCalcomWebhook(&tr)
 
+	// Acuity triggers: auto-register one webhook per selected event pointing at
+	// /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
+	s.registerAcuityWebhook(&tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -152,6 +156,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the Cal.com webhook we created.
 	if t.Type == launch.TriggerTypeCalcomWebhook {
 		s.deregisterCalcomWebhook(t)
+	}
+
+	// Deregister the Acuity webhook subscriptions we created.
+	if t.Type == launch.TriggerTypeAcuityWebhook {
+		s.deregisterAcuityWebhook(t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {
