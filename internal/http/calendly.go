@@ -42,12 +42,13 @@ const calendlyStateKey = "calendly_webhook"
 
 // calendlyWebhookState is what we persist per trigger: the subscription we
 // created (so it can be removed on trigger delete), the signing key Calendly
-// signs deliveries with, and the events it was registered for (so a config
-// change is detected and the subscription recreated).
+// signs deliveries with, and the events/scope it was registered for (so a
+// config change is detected and the subscription recreated).
 type calendlyWebhookState struct {
 	SubscriptionURI string   `json:"subscription_uri"`
 	SigningKey      string   `json:"signing_key"`
 	Events          []string `json:"events"`
+	Scope           string   `json:"scope"`
 }
 
 // calendlyDo performs an authenticated Calendly API request. fullURL may be a
@@ -82,7 +83,15 @@ func calendlyDo(token, method, fullURL string, body interface{}) (map[string]int
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var out map[string]interface{}
 	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &out)
+		if uerr := json.Unmarshal(raw, &out); uerr != nil {
+			// Non-fatal (callers key off the status code), but log the raw
+			// body so an unexpected non-JSON response is debuggable.
+			body := string(raw)
+			if len(body) > 512 {
+				body = body[:512]
+			}
+			log.WithFields(log.Fields{"status": resp.StatusCode, "body": body}).Warn("calendly: non-JSON response body")
+		}
 	}
 	return out, resp.StatusCode, nil
 }
@@ -184,22 +193,26 @@ func (s *Service) registerCalendlyWebhook(tr *launch.Trigger) {
 	events := calendlyEvents(creds["events"])
 	callback := fmt.Sprintf("%s/webhook/%s", s.config.PublicURL, tr.ID)
 
+	// If we previously created a subscription with the same events and scope,
+	// keep it. Checked before any Calendly API call — createTrigger runs on
+	// every flow save, and the common case (nothing changed) must not cost a
+	// round-trip to /users/me.
+	state := s.loadCalendlyState(tr.ID)
+	if state != nil && state.SubscriptionURI != "" && state.SigningKey != "" &&
+		state.Scope == scope && sameEventSet(state.Events, events) {
+		return
+	}
+
 	organization, user, err := calendlyScopeURIs(token, scope)
 	if err != nil {
 		log.WithFields(log.Fields{"trigger_id": tr.ID, "error": err}).Warn("calendly trigger: could not resolve scope URIs; skipping webhook registration")
 		return
 	}
 
-	// If we previously created a subscription with the same events, keep it.
-	state := s.loadCalendlyState(tr.ID)
-	if state != nil && state.SubscriptionURI != "" && state.SigningKey != "" && sameEventSet(state.Events, events) {
-		return
-	}
-
-	// The event selection changed (or the stored state is unusable): remove
-	// the old subscription before creating its replacement. Calendly has no
-	// subscription-update call, and the callback URL is keyed on the stable
-	// trigger ID, so a stale subscription would double-fire the flow.
+	// The event selection or scope changed (or the stored state is unusable):
+	// remove the old subscription before creating its replacement. Calendly
+	// has no subscription-update call, and the callback URL is keyed on the
+	// stable trigger ID, so a stale subscription would double-fire the flow.
 	if state != nil && state.SubscriptionURI != "" {
 		if _, status, err := calendlyDo(token, http.MethodDelete, state.SubscriptionURI, nil); err != nil || (status >= 300 && status != http.StatusNotFound) {
 			log.WithFields(log.Fields{"trigger_id": tr.ID, "status": status, "error": err}).Warn("calendly trigger: could not remove outdated subscription; skipping registration this pass")
@@ -241,6 +254,7 @@ func (s *Service) registerCalendlyWebhook(tr *launch.Trigger) {
 		SubscriptionURI: subscriptionURI,
 		SigningKey:      signingKey,
 		Events:          events,
+		Scope:           scope,
 	})
 	if err := s.db.UpsertTriggerState(tr.ID, calendlyStateKey, stateJSON); err != nil {
 		// Without the signing key every delivery would be rejected; remove the
