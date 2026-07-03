@@ -376,6 +376,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeMailchimpWebhook:
 		s.handleMailchimpWebhook(c, tr)
 		return
+	case launch.TriggerTypeShopifyWebhook:
+		s.handleShopifyWebhook(c, tr)
+		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
 	default:
@@ -668,9 +671,9 @@ func (s *Service) submitForm(c *gin.Context) {
 //
 // Body: multipart/form-data
 //   - field  (text)   the form_definition component name whose value
-//                     this file should become
+//     this file should become
 //   - file   (file)   the raw bytes (eSignature PNG, camera photo,
-//                     file upload)
+//     file upload)
 //
 // Response: 201 with {blob_token, size, mime}
 func (s *Service) uploadFormBlob(c *gin.Context) {
