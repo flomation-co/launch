@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -329,9 +330,56 @@ type telegramResponse struct {
 }
 
 type telegramUpdate struct {
-	UpdateID      int64            `json:"update_id"`
-	Message       *telegramMessage `json:"message,omitempty"`
-	EditedMessage *telegramMessage `json:"edited_message,omitempty"`
+	UpdateID      int64                  `json:"update_id"`
+	Message       *telegramMessage       `json:"message,omitempty"`
+	EditedMessage *telegramMessage       `json:"edited_message,omitempty"`
+	CallbackQuery *telegramCallbackQuery `json:"callback_query,omitempty"`
+}
+
+type telegramCallbackQuery struct {
+	ID      string           `json:"id"`
+	From    *telegramUser    `json:"from,omitempty"`
+	Message *telegramMessage `json:"message,omitempty"`
+	Data    string           `json:"data"`
+}
+
+// ParsedCallback is a Telegram inline-keyboard button press (callback_query).
+type ParsedCallback struct {
+	CallbackID string // answerCallbackQuery id
+	Data       string // the button's callback_data
+	FromID     int64
+	FromName   string
+	ChatID     int64
+	MessageID  int64
+}
+
+// ParseCallback extracts a callback_query from a Telegram update, or nil if the
+// update isn't a button press. Used for Human-in-the-Loop inline keyboards.
+func ParseCallback(body []byte) *ParsedCallback {
+	var update telegramUpdate
+	if err := json.Unmarshal(body, &update); err != nil {
+		return nil
+	}
+	cq := update.CallbackQuery
+	if cq == nil {
+		return nil
+	}
+	pc := &ParsedCallback{CallbackID: cq.ID, Data: cq.Data}
+	if cq.From != nil {
+		pc.FromID = cq.From.ID
+		pc.FromName = cq.From.FirstName
+		if cq.From.LastName != "" {
+			pc.FromName = strings.TrimSpace(pc.FromName + " " + cq.From.LastName)
+		}
+		if pc.FromName == "" {
+			pc.FromName = cq.From.Username
+		}
+	}
+	if cq.Message != nil {
+		pc.ChatID = cq.Message.Chat.ID
+		pc.MessageID = cq.Message.MessageID
+	}
+	return pc
 }
 
 type telegramMessage struct {
@@ -408,6 +456,49 @@ type telegramChat struct {
 	ID    int64  `json:"id"`
 	Type  string `json:"type"` // private, group, supergroup, channel
 	Title string `json:"title,omitempty"`
+}
+
+// AnswerCallbackQuery acknowledges an inline-keyboard button press so Telegram
+// stops showing the loading state on the button. Best-effort.
+func AnswerCallbackQuery(botToken, callbackID, text string) error {
+	payload := map[string]interface{}{"callback_query_id": callbackID}
+	if text != "" {
+		payload["text"] = text
+	}
+	body, _ := json.Marshal(payload)
+	url := fmt.Sprintf("%s/bot%s/answerCallbackQuery", telegramAPIBase, botToken)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return nil
+}
+
+// EditMessageReplyMarkup replaces (or clears) a message's inline keyboard —
+// used to disable the buttons once a Human-in-the-Loop request is answered.
+// Pass an empty replyMarkupJSON to remove the keyboard entirely.
+func EditMessageReplyMarkup(botToken string, chatID, messageID int64, replyMarkupJSON string) error {
+	payload := map[string]interface{}{
+		"chat_id":    chatID,
+		"message_id": messageID,
+	}
+	if strings.TrimSpace(replyMarkupJSON) != "" {
+		var markup interface{}
+		if err := json.Unmarshal([]byte(replyMarkupJSON), &markup); err == nil {
+			payload["reply_markup"] = markup
+		}
+	}
+	body, _ := json.Marshal(payload)
+	url := fmt.Sprintf("%s/bot%s/editMessageReplyMarkup", telegramAPIBase, botToken)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return nil
 }
 
 // SendMessage sends a text message via the Telegram Bot API.

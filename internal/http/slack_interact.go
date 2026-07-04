@@ -62,6 +62,21 @@ func (s *Service) handleSlackInteraction(c *gin.Context) {
 
 	l.Info("slack interaction received")
 
+	// Human-in-the-Loop: if a button carries a hitl: action_id, this is a
+	// response to a suspended flow, not an agent conversation. Resolve it via
+	// the API (which resumes the execution) instead of dispatching to the agent.
+	if requestID, option, ok := firstHITLAction(interaction.Actions); ok {
+		senderName := interaction.User.Name
+		if senderName == "" {
+			senderName = interaction.User.Username
+		}
+		if senderName == "" {
+			senderName = interaction.User.ID
+		}
+		go s.handleHITLSlackInteraction(interaction, requestID, option, senderName)
+		return
+	}
+
 	// Describe the interaction in natural language for the agent.
 	description := slackpkg.DescribeInteraction(interaction)
 
