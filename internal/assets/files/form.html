@@ -643,6 +643,16 @@
             font-family: 'SF Mono', 'Fira Code', monospace;
             word-break: break-all;
         }
+        .field-privacy-notice {
+            font-size: 12px;
+            line-height: 1.45;
+            color: var(--text-muted);
+            background: rgba(139, 92, 246, 0.08);
+            border: 1px solid rgba(139, 92, 246, 0.25);
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin: 6px 0 10px;
+        }
         .upload-status.uploading {
             color: rgba(139, 92, 246, 0.8);
         }
@@ -2130,6 +2140,351 @@
         container.appendChild(group);
     }
 
+    // ---- In-browser recognition framework (lazy, gated per field) --------
+    // Third-party ML libraries and model weights are NOT bundled in this
+    // page. They are fetched on demand — only when a recognition field is
+    // actually used — and only from this same origin (self-hosted under
+    // /recognition/*), so the page's CSP stays tight. A form without a
+    // recognition field downloads none of this.
+    const RECOGNITION_BASE = "/recognition";
+    const _scriptPromises = {};
+    function loadScriptOnce(url) {
+        if (_scriptPromises[url]) return _scriptPromises[url];
+        _scriptPromises[url] = new Promise((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = url; s.async = true;
+            s.onload = () => resolve();
+            s.onerror = () => reject(new Error("failed to load " + url));
+            document.head.appendChild(s);
+        });
+        return _scriptPromises[url];
+    }
+
+    // plateRecogniser lazily loads onnxruntime-web + the plate models the
+    // first time it's needed. If anything is missing (models not deployed,
+    // unsupported browser) it reports unavailable and the field falls back
+    // to manual entry rather than emitting a wrong read.
+    //
+    // Pipeline (both models MIT, self-hosted, embedded in the Launch binary):
+    //   detector "yolo-v9-t-384-license-plate-end2end": images[1,3,384,384]
+    //     float32 RGB /255 NCHW → output0[N,7] = [img,x1,y1,x2,y2,cls,score]
+    //     (end2end — NMS baked in).
+    //   OCR "cct-xs-v2-global-model": input[1,64,128,3] uint8 RGB NHWC →
+    //     plate[1,10,37] logits over alphabet "0-9A-Z_" (pad "_").
+    const plateRecogniser = (() => {
+        const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_";
+        const DET_SIZE = 384, OCR_W = 128, OCR_H = 64, DET_MIN = 0.25;
+        let loadPromise = null, ready = false, sessions = null;
+
+        async function ensureLoaded() {
+            if (loadPromise) return loadPromise;
+            loadPromise = (async () => {
+                await loadScriptOnce(RECOGNITION_BASE + "/ort/ort.wasm.min.js");
+                if (typeof window.ort === "undefined") throw new Error("ort unavailable");
+                // Single-threaded so we don't need cross-origin isolation
+                // (SharedArrayBuffer / COOP+COEP) on the public form page.
+                window.ort.env.wasm.numThreads = 1;
+                window.ort.env.wasm.wasmPaths = RECOGNITION_BASE + "/ort/";
+                const [det, ocr] = await Promise.all([
+                    window.ort.InferenceSession.create(RECOGNITION_BASE + "/plate/detector.onnx"),
+                    window.ort.InferenceSession.create(RECOGNITION_BASE + "/plate/ocr.onnx"),
+                ]);
+                sessions = {det, ocr};
+                ready = true;
+            })();
+            return loadPromise;
+        }
+
+        // draw any source (canvas / crop rect) into a w×h offscreen and return
+        // its RGBA ImageData.
+        function toImageData(src, sx, sy, sw, sh, w, h) {
+            const c = document.createElement("canvas");
+            c.width = w; c.height = h;
+            c.getContext("2d").drawImage(src, sx, sy, sw, sh, 0, 0, w, h);
+            return c.getContext("2d").getImageData(0, 0, w, h).data;
+        }
+
+        return {
+            // detect(canvas) → {plate, confidence, box} or null.
+            async detect(canvas) {
+                try { await ensureLoaded(); } catch (_) { return null; }
+                if (!ready || !sessions) return null;
+                const ort = window.ort;
+                try {
+                    // 1. Detector — YOLO letterbox (aspect-preserving resize +
+                    // grey pad to 384×384), RGB /255 NCHW float32. Matches the
+                    // model's training preprocessing so boxes map back cleanly.
+                    const ratio = Math.min(DET_SIZE / canvas.width, DET_SIZE / canvas.height);
+                    const newW = Math.round(canvas.width * ratio), newH = Math.round(canvas.height * ratio);
+                    const dw = Math.floor((DET_SIZE - newW) / 2), dh = Math.floor((DET_SIZE - newH) / 2);
+                    const lb = document.createElement("canvas");
+                    lb.width = DET_SIZE; lb.height = DET_SIZE;
+                    const lctx = lb.getContext("2d");
+                    lctx.fillStyle = "rgb(114,114,114)"; lctx.fillRect(0, 0, DET_SIZE, DET_SIZE);
+                    lctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, dw, dh, newW, newH);
+                    const dPix = lctx.getImageData(0, 0, DET_SIZE, DET_SIZE).data;
+                    const dIn = new Float32Array(3 * DET_SIZE * DET_SIZE);
+                    const plane = DET_SIZE * DET_SIZE;
+                    for (let i = 0; i < plane; i++) {
+                        dIn[i] = dPix[i * 4] / 255;                 // R
+                        dIn[plane + i] = dPix[i * 4 + 1] / 255;     // G
+                        dIn[2 * plane + i] = dPix[i * 4 + 2] / 255; // B
+                    }
+                    const detOut = await sessions.det.run({images: new ort.Tensor("float32", dIn, [1, 3, DET_SIZE, DET_SIZE])});
+                    const rows = detOut.output0.data;              // flat [N*7]
+                    const n = detOut.output0.dims[0];
+                    // Pick the highest-scoring detection above DET_MIN.
+                    let best = null;
+                    for (let i = 0; i < n; i++) {
+                        const s = rows[i * 7 + 6];
+                        if (s >= DET_MIN && (!best || s > best.score)) {
+                            best = {x1: rows[i * 7 + 1], y1: rows[i * 7 + 2], x2: rows[i * 7 + 3], y2: rows[i * 7 + 4], score: s};
+                        }
+                    }
+                    if (!best) return null;
+
+                    // Undo the letterbox: subtract padding, divide by ratio to
+                    // return to source-frame pixel coordinates before cropping.
+                    let bx = Math.max(0, (best.x1 - dw) / ratio), by = Math.max(0, (best.y1 - dh) / ratio);
+                    let bw = Math.min(canvas.width - bx, (best.x2 - best.x1) / ratio);
+                    let bh = Math.min(canvas.height - by, (best.y2 - best.y1) / ratio);
+                    if (bw < 4 || bh < 4) return null;
+
+                    // 2. OCR — crop → 128×64 RGB uint8 NHWC.
+                    const oPix = toImageData(canvas, bx, by, bw, bh, OCR_W, OCR_H);
+                    const oIn = new Uint8Array(OCR_H * OCR_W * 3);
+                    for (let i = 0; i < OCR_H * OCR_W; i++) {
+                        oIn[i * 3] = oPix[i * 4];
+                        oIn[i * 3 + 1] = oPix[i * 4 + 1];
+                        oIn[i * 3 + 2] = oPix[i * 4 + 2];
+                    }
+                    const ocrOut = await sessions.ocr.run({input: new ort.Tensor("uint8", oIn, [1, OCR_H, OCR_W, 3])});
+                    const logits = ocrOut.plate.data;              // flat [10*37]
+                    let plate = "";
+                    for (let slot = 0; slot < 10; slot++) {
+                        let mi = 0, mv = -Infinity;
+                        for (let c = 0; c < 37; c++) {
+                            const v = logits[slot * 37 + c];
+                            if (v > mv) { mv = v; mi = c; }
+                        }
+                        const ch = ALPHABET[mi];
+                        if (ch !== "_") plate += ch;
+                    }
+                    if (!plate) return null;
+                    return {plate: plate, confidence: best.score, box: [Math.round(bx), Math.round(by), Math.round(bw), Math.round(bh)]};
+                } catch (_) {
+                    return null;
+                }
+            },
+            async available() { try { await ensureLoaded(); return ready; } catch (_) { return false; } },
+        };
+    })();
+
+    // renderLicensePlate captures a camera frame, recognises the plate in the
+    // browser, and stores a composite value {image, plate, confidence}. Two
+    // capture modes (author-chosen): "manual" (tap to capture) and "auto"
+    // (hands-off continuous detection, optionally auto-submitting the form).
+    // A manual text input is always available as a fallback.
+    function renderLicensePlate(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        formValues[component.name] = null;
+
+        // Informational privacy notice (not a gating consent checkbox).
+        if (component.show_privacy_notice !== false && component.privacy_notice) {
+            const notice = document.createElement("div");
+            notice.classList.add("field-privacy-notice");
+            notice.textContent = component.privacy_notice;
+            group.appendChild(notice);
+        }
+
+        const isAuto = component.capture_mode === "auto";
+        const minConfidence = typeof component.confidence_threshold === "number" ? component.confidence_threshold : 0.6;
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("upload-wrapper");
+
+        const video = document.createElement("video");
+        video.classList.add("camera-video");
+        video.playsInline = true; video.muted = true; video.autoplay = true;
+        video.style.display = "none";
+
+        const preview = document.createElement("img");
+        preview.classList.add("upload-preview");
+        preview.style.display = "none";
+
+        const actions = document.createElement("div");
+        actions.classList.add("upload-actions");
+
+        // Manual-entry fallback — always present, so unsupported browsers or a
+        // failed recognition can still complete the form by typing the plate.
+        const manualInput = document.createElement("input");
+        manualInput.type = "text";
+        manualInput.placeholder = component.placeholder || "Enter licence plate manually";
+        manualInput.id = "input-" + component.name;
+        manualInput.oninput = (e) => {
+            const plate = e.target.value.trim();
+            formValues[component.name] = plate ? {plate: plate} : null;
+            validateForm(form);
+        };
+        applyReadOnly(manualInput, component);
+
+        const status = document.createElement("span");
+        status.classList.add("upload-status");
+        const hasMediaDevices = navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+
+        let stream = null, scanFrameId = null, lastFrameAt = 0;
+        let stableCount = 0, stablePlate = "";
+
+        function stopStream() {
+            if (scanFrameId !== null) { cancelAnimationFrame(scanFrameId); scanFrameId = null; }
+            if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+            video.srcObject = null; video.style.display = "none";
+        }
+
+        function frameToCanvas() {
+            const canvas = document.createElement("canvas");
+            canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+            canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+            return canvas;
+        }
+
+        // commit uploads the frame and records the composite value; when auto
+        // mode + auto_submit and the form is otherwise valid, it submits.
+        async function commit(canvas, recognition) {
+            stopStream();
+            canvas.toBlob(async (blob) => {
+                if (!blob) return;
+                preview.src = URL.createObjectURL(blob);
+                preview.style.display = "block";
+                const file = new File([blob], "plate.png", {type: "image/png"});
+                const token = await uploadFileToLauncher(component.name, file, status);
+                const value = {plate: (recognition && recognition.plate) || "", image: token || null};
+                if (recognition && typeof recognition.confidence === "number") value.confidence = recognition.confidence;
+                if (recognition && recognition.box) value.box = recognition.box;
+                formValues[component.name] = value;
+                if (value.plate) manualInput.value = value.plate;
+                status.textContent = value.plate ? ("Read: " + value.plate) : "Photo captured — enter the plate manually";
+                status.className = "upload-status done";
+                validateForm(form);
+                renderIdleActions();
+                if (isAuto && component.auto_submit && value.plate) {
+                    const submit = document.getElementById("submit");
+                    if (submit && !submit.disabled) submitForm(form);
+                }
+            }, "image/png");
+        }
+
+        async function startStream(onReady, onFail) {
+            if (!hasMediaDevices) { status.textContent = "Camera unavailable — enter the plate manually."; if (onFail) onFail(); return; }
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment"}, audio: false});
+            } catch (_) {
+                status.textContent = "Camera unavailable — enter the plate manually.";
+                status.className = "upload-status error";
+                if (onFail) onFail();
+                return;
+            }
+            video.srcObject = stream; video.style.display = "block"; preview.style.display = "none";
+            onReady();
+        }
+
+        // autoStart opens the camera and begins reading with no button press —
+        // the fully hands-off / kiosk path. If the camera isn't ready yet
+        // (permission granted a moment late, or briefly busy) it retries a few
+        // times so it recovers on its own without any interaction.
+        let autoRetries = 0;
+        function autoStart() {
+            startStream(
+                () => { actions.innerHTML = ""; autoLoop(); },
+                () => { if (autoRetries++ < 5) setTimeout(autoStart, 2000); }
+            );
+        }
+
+        // Manual: capture a single frame, try recognition, then commit.
+        async function manualCapture() {
+            const canvas = frameToCanvas();
+            status.textContent = "Reading plate…"; status.className = "upload-status uploading";
+            const recognition = await plateRecogniser.detect(canvas);
+            await commit(canvas, recognition);
+        }
+
+        // Auto: throttled detection loop; commit once a plate is confident and
+        // stable across a few frames (debounce against garbage reads).
+        function autoLoop() {
+            const loop = async () => {
+                if (!stream || video.readyState < 2) { scanFrameId = requestAnimationFrame(loop); return; }
+                const now = performance.now();
+                if (now - lastFrameAt < 150) { scanFrameId = requestAnimationFrame(loop); return; }
+                lastFrameAt = now;
+                const canvas = frameToCanvas();
+                let recognition = null;
+                try { recognition = await plateRecogniser.detect(canvas); } catch (_) {}
+                if (recognition && recognition.plate && recognition.confidence >= minConfidence) {
+                    if (recognition.plate === stablePlate) { stableCount++; } else { stablePlate = recognition.plate; stableCount = 1; }
+                    status.textContent = "Detecting: " + recognition.plate;
+                    if (stableCount >= 3) { await commit(canvas, recognition); return; }
+                }
+                scanFrameId = requestAnimationFrame(loop);
+            };
+            scanFrameId = requestAnimationFrame(loop);
+        }
+
+        function renderIdleActions() {
+            actions.innerHTML = "";
+            // Auto mode is fully hands-off — no Start button; the camera opens
+            // on its own (see autoStart). Only manual mode offers a button.
+            if (!hasMediaDevices || isAuto) return;
+            const scanBtn = document.createElement("button");
+            scanBtn.type = "button";
+            scanBtn.classList.add("btn", "btn-secondary");
+            scanBtn.textContent = "Scan plate";
+            scanBtn.onclick = () => startStream(() => renderCaptureActions());
+            if (component.read_only) scanBtn.disabled = true;
+            actions.appendChild(scanBtn);
+        }
+
+        function renderCaptureActions() {
+            actions.innerHTML = "";
+            const capBtn = document.createElement("button");
+            capBtn.type = "button";
+            capBtn.classList.add("btn", "btn-secondary");
+            capBtn.textContent = "Capture";
+            capBtn.onclick = manualCapture;
+            actions.appendChild(capBtn);
+            const cancelBtn = document.createElement("button");
+            cancelBtn.type = "button";
+            cancelBtn.classList.add("btn", "btn-secondary");
+            cancelBtn.textContent = "Cancel";
+            cancelBtn.onclick = () => { stopStream(); renderIdleActions(); };
+            actions.appendChild(cancelBtn);
+        }
+
+        if (!hasMediaDevices) {
+            status.textContent = "Live capture not supported on this device — enter the plate manually.";
+            renderIdleActions();
+        } else if (isAuto) {
+            // Fully hands-off: open the camera immediately and read plates
+            // continuously — no button to press. The browser gates permission.
+            status.textContent = "Looking for a licence plate…";
+            status.className = "upload-status uploading";
+            autoStart();
+        } else {
+            status.textContent = "Click Scan plate to use your camera, or type the plate manually below.";
+            renderIdleActions();
+        }
+
+        wrapper.appendChild(video);
+        wrapper.appendChild(preview);
+        wrapper.appendChild(actions);
+        wrapper.appendChild(manualInput);
+        wrapper.appendChild(status);
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
     function renderSectionHeader(form, container, component) {
         const heading = document.createElement("h2");
         heading.classList.add("section-header");
@@ -2242,7 +2597,7 @@
         // Types where the render function seeds formValues itself
         // (needs runtime access to the options list, numeric bounds, or
         // a structured object shape).
-        const SELF_SEEDED = new Set(["checkboxes", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "ranking"]);
+        const SELF_SEEDED = new Set(["checkboxes", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "license_plate", "ranking"]);
 
         for (const component of components) {
             // Seed formValues with default_value when set, so unedited
@@ -2306,6 +2661,7 @@
             case "camera": renderCamera(form, container, component); break;
             case "file_upload": renderFileUpload(form, container, component); break;
             case "qr_scanner": renderQrScanner(form, container, component); break;
+            case "license_plate": renderLicensePlate(form, container, component); break;
             case "ranking": renderRanking(form, container, component); break;
             default: renderTextbox(form, container, component); break;
         }
@@ -2423,6 +2779,10 @@
                     // Required-satisfied once a code string is present,
                     // either scanned or manually typed.
                     if (typeof v !== "string" || v.trim() === "") valid = false;
+                } else if (comp.type === "license_plate") {
+                    // Composite value {plate, image?, confidence?} — satisfied
+                    // once a plate string is present (recognised or typed).
+                    if (!v || typeof v !== "object" || typeof v.plate !== "string" || v.plate.trim() === "") valid = false;
                 } else if (comp.type === "ranking") {
                     // Ranking always has a value (seeded from options
                     // in definition order at render time); "required"
