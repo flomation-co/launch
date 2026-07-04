@@ -662,11 +662,15 @@ func (s *Service) submitForm(c *gin.Context) {
 	//   2. Drop any client-supplied values for display-only components
 	//      (section_header, divider, info_text) — they take no input.
 	//   3. Restore baked-at-render values for read-only components.
-	// Read-only stripping runs last so its overrides win over anything
-	// the earlier passes might have set to empty.
+	//   4. Strip answers for conditionally-hidden components — a hidden
+	//      branch must never smuggle values into the trigger data.
+	// Read-only stripping runs before the hidden strip so a read-only
+	// field can act as a (baked) condition source; the hidden strip runs
+	// last so it sees every other field's final value.
 	sanitised := sanitiseOptionSubmissions(body, resolved)
 	sanitised = stripDisplayOnlySubmissions(sanitised, resolved)
-	final := stripReadOnlySubmissions(sanitised, resolved)
+	sanitised = stripReadOnlySubmissions(sanitised, resolved)
+	final := stripHiddenSubmissions(sanitised, resolved)
 	if userID != "" {
 		final["user_id"] = userID
 	}
@@ -928,10 +932,12 @@ func (s *Service) handleForm(c *gin.Context) {
 	if def.RequireLogin && userID == "" {
 		returnTo := s.config.Security.EditorURL
 		c.HTML(http.StatusOK, "form.html", gin.H{
-			"LoginRequired": true,
-			"Title":         def.Title,
-			"ReturnTo":      returnTo,
-			"FormURL":       c.Request.URL.RequestURI(),
+			"LoginRequired":   true,
+			"Title":           def.Title,
+			"MetaTitle":       metaText(def.Title),
+			"MetaDescription": metaText(def.Description),
+			"ReturnTo":        returnTo,
+			"FormURL":         c.Request.URL.RequestURI(),
 		})
 		return
 	}
@@ -950,8 +956,10 @@ func (s *Service) handleForm(c *gin.Context) {
 
 	resolvedBytes, _ := json.Marshal(resolved)
 	c.HTML(http.StatusOK, "form.html", gin.H{
-		"Form":   base64.StdEncoding.EncodeToString(resolvedBytes),
-		"FormID": id,
+		"Form":            base64.StdEncoding.EncodeToString(resolvedBytes),
+		"FormID":          id,
+		"MetaTitle":       metaText(resolved.Title),
+		"MetaDescription": metaText(resolved.Description),
 	})
 }
 
