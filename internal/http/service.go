@@ -135,7 +135,24 @@ func (s *Service) configure() error {
 			return
 		}
 
-		contentType := http.DetectContentType(b)
+		// Content-sniffing (http.DetectContentType) mislabels JavaScript
+		// modules and WebAssembly as text/plain, which browsers refuse to
+		// execute as ES modules / streaming-compile. Set the type by
+		// extension for the asset kinds we serve (onnxruntime-web + models)
+		// before falling back to sniffing.
+		contentType := ""
+		switch {
+		case strings.HasSuffix(p, ".js"), strings.HasSuffix(p, ".mjs"):
+			contentType = "text/javascript; charset=utf-8"
+		case strings.HasSuffix(p, ".wasm"):
+			contentType = "application/wasm"
+		case strings.HasSuffix(p, ".onnx"):
+			contentType = "application/octet-stream"
+		case strings.HasSuffix(p, ".css"):
+			contentType = "text/css; charset=utf-8"
+		default:
+			contentType = http.DetectContentType(b)
+		}
 
 		c.Data(http.StatusOK, contentType, b)
 	})

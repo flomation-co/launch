@@ -2164,35 +2164,117 @@
     // first time it's needed. If anything is missing (models not deployed,
     // unsupported browser) it reports unavailable and the field falls back
     // to manual entry rather than emitting a wrong read.
+    //
+    // Pipeline (both models MIT, self-hosted, embedded in the Launch binary):
+    //   detector "yolo-v9-t-384-license-plate-end2end": images[1,3,384,384]
+    //     float32 RGB /255 NCHW → output0[N,7] = [img,x1,y1,x2,y2,cls,score]
+    //     (end2end — NMS baked in).
+    //   OCR "cct-xs-v2-global-model": input[1,64,128,3] uint8 RGB NHWC →
+    //     plate[1,10,37] logits over alphabet "0-9A-Z_" (pad "_").
     const plateRecogniser = (() => {
+        const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_";
+        const DET_SIZE = 384, OCR_W = 128, OCR_H = 64, DET_MIN = 0.25;
         let loadPromise = null, ready = false, sessions = null;
+
         async function ensureLoaded() {
             if (loadPromise) return loadPromise;
             loadPromise = (async () => {
-                await loadScriptOnce(RECOGNITION_BASE + "/ort/ort.min.js");
+                await loadScriptOnce(RECOGNITION_BASE + "/ort/ort.wasm.min.js");
                 if (typeof window.ort === "undefined") throw new Error("ort unavailable");
+                // Single-threaded so we don't need cross-origin isolation
+                // (SharedArrayBuffer / COOP+COEP) on the public form page.
+                window.ort.env.wasm.numThreads = 1;
                 window.ort.env.wasm.wasmPaths = RECOGNITION_BASE + "/ort/";
-                sessions = {
-                    det: await window.ort.InferenceSession.create(RECOGNITION_BASE + "/plate/detector.onnx"),
-                    ocr: await window.ort.InferenceSession.create(RECOGNITION_BASE + "/plate/ocr.onnx"),
-                };
+                const [det, ocr] = await Promise.all([
+                    window.ort.InferenceSession.create(RECOGNITION_BASE + "/plate/detector.onnx"),
+                    window.ort.InferenceSession.create(RECOGNITION_BASE + "/plate/ocr.onnx"),
+                ]);
+                sessions = {det, ocr};
                 ready = true;
             })();
             return loadPromise;
         }
+
+        // draw any source (canvas / crop rect) into a w×h offscreen and return
+        // its RGBA ImageData.
+        function toImageData(src, sx, sy, sw, sh, w, h) {
+            const c = document.createElement("canvas");
+            c.width = w; c.height = h;
+            c.getContext("2d").drawImage(src, sx, sy, sw, sh, 0, 0, w, h);
+            return c.getContext("2d").getImageData(0, 0, w, h).data;
+        }
+
         return {
             // detect(canvas) → {plate, confidence, box} or null.
             async detect(canvas) {
                 try { await ensureLoaded(); } catch (_) { return null; }
                 if (!ready || !sessions) return null;
-                // MODEL CONTRACT — finalise for the chosen ONNX pair:
-                //   1. preprocess canvas → detector input tensor
-                //   2. sessions.det → boxes + scores (NMS) → best plate box
-                //   3. crop box → OCR input tensor → sessions.ocr → decode text
-                // Return {plate, confidence, box}. Until the specific model's
-                // pre/post-processing is wired, return null so the field uses
-                // manual entry instead of emitting an unverified read.
-                return null;
+                const ort = window.ort;
+                try {
+                    // 1. Detector — YOLO letterbox (aspect-preserving resize +
+                    // grey pad to 384×384), RGB /255 NCHW float32. Matches the
+                    // model's training preprocessing so boxes map back cleanly.
+                    const ratio = Math.min(DET_SIZE / canvas.width, DET_SIZE / canvas.height);
+                    const newW = Math.round(canvas.width * ratio), newH = Math.round(canvas.height * ratio);
+                    const dw = Math.floor((DET_SIZE - newW) / 2), dh = Math.floor((DET_SIZE - newH) / 2);
+                    const lb = document.createElement("canvas");
+                    lb.width = DET_SIZE; lb.height = DET_SIZE;
+                    const lctx = lb.getContext("2d");
+                    lctx.fillStyle = "rgb(114,114,114)"; lctx.fillRect(0, 0, DET_SIZE, DET_SIZE);
+                    lctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, dw, dh, newW, newH);
+                    const dPix = lctx.getImageData(0, 0, DET_SIZE, DET_SIZE).data;
+                    const dIn = new Float32Array(3 * DET_SIZE * DET_SIZE);
+                    const plane = DET_SIZE * DET_SIZE;
+                    for (let i = 0; i < plane; i++) {
+                        dIn[i] = dPix[i * 4] / 255;                 // R
+                        dIn[plane + i] = dPix[i * 4 + 1] / 255;     // G
+                        dIn[2 * plane + i] = dPix[i * 4 + 2] / 255; // B
+                    }
+                    const detOut = await sessions.det.run({images: new ort.Tensor("float32", dIn, [1, 3, DET_SIZE, DET_SIZE])});
+                    const rows = detOut.output0.data;              // flat [N*7]
+                    const n = detOut.output0.dims[0];
+                    // Pick the highest-scoring detection above DET_MIN.
+                    let best = null;
+                    for (let i = 0; i < n; i++) {
+                        const s = rows[i * 7 + 6];
+                        if (s >= DET_MIN && (!best || s > best.score)) {
+                            best = {x1: rows[i * 7 + 1], y1: rows[i * 7 + 2], x2: rows[i * 7 + 3], y2: rows[i * 7 + 4], score: s};
+                        }
+                    }
+                    if (!best) return null;
+
+                    // Undo the letterbox: subtract padding, divide by ratio to
+                    // return to source-frame pixel coordinates before cropping.
+                    let bx = Math.max(0, (best.x1 - dw) / ratio), by = Math.max(0, (best.y1 - dh) / ratio);
+                    let bw = Math.min(canvas.width - bx, (best.x2 - best.x1) / ratio);
+                    let bh = Math.min(canvas.height - by, (best.y2 - best.y1) / ratio);
+                    if (bw < 4 || bh < 4) return null;
+
+                    // 2. OCR — crop → 128×64 RGB uint8 NHWC.
+                    const oPix = toImageData(canvas, bx, by, bw, bh, OCR_W, OCR_H);
+                    const oIn = new Uint8Array(OCR_H * OCR_W * 3);
+                    for (let i = 0; i < OCR_H * OCR_W; i++) {
+                        oIn[i * 3] = oPix[i * 4];
+                        oIn[i * 3 + 1] = oPix[i * 4 + 1];
+                        oIn[i * 3 + 2] = oPix[i * 4 + 2];
+                    }
+                    const ocrOut = await sessions.ocr.run({input: new ort.Tensor("uint8", oIn, [1, OCR_H, OCR_W, 3])});
+                    const logits = ocrOut.plate.data;              // flat [10*37]
+                    let plate = "";
+                    for (let slot = 0; slot < 10; slot++) {
+                        let mi = 0, mv = -Infinity;
+                        for (let c = 0; c < 37; c++) {
+                            const v = logits[slot * 37 + c];
+                            if (v > mv) { mv = v; mi = c; }
+                        }
+                        const ch = ALPHABET[mi];
+                        if (ch !== "_") plate += ch;
+                    }
+                    if (!plate) return null;
+                    return {plate: plate, confidence: best.score, box: [Math.round(bx), Math.round(by), Math.round(bw), Math.round(bh)]};
+                } catch (_) {
+                    return null;
+                }
             },
             async available() { try { await ensureLoaded(); return ready; } catch (_) { return false; } },
         };
