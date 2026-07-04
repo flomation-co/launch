@@ -102,6 +102,19 @@ type formComponent struct {
 	// photo from the device's gallery instead of forcing capture.
 	AllowGallery bool `json:"allow_gallery,omitempty"`
 
+	// Recognition-field settings — apply to license_plate (and future
+	// in-browser recognition fields). CaptureMode "manual" (default) shows a
+	// tap-to-capture button; "auto" runs hands-off continuous detection.
+	// AutoSubmit (auto only) submits the form on a confident recognition.
+	// ConfidenceThreshold gates auto acceptance. PrivacyNotice is an
+	// informational banner (not a gating consent checkbox); ShowPrivacyNotice
+	// defaults to true (nil = show).
+	CaptureMode         string   `json:"capture_mode,omitempty"`
+	AutoSubmit          bool     `json:"auto_submit,omitempty"`
+	ConfidenceThreshold *float64 `json:"confidence_threshold,omitempty"`
+	PrivacyNotice       string   `json:"privacy_notice,omitempty"`
+	ShowPrivacyNotice   *bool    `json:"show_privacy_notice,omitempty"`
+
 	// VisibleIf, when set, makes this component conditionally visible based
 	// on the answers to earlier fields. Nil means "always visible" (the
 	// default for every existing form). The client evaluates the same rule

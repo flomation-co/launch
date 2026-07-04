@@ -643,6 +643,16 @@
             font-family: 'SF Mono', 'Fira Code', monospace;
             word-break: break-all;
         }
+        .field-privacy-notice {
+            font-size: 12px;
+            line-height: 1.45;
+            color: var(--text-muted);
+            background: rgba(139, 92, 246, 0.08);
+            border: 1px solid rgba(139, 92, 246, 0.25);
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin: 6px 0 10px;
+        }
         .upload-status.uploading {
             color: rgba(139, 92, 246, 0.8);
         }
@@ -2130,6 +2140,262 @@
         container.appendChild(group);
     }
 
+    // ---- In-browser recognition framework (lazy, gated per field) --------
+    // Third-party ML libraries and model weights are NOT bundled in this
+    // page. They are fetched on demand — only when a recognition field is
+    // actually used — and only from this same origin (self-hosted under
+    // /recognition/*), so the page's CSP stays tight. A form without a
+    // recognition field downloads none of this.
+    const RECOGNITION_BASE = "/recognition";
+    const _scriptPromises = {};
+    function loadScriptOnce(url) {
+        if (_scriptPromises[url]) return _scriptPromises[url];
+        _scriptPromises[url] = new Promise((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = url; s.async = true;
+            s.onload = () => resolve();
+            s.onerror = () => reject(new Error("failed to load " + url));
+            document.head.appendChild(s);
+        });
+        return _scriptPromises[url];
+    }
+
+    // plateRecogniser lazily loads onnxruntime-web + the plate models the
+    // first time it's needed. If anything is missing (models not deployed,
+    // unsupported browser) it reports unavailable and the field falls back
+    // to manual entry rather than emitting a wrong read.
+    const plateRecogniser = (() => {
+        let loadPromise = null, ready = false, sessions = null;
+        async function ensureLoaded() {
+            if (loadPromise) return loadPromise;
+            loadPromise = (async () => {
+                await loadScriptOnce(RECOGNITION_BASE + "/ort/ort.min.js");
+                if (typeof window.ort === "undefined") throw new Error("ort unavailable");
+                window.ort.env.wasm.wasmPaths = RECOGNITION_BASE + "/ort/";
+                sessions = {
+                    det: await window.ort.InferenceSession.create(RECOGNITION_BASE + "/plate/detector.onnx"),
+                    ocr: await window.ort.InferenceSession.create(RECOGNITION_BASE + "/plate/ocr.onnx"),
+                };
+                ready = true;
+            })();
+            return loadPromise;
+        }
+        return {
+            // detect(canvas) → {plate, confidence, box} or null.
+            async detect(canvas) {
+                try { await ensureLoaded(); } catch (_) { return null; }
+                if (!ready || !sessions) return null;
+                // MODEL CONTRACT — finalise for the chosen ONNX pair:
+                //   1. preprocess canvas → detector input tensor
+                //   2. sessions.det → boxes + scores (NMS) → best plate box
+                //   3. crop box → OCR input tensor → sessions.ocr → decode text
+                // Return {plate, confidence, box}. Until the specific model's
+                // pre/post-processing is wired, return null so the field uses
+                // manual entry instead of emitting an unverified read.
+                return null;
+            },
+            async available() { try { await ensureLoaded(); return ready; } catch (_) { return false; } },
+        };
+    })();
+
+    // renderLicensePlate captures a camera frame, recognises the plate in the
+    // browser, and stores a composite value {image, plate, confidence}. Two
+    // capture modes (author-chosen): "manual" (tap to capture) and "auto"
+    // (hands-off continuous detection, optionally auto-submitting the form).
+    // A manual text input is always available as a fallback.
+    function renderLicensePlate(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        formValues[component.name] = null;
+
+        // Informational privacy notice (not a gating consent checkbox).
+        if (component.show_privacy_notice !== false && component.privacy_notice) {
+            const notice = document.createElement("div");
+            notice.classList.add("field-privacy-notice");
+            notice.textContent = component.privacy_notice;
+            group.appendChild(notice);
+        }
+
+        const isAuto = component.capture_mode === "auto";
+        const minConfidence = typeof component.confidence_threshold === "number" ? component.confidence_threshold : 0.6;
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("upload-wrapper");
+
+        const video = document.createElement("video");
+        video.classList.add("camera-video");
+        video.playsInline = true; video.muted = true; video.autoplay = true;
+        video.style.display = "none";
+
+        const preview = document.createElement("img");
+        preview.classList.add("upload-preview");
+        preview.style.display = "none";
+
+        const actions = document.createElement("div");
+        actions.classList.add("upload-actions");
+
+        // Manual-entry fallback — always present, so unsupported browsers or a
+        // failed recognition can still complete the form by typing the plate.
+        const manualInput = document.createElement("input");
+        manualInput.type = "text";
+        manualInput.placeholder = component.placeholder || "Enter licence plate manually";
+        manualInput.id = "input-" + component.name;
+        manualInput.oninput = (e) => {
+            const plate = e.target.value.trim();
+            formValues[component.name] = plate ? {plate: plate} : null;
+            validateForm(form);
+        };
+        applyReadOnly(manualInput, component);
+
+        const status = document.createElement("span");
+        status.classList.add("upload-status");
+        const hasMediaDevices = navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+
+        let stream = null, scanFrameId = null, lastFrameAt = 0;
+        let stableCount = 0, stablePlate = "";
+
+        function stopStream() {
+            if (scanFrameId !== null) { cancelAnimationFrame(scanFrameId); scanFrameId = null; }
+            if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+            video.srcObject = null; video.style.display = "none";
+        }
+
+        function frameToCanvas() {
+            const canvas = document.createElement("canvas");
+            canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+            canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+            return canvas;
+        }
+
+        // commit uploads the frame and records the composite value; when auto
+        // mode + auto_submit and the form is otherwise valid, it submits.
+        async function commit(canvas, recognition) {
+            stopStream();
+            canvas.toBlob(async (blob) => {
+                if (!blob) return;
+                preview.src = URL.createObjectURL(blob);
+                preview.style.display = "block";
+                const file = new File([blob], "plate.png", {type: "image/png"});
+                const token = await uploadFileToLauncher(component.name, file, status);
+                const value = {plate: (recognition && recognition.plate) || "", image: token || null};
+                if (recognition && typeof recognition.confidence === "number") value.confidence = recognition.confidence;
+                if (recognition && recognition.box) value.box = recognition.box;
+                formValues[component.name] = value;
+                if (value.plate) manualInput.value = value.plate;
+                status.textContent = value.plate ? ("Read: " + value.plate) : "Photo captured — enter the plate manually";
+                status.className = "upload-status done";
+                validateForm(form);
+                renderIdleActions();
+                if (isAuto && component.auto_submit && value.plate) {
+                    const submit = document.getElementById("submit");
+                    if (submit && !submit.disabled) submitForm(form);
+                }
+            }, "image/png");
+        }
+
+        async function startStream(onReady) {
+            if (!hasMediaDevices) { status.textContent = "Camera unavailable — enter the plate manually."; return; }
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment"}, audio: false});
+            } catch (_) {
+                status.textContent = "Camera unavailable — enter the plate manually.";
+                status.className = "upload-status error";
+                return;
+            }
+            video.srcObject = stream; video.style.display = "block"; preview.style.display = "none";
+            onReady();
+        }
+
+        // Manual: capture a single frame, try recognition, then commit.
+        async function manualCapture() {
+            const canvas = frameToCanvas();
+            status.textContent = "Reading plate…"; status.className = "upload-status uploading";
+            const recognition = await plateRecogniser.detect(canvas);
+            await commit(canvas, recognition);
+        }
+
+        // Auto: throttled detection loop; commit once a plate is confident and
+        // stable across a few frames (debounce against garbage reads).
+        function autoLoop() {
+            const loop = async () => {
+                if (!stream || video.readyState < 2) { scanFrameId = requestAnimationFrame(loop); return; }
+                const now = performance.now();
+                if (now - lastFrameAt < 150) { scanFrameId = requestAnimationFrame(loop); return; }
+                lastFrameAt = now;
+                const canvas = frameToCanvas();
+                let recognition = null;
+                try { recognition = await plateRecogniser.detect(canvas); } catch (_) {}
+                if (recognition && recognition.plate && recognition.confidence >= minConfidence) {
+                    if (recognition.plate === stablePlate) { stableCount++; } else { stablePlate = recognition.plate; stableCount = 1; }
+                    status.textContent = "Detecting: " + recognition.plate;
+                    if (stableCount >= 3) { await commit(canvas, recognition); return; }
+                }
+                scanFrameId = requestAnimationFrame(loop);
+            };
+            scanFrameId = requestAnimationFrame(loop);
+        }
+
+        function renderIdleActions() {
+            actions.innerHTML = "";
+            if (!hasMediaDevices) return;
+            const scanBtn = document.createElement("button");
+            scanBtn.type = "button";
+            scanBtn.classList.add("btn", "btn-secondary");
+            scanBtn.textContent = isAuto ? "Start camera" : "Scan plate";
+            scanBtn.onclick = () => startStream(() => {
+                if (isAuto) { renderStopActions(); autoLoop(); }
+                else renderCaptureActions();
+            });
+            if (component.read_only) scanBtn.disabled = true;
+            actions.appendChild(scanBtn);
+        }
+
+        function renderCaptureActions() {
+            actions.innerHTML = "";
+            const capBtn = document.createElement("button");
+            capBtn.type = "button";
+            capBtn.classList.add("btn", "btn-secondary");
+            capBtn.textContent = "Capture";
+            capBtn.onclick = manualCapture;
+            actions.appendChild(capBtn);
+            const cancelBtn = document.createElement("button");
+            cancelBtn.type = "button";
+            cancelBtn.classList.add("btn", "btn-secondary");
+            cancelBtn.textContent = "Cancel";
+            cancelBtn.onclick = () => { stopStream(); renderIdleActions(); };
+            actions.appendChild(cancelBtn);
+        }
+
+        function renderStopActions() {
+            actions.innerHTML = "";
+            const stopBtn = document.createElement("button");
+            stopBtn.type = "button";
+            stopBtn.classList.add("btn", "btn-secondary");
+            stopBtn.textContent = "Stop camera";
+            stopBtn.onclick = () => { stopStream(); renderIdleActions(); };
+            actions.appendChild(stopBtn);
+        }
+
+        if (!hasMediaDevices) {
+            status.textContent = "Live capture not supported on this device — enter the plate manually.";
+        } else {
+            status.textContent = isAuto
+                ? "Click Start camera — the plate is read automatically."
+                : "Click Scan plate to use your camera, or type the plate manually below.";
+        }
+        renderIdleActions();
+
+        wrapper.appendChild(video);
+        wrapper.appendChild(preview);
+        wrapper.appendChild(actions);
+        wrapper.appendChild(manualInput);
+        wrapper.appendChild(status);
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
     function renderSectionHeader(form, container, component) {
         const heading = document.createElement("h2");
         heading.classList.add("section-header");
@@ -2242,7 +2508,7 @@
         // Types where the render function seeds formValues itself
         // (needs runtime access to the options list, numeric bounds, or
         // a structured object shape).
-        const SELF_SEEDED = new Set(["checkboxes", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "ranking"]);
+        const SELF_SEEDED = new Set(["checkboxes", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "license_plate", "ranking"]);
 
         for (const component of components) {
             // Seed formValues with default_value when set, so unedited
@@ -2306,6 +2572,7 @@
             case "camera": renderCamera(form, container, component); break;
             case "file_upload": renderFileUpload(form, container, component); break;
             case "qr_scanner": renderQrScanner(form, container, component); break;
+            case "license_plate": renderLicensePlate(form, container, component); break;
             case "ranking": renderRanking(form, container, component); break;
             default: renderTextbox(form, container, component); break;
         }
@@ -2423,6 +2690,10 @@
                     // Required-satisfied once a code string is present,
                     // either scanned or manually typed.
                     if (typeof v !== "string" || v.trim() === "") valid = false;
+                } else if (comp.type === "license_plate") {
+                    // Composite value {plate, image?, confidence?} — satisfied
+                    // once a plate string is present (recognised or typed).
+                    if (!v || typeof v !== "object" || typeof v.plate !== "string" || v.plate.trim() === "") valid = false;
                 } else if (comp.type === "ranking") {
                     // Ranking always has a value (seeded from options
                     // in definition order at render time); "required"

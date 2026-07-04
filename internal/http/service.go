@@ -852,8 +852,8 @@ const blobMaxUploadBytes int64 = 25 * 1024 * 1024
 
 // findUploadComponent walks the form definition for a component whose
 // name matches and whose type is one of the upload-capable field types
-// (eSignature, camera, file_upload). Returns nil on no match so the
-// handler can 400 without leaking existence of other fields.
+// (eSignature, camera, file_upload, license_plate). Returns nil on no match
+// so the handler can 400 without leaking existence of other fields.
 func findUploadComponent(def formDefinition, name string) *formComponent {
 	for _, page := range def.Pages {
 		for i := range page.Components {
@@ -862,7 +862,7 @@ func findUploadComponent(def formDefinition, name string) *formComponent {
 				continue
 			}
 			switch c.Type {
-			case "esignature", "camera", "file_upload":
+			case "esignature", "camera", "file_upload", "license_plate":
 				return c
 			}
 			return nil
