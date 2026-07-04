@@ -20,6 +20,24 @@ type formDefinition struct {
 	Description  string     `json:"description"`
 	Pages        []formPage `json:"pages"`
 	RequireLogin bool       `json:"require_login,omitempty"`
+
+	// DataSource, when set, names a flow that is run when the form loads;
+	// its outputs become ${data.X} substitution values usable in labels,
+	// placeholders and default values. Nil (the default for every existing
+	// form) means no autofill. See formDataResolver for the caching model.
+	DataSource *formDataSource `json:"data_source,omitempty"`
+}
+
+// formDataSource configures form-field autofill from a flow's outputs.
+type formDataSource struct {
+	// FlowID is the flow run to produce ${data.X} values. It executes via
+	// its manual trigger with no input, so the result is identical for every
+	// viewer — which is exactly why a burst of concurrent loads can share a
+	// single cached execution.
+	FlowID string `json:"flow_id"`
+	// TimeoutSeconds bounds how long a form load waits for the flow on a
+	// cache miss. Zero uses the resolver default.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 }
 
 type formPage struct {
@@ -41,6 +59,14 @@ type formComponent struct {
 	ReadOnly     bool         `json:"read_only,omitempty"`
 	DefaultValue string       `json:"default_value,omitempty"`
 	Options      []formOption `json:"options,omitempty"`
+
+	// OptionsSource, when set on an option-based field (radio, dropdown,
+	// checkboxes, ranking), names a key in the data-source flow's outputs
+	// whose value is the option list. Options are fetched by the browser
+	// after first paint (so a slow flow doesn't block the form) and, on
+	// submit, baked into Options so the existing whitelist enforcement
+	// applies. Empty means the static Options above are used.
+	OptionsSource string `json:"options_source,omitempty"`
 
 	// Numeric constraints — apply to number, slider, and rating types.
 	// Pointer types distinguish "unset" from "zero", which matters:
@@ -131,12 +157,17 @@ type formOption struct {
 type substitutionContext struct {
 	UserVariables map[string]string
 	QueryParams   map[string]string
+	// DataVariables holds ${data.X} values — the outputs of the form's
+	// data-source flow, resolved (and cached) at render time. Nil when the
+	// form has no data source.
+	DataVariables map[string]string
 }
 
 var substitutionPattern = regexp.MustCompile(`\$\{([\w.-]+)\}`)
 
-// applySubstitutions replaces ${user.X} / ${query.X} references in s with
-// values from ctx. Unknown references resolve to empty string (matching
+// applySubstitutions replaces ${user.X} / ${query.X} / ${data.X} references
+// in s with values from ctx (${data.X} being the outputs of the form's
+// data-source flow). Unknown references resolve to empty string (matching
 // the executor's ${flow.X} / ${user.X} semantic). Other namespaces
 // (${secrets.X}, ${env.X}, ${flow.X}, ${var.X}) are intentionally left
 // in place — they're either irrelevant at form render time or would
@@ -164,6 +195,11 @@ func applySubstitutions(s string, ctx substitutionContext) string {
 				return ""
 			}
 			return ctx.QueryParams[key]
+		case "data":
+			if ctx.DataVariables == nil {
+				return ""
+			}
+			return ctx.DataVariables[key]
 		default:
 			return match
 		}
@@ -208,6 +244,98 @@ func resolveFormForRender(def formDefinition, ctx substitutionContext) formDefin
 		resolved.Pages[pi] = formPage{Components: comps}
 	}
 	return resolved
+}
+
+// formUsesDataNamespace reports whether any substitutable string in the form
+// references ${data.X}. handleForm uses this to decide whether to run the
+// data-source flow synchronously at render (blocking the GET) — a form that
+// only uses the flow for dynamic dropdown options skips the blocking resolve
+// and lets the browser fetch the data after first paint.
+func formUsesDataNamespace(def formDefinition) bool {
+	if strings.Contains(def.Title, "${data.") || strings.Contains(def.Description, "${data.") {
+		return true
+	}
+	for _, page := range def.Pages {
+		for _, c := range page.Components {
+			if strings.Contains(c.Label, "${data.") ||
+				strings.Contains(c.Placeholder, "${data.") ||
+				strings.Contains(c.DefaultValue, "${data.") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// formHasDynamicOptions reports whether any option-based field draws its
+// options from the data-source flow (options_source set).
+func formHasDynamicOptions(def formDefinition) bool {
+	for _, page := range def.Pages {
+		for _, c := range page.Components {
+			if c.OptionsSource != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// optionsFromOutput normalises a data-source output value into a form option
+// list. Accepts an array of strings (["a","b"] → label==value) or an array of
+// objects ([{label,value}] / [{name,value}]). Anything else yields no options.
+func optionsFromOutput(val interface{}) []formOption {
+	arr, ok := val.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]formOption, 0, len(arr))
+	for _, entry := range arr {
+		switch e := entry.(type) {
+		case string:
+			out = append(out, formOption{Label: e, Value: e})
+		case map[string]interface{}:
+			label := answerString(e["label"])
+			if label == "" {
+				label = answerString(e["name"])
+			}
+			value := answerString(e["value"])
+			if value == "" {
+				value = label
+			}
+			if label == "" {
+				label = value
+			}
+			if label == "" && value == "" {
+				continue
+			}
+			out = append(out, formOption{Label: label, Value: value})
+		}
+	}
+	return out
+}
+
+// bakeDynamicOptions returns a copy of def with each option_source field's
+// Options populated from the resolved data-source outputs. Used on submit so
+// the whitelist enforcement in sanitiseOptionSubmissions covers dynamically-
+// sourced options exactly as it does static ones. Pure — does not mutate def.
+func bakeDynamicOptions(def formDefinition, outputs map[string]interface{}) formDefinition {
+	if len(outputs) == 0 {
+		return def
+	}
+	baked := def
+	baked.Pages = make([]formPage, len(def.Pages))
+	for pi, page := range def.Pages {
+		comps := make([]formComponent, len(page.Components))
+		for ci, c := range page.Components {
+			comp := c
+			if comp.OptionsSource != "" {
+				comp.Options = optionsFromOutput(outputs[comp.OptionsSource])
+			}
+			comps[ci] = comp
+		}
+		baked.Pages[pi] = formPage{Components: comps, VisibleIf: page.VisibleIf}
+	}
+	return baked
 }
 
 // sanitiseOptionSubmissions enforces the option whitelist for radio,

@@ -1,0 +1,224 @@
+package http
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
+)
+
+const (
+	// defaultFormDataTimeout bounds how long a form load blocks on the
+	// data-source flow on a cache MISS. Only the first uncached load pays
+	// this; everyone else is served from cache.
+	defaultFormDataTimeout = 20 * time.Second
+	// formDataCacheTTL is how long a resolved result is reused before the
+	// flow is run again. Short enough that prefill data stays reasonably
+	// fresh, long enough that a burst of loads collapses to one execution.
+	formDataCacheTTL = 30 * time.Second
+	// formDataPollInterval is the cadence for polling execution status while
+	// waiting for the data-source flow to finish.
+	formDataPollInterval = 1 * time.Second
+)
+
+// formDataEntry is a cached data-source result with an expiry. The raw
+// outputs are stored (not the flattened strings) so the same cached run can
+// feed both ${data.X} scalar substitution and dynamic dropdown option lists.
+type formDataEntry struct {
+	outputs   map[string]interface{}
+	expiresAt time.Time
+}
+
+// formDataResolver runs a form's data-source flow and exposes its outputs as
+// ${data.X} substitution values. Results are cached per flow ID for a short
+// TTL and de-duplicated with singleflight, so a burst of concurrent (often
+// anonymous) form loads collapses to a SINGLE flow execution rather than one
+// per viewer. The flow runs with no per-request input, so its output is the
+// same for everyone — which is what makes flow-ID-only caching correct.
+type formDataResolver struct {
+	client       *http.Client
+	apiURL       string
+	timeout      time.Duration
+	ttl          time.Duration
+	pollInterval time.Duration
+
+	group singleflight.Group
+	mu    sync.Mutex
+	cache map[string]formDataEntry
+}
+
+func newFormDataResolver(client *http.Client, apiURL string) *formDataResolver {
+	return &formDataResolver{
+		client:       client,
+		apiURL:       strings.TrimRight(apiURL, "/"),
+		timeout:      defaultFormDataTimeout,
+		ttl:          formDataCacheTTL,
+		pollInterval: formDataPollInterval,
+		cache:        map[string]formDataEntry{},
+	}
+}
+
+// Resolve returns the ${data.X} string map for a data-source flow — the raw
+// outputs flattened to strings (arrays joined, whole floats de-".0"'d). See
+// ResolveRaw for the caching / dedup / failure semantics.
+func (r *formDataResolver) Resolve(flowID string, timeoutSeconds int) map[string]string {
+	raw := r.ResolveRaw(flowID, timeoutSeconds)
+	if raw == nil {
+		return nil
+	}
+	return flattenOutputs(raw)
+}
+
+// ResolveRaw returns the raw outputs of a data-source flow. It never returns
+// an error: on timeout or failure it returns an empty map, so the form still
+// renders (just without the data), matching the "unknown reference resolves
+// to empty" substitution semantic. A nil resolver (mTLS not configured,
+// tests) short-circuits to nil. Results are cached per flow ID for a short
+// TTL and concurrent loads are de-duplicated with singleflight, so a burst
+// of (often anonymous) form loads collapses to a SINGLE flow execution.
+func (r *formDataResolver) ResolveRaw(flowID string, timeoutSeconds int) map[string]interface{} {
+	if r == nil || flowID == "" {
+		return nil
+	}
+
+	if v, ok := r.cached(flowID); ok {
+		return v
+	}
+
+	// Collapse concurrent loads of the same flow into one execution.
+	v, _, _ := r.group.Do(flowID, func() (interface{}, error) {
+		// Re-check inside the flight: another goroutine may have just filled
+		// the cache while we were queued behind it.
+		if v, ok := r.cached(flowID); ok {
+			return v, nil
+		}
+		timeout := r.timeout
+		if timeoutSeconds > 0 {
+			timeout = time.Duration(timeoutSeconds) * time.Second
+		}
+		outputs := r.run(flowID, timeout)
+		r.store(flowID, outputs)
+		return outputs, nil
+	})
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
+	return nil
+}
+
+func (r *formDataResolver) cached(flowID string) (map[string]interface{}, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.cache[flowID]
+	if !ok || time.Now().After(e.expiresAt) {
+		return nil, false
+	}
+	return e.outputs, true
+}
+
+func (r *formDataResolver) store(flowID string, outputs map[string]interface{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cache[flowID] = formDataEntry{outputs: outputs, expiresAt: time.Now().Add(r.ttl)}
+}
+
+// run creates a data-source execution and polls for its outputs, mirroring
+// the Start Flow action's create+poll contract against the internal API.
+func (r *formDataResolver) run(flowID string, timeout time.Duration) map[string]interface{} {
+	executionID, err := r.createExecution(flowID)
+	if err != nil {
+		log.WithFields(log.Fields{"error": err, "flow_id": flowID}).
+			Warn("form data-source: could not start flow; rendering without ${data.X}")
+		return map[string]interface{}{}
+	}
+
+	deadline := time.Now().Add(timeout)
+	pollURL := fmt.Sprintf("%s/api/v1/internal/execution/%s", r.apiURL, executionID)
+	for time.Now().Before(deadline) {
+		time.Sleep(r.pollInterval)
+		if outputs, done := r.pollResult(pollURL); done {
+			if outputs == nil {
+				return map[string]interface{}{}
+			}
+			return outputs
+		}
+	}
+	log.WithFields(log.Fields{"flow_id": flowID, "execution_id": executionID}).
+		Warn("form data-source: flow did not complete in time; rendering without ${data.X}")
+	return map[string]interface{}{}
+}
+
+// createExecution POSTs to the internal execute endpoint and returns the new
+// execution ID. The flow runs via its manual trigger (chosen API-side).
+func (r *formDataResolver) createExecution(flowID string) (string, error) {
+	url := fmt.Sprintf("%s/api/v1/internal/flo/%s/execute", r.apiURL, flowID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBufferString("{}"))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("execute returned status %d", resp.StatusCode)
+	}
+
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.ID == "" {
+		return "", fmt.Errorf("execute returned an empty execution id")
+	}
+	return out.ID, nil
+}
+
+// pollResult fetches the execution once and returns (outputs, true) when it
+// has finished. A transient fetch/parse error returns (nil, false) so the
+// caller simply polls again until the deadline.
+func (r *formDataResolver) pollResult(pollURL string) (map[string]interface{}, bool) {
+	req, err := http.NewRequest(http.MethodGet, pollURL, nil)
+	if err != nil {
+		return nil, false
+	}
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var data struct {
+		ExecutionStatus string                 `json:"execution_status"`
+		Result          map[string]interface{} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, false
+	}
+	if data.ExecutionStatus == "executed" {
+		return data.Result, true
+	}
+	return nil, false
+}
+
+// flattenOutputs turns a flow's output map into ${data.X} string values.
+// Nested objects/arrays stringify via answerString (shared with the
+// conditional-visibility evaluator); scalar outputs are the intended target.
+func flattenOutputs(outputs map[string]interface{}) map[string]string {
+	out := make(map[string]string, len(outputs))
+	for k, v := range outputs {
+		out[k] = answerString(v)
+	}
+	return out
+}
