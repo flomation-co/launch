@@ -388,6 +388,83 @@ func TestMetaText_StripsUnresolvedTokensAndCollapsesWhitespace(t *testing.T) {
 	Expect(metaText("Line one\nLine two\t\ttabbed   spaced")).To(Equal("Line one Line two tabbed spaced"))
 }
 
+func TestOptionsFromOutput_StringsObjectsAndJunk(t *testing.T) {
+	RegisterTestingT(t)
+
+	// Array of strings → label == value.
+	Expect(optionsFromOutput([]interface{}{"UK", "US"})).To(Equal([]formOption{
+		{Label: "UK", Value: "UK"}, {Label: "US", Value: "US"},
+	}))
+
+	// Array of {label,value} objects.
+	Expect(optionsFromOutput([]interface{}{
+		map[string]interface{}{"label": "United Kingdom", "value": "gb"},
+		map[string]interface{}{"name": "United States", "value": "us"}, // name alias
+	})).To(Equal([]formOption{
+		{Label: "United Kingdom", Value: "gb"},
+		{Label: "United States", Value: "us"},
+	}))
+
+	// Object with only a label falls back to using it as the value too.
+	Expect(optionsFromOutput([]interface{}{
+		map[string]interface{}{"label": "Solo"},
+	})).To(Equal([]formOption{{Label: "Solo", Value: "Solo"}}))
+
+	// Non-array yields no options; empty array yields an empty (non-nil) list.
+	Expect(optionsFromOutput("not an array")).To(BeNil())
+	Expect(optionsFromOutput([]interface{}{})).To(Equal([]formOption{}))
+}
+
+func TestFormUsesDataNamespace(t *testing.T) {
+	RegisterTestingT(t)
+
+	// ${data.X} in a default value → true.
+	usesInField := formDefinition{Pages: []formPage{{Components: []formComponent{
+		{Name: "a", DefaultValue: "Hi ${data.name}"},
+	}}}}
+	Expect(formUsesDataNamespace(usesInField)).To(BeTrue())
+
+	// ${data.X} in the title → true.
+	Expect(formUsesDataNamespace(formDefinition{Title: "Welcome ${data.company}"})).To(BeTrue())
+
+	// A form that only uses the flow for dynamic OPTIONS (no ${data.X}
+	// scalar anywhere) → false, so the GET isn't blocked on the flow.
+	optionsOnly := formDefinition{Pages: []formPage{{Components: []formComponent{
+		{Name: "country", Type: "dropdown", OptionsSource: "countries"},
+	}}}}
+	Expect(formUsesDataNamespace(optionsOnly)).To(BeFalse())
+	Expect(formHasDynamicOptions(optionsOnly)).To(BeTrue())
+}
+
+func TestBakeDynamicOptions_PopulatesAndEnforcesWhitelist(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{Pages: []formPage{{Components: []formComponent{
+		{Name: "country", Type: "dropdown", OptionsSource: "countries"},
+	}}}}
+	outputs := map[string]interface{}{
+		"countries": []interface{}{
+			map[string]interface{}{"label": "United Kingdom", "value": "gb"},
+			map[string]interface{}{"label": "United States", "value": "us"},
+		},
+	}
+
+	baked := bakeDynamicOptions(def, outputs)
+	Expect(baked.Pages[0].Components[0].Options).To(Equal([]formOption{
+		{Label: "United Kingdom", Value: "gb"},
+		{Label: "United States", Value: "us"},
+	}))
+	// Original is untouched (pure function).
+	Expect(def.Pages[0].Components[0].Options).To(BeEmpty())
+
+	// The baked options now feed the existing whitelist enforcement: a
+	// submitted value in the list survives, one outside it is cleared.
+	Expect(sanitiseOptionSubmissions(map[string]interface{}{"country": "gb"}, baked)).
+		To(HaveKeyWithValue("country", "gb"))
+	Expect(sanitiseOptionSubmissions(map[string]interface{}{"country": "atlantis"}, baked)).
+		To(HaveKeyWithValue("country", ""))
+}
+
 func TestEvalVisibility_NilAndEmptyRuleAlwaysVisible(t *testing.T) {
 	RegisterTestingT(t)
 

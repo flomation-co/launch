@@ -52,6 +52,7 @@ type Service struct {
 	db             *persistence.Service
 	facebookIndex  *facebook.PageIndex
 	voiceCalls     *twilio.VoiceCallManager
+	formData       *formDataResolver // caches ${data.X} form autofill results
 }
 
 func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, telegramSvc *telegrampkg.Service, db *persistence.Service) (*Service, error) {
@@ -73,6 +74,7 @@ func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent
 		agent:         agentSvc,
 		facebookIndex: facebook.NewPageIndex(),
 		voiceCalls:    twilio.NewVoiceCallManager(),
+		formData:      newFormDataResolver(apiClient, config.InternalAPIURL()),
 	}
 
 	templ := template.Must(template.ParseFS(assets.Templates, "files/form.html"))
@@ -142,6 +144,7 @@ func (s *Service) configure() error {
 	s.engine.POST("/webhook/:id", s.handleWebhook)
 	s.engine.GET("/qr/:id", s.handleQr)
 	s.engine.GET("/form/:id", s.handleForm)
+	s.engine.GET("/form/:id/data", s.handleFormData)
 	s.engine.POST("/form/:id", s.submitForm)
 	s.engine.POST("/form/:id/upload", s.uploadFormBlob)
 	s.engine.GET("/image/:id", s.handleImageLoad)
@@ -651,6 +654,21 @@ func (s *Service) submitForm(c *gin.Context) {
 			ctx.UserVariables = vars
 		}
 	}
+	// Re-resolve the data source on submit (served from the render-time
+	// cache in the common case). Its outputs are used two ways: as ${data.X}
+	// values so a read-only field bakes the same value it showed, and to
+	// bake dynamic option lists into the definition so the whitelist below
+	// covers dynamically-sourced options exactly as it does static ones.
+	var dataOutputs map[string]interface{}
+	if def.DataSource != nil && def.DataSource.FlowID != "" {
+		if formUsesDataNamespace(def) || formHasDynamicOptions(def) {
+			dataOutputs = s.formData.ResolveRaw(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
+			ctx.DataVariables = flattenOutputs(dataOutputs)
+		}
+	}
+	if formHasDynamicOptions(def) {
+		def = bakeDynamicOptions(def, dataOutputs)
+	}
 	resolved := resolveFormForRender(def, ctx)
 	// Sanitisation pipeline, applied in this order:
 	//   1. Enforce option whitelist for radio/dropdown/checkboxes.
@@ -947,6 +965,14 @@ func (s *Service) handleForm(c *gin.Context) {
 			log.WithFields(log.Fields{"error": err}).Warn("failed to load user variables for form; rendering without ${user.X}")
 		}
 	}
+	// ${data.X} — run the form's data-source flow (cached + de-duplicated)
+	// and expose its outputs. Only block the GET when the form actually uses
+	// a ${data.X} scalar; a form that uses the flow ONLY for dynamic dropdown
+	// options skips this and lets the browser fetch /form/:id/data after
+	// first paint. Failure/timeout resolves to empty values.
+	if def.DataSource != nil && def.DataSource.FlowID != "" && formUsesDataNamespace(def) {
+		ctx.DataVariables = s.formData.Resolve(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
+	}
 	resolved := resolveFormForRender(def, ctx)
 
 	resolvedBytes, _ := json.Marshal(resolved)
@@ -956,6 +982,52 @@ func (s *Service) handleForm(c *gin.Context) {
 		"MetaTitle":       metaText(resolved.Title),
 		"MetaDescription": metaText(resolved.Description),
 	})
+}
+
+// handleFormData runs the form's data-source flow (cached + de-duplicated)
+// and returns its outputs as JSON. The browser calls this after first paint
+// to populate dynamic dropdown options, so a slow flow never blocks the form
+// GET. Honours the same login gate as the form itself; returns an empty
+// object when the form has no data source or the flow fails.
+func (s *Service) handleFormData(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" || uuid.Validate(id) != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	tr, err := s.trigger.GetTriggerByID(id)
+	if err != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	if tr == nil || tr.Type != launch.TriggerTypeForm {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+
+	def, _ := parseFormDefinition(tr.Data)
+
+	// Same login gate as the form view: a login-required form must not leak
+	// its data-source outputs to an unauthenticated caller.
+	cookie, _ := c.Cookie("flomation-token")
+	token := extractSessionToken(c.GetHeader("Authorization"), cookie)
+	userID := s.resolveSessionUser(token)
+	if def.RequireLogin && userID == "" {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+
+	if def.DataSource == nil || def.DataSource.FlowID == "" {
+		c.JSON(http.StatusOK, gin.H{})
+		return
+	}
+
+	outputs := s.formData.ResolveRaw(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
+	if outputs == nil {
+		outputs = map[string]interface{}{}
+	}
+	c.JSON(http.StatusOK, outputs)
 }
 
 // queryParamsMap flattens c.Request.URL.Query() to a string→string map

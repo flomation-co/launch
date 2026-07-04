@@ -591,6 +591,20 @@
 
         .hidden { display: none; }
 
+        /* A field whose options are being fetched from its data-source flow.
+           Dims the (as-yet-empty) control and shows a small loading note. */
+        .field-wrapper.options-loading {
+            opacity: 0.6;
+            position: relative;
+        }
+        .field-wrapper.options-loading::after {
+            content: "Loading options…";
+            display: block;
+            margin-top: 6px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
         .success-message {
             text-align: center;
             padding: 40px 20px;
@@ -2251,46 +2265,117 @@
                 }
             }
 
-            // Tag every DOM node the render function appends with the
-            // component name so applyVisibility can show/hide it. Recorded
-            // by span (before/after) rather than inside each of the 24
-            // render functions, so it works no matter how many elements a
-            // renderer emits.
-            const childrenBefore = pageContainer.childElementCount;
+            // Each component lives in its own wrapper tagged with the field
+            // name. applyVisibility toggles .hidden on the wrapper, and the
+            // wrapper lets us re-render a single field in place when its
+            // dynamic options arrive (see loadDynamicOptions).
+            const fieldWrapper = document.createElement("div");
+            fieldWrapper.className = "field-wrapper";
+            fieldWrapper.dataset.field = component.name;
+            pageContainer.appendChild(fieldWrapper);
+            renderComponentInto(form, fieldWrapper, component);
+        }
+    }
 
-            switch (component.type) {
-                case "text": renderTextbox(form, pageContainer, component); break;
-                case "multiline": renderMultiline(form, pageContainer, component); break;
-                case "number": renderNumber(form, pageContainer, component); break;
-                case "boolean": renderCheckbox(form, pageContainer, component); break;
-                case "radio": renderRadio(form, pageContainer, component); break;
-                case "checkboxes": renderCheckboxes(form, pageContainer, component); break;
-                case "dropdown": renderDropdown(form, pageContainer, component); break;
-                case "email": renderEmail(form, pageContainer, component); break;
-                case "phone": renderPhone(form, pageContainer, component); break;
-                case "url": renderUrl(form, pageContainer, component); break;
-                case "date": renderDate(form, pageContainer, component); break;
-                case "time": renderTime(form, pageContainer, component); break;
-                case "datetime": renderDateTime(form, pageContainer, component); break;
-                case "slider": renderSlider(form, pageContainer, component); break;
-                case "rating": renderRating(form, pageContainer, component); break;
-                case "section_header": renderSectionHeader(form, pageContainer, component); break;
-                case "divider": renderDivider(form, pageContainer, component); break;
-                case "info_text": renderInfoText(form, pageContainer, component); break;
-                case "location": renderLocation(form, pageContainer, component); break;
-                case "address": renderAddress(form, pageContainer, component); break;
-                case "esignature": renderESignature(form, pageContainer, component); break;
-                case "camera": renderCamera(form, pageContainer, component); break;
-                case "file_upload": renderFileUpload(form, pageContainer, component); break;
-                case "qr_scanner": renderQrScanner(form, pageContainer, component); break;
-                case "ranking": renderRanking(form, pageContainer, component); break;
-                default: renderTextbox(form, pageContainer, component); break;
-            }
+    // renderComponentInto renders a single component into the given container.
+    // Split out of renderPage so a field can be re-rendered in place once its
+    // options_source data loads.
+    function renderComponentInto(form, container, component) {
+        switch (component.type) {
+            case "text": renderTextbox(form, container, component); break;
+            case "multiline": renderMultiline(form, container, component); break;
+            case "number": renderNumber(form, container, component); break;
+            case "boolean": renderCheckbox(form, container, component); break;
+            case "radio": renderRadio(form, container, component); break;
+            case "checkboxes": renderCheckboxes(form, container, component); break;
+            case "dropdown": renderDropdown(form, container, component); break;
+            case "email": renderEmail(form, container, component); break;
+            case "phone": renderPhone(form, container, component); break;
+            case "url": renderUrl(form, container, component); break;
+            case "date": renderDate(form, container, component); break;
+            case "time": renderTime(form, container, component); break;
+            case "datetime": renderDateTime(form, container, component); break;
+            case "slider": renderSlider(form, container, component); break;
+            case "rating": renderRating(form, container, component); break;
+            case "section_header": renderSectionHeader(form, container, component); break;
+            case "divider": renderDivider(form, container, component); break;
+            case "info_text": renderInfoText(form, container, component); break;
+            case "location": renderLocation(form, container, component); break;
+            case "address": renderAddress(form, container, component); break;
+            case "esignature": renderESignature(form, container, component); break;
+            case "camera": renderCamera(form, container, component); break;
+            case "file_upload": renderFileUpload(form, container, component); break;
+            case "qr_scanner": renderQrScanner(form, container, component); break;
+            case "ranking": renderRanking(form, container, component); break;
+            default: renderTextbox(form, container, component); break;
+        }
+    }
 
-            for (let i = childrenBefore; i < pageContainer.childElementCount; i++) {
-                pageContainer.children[i].dataset.field = component.name;
+    // fieldWrapperFor returns the top-level wrapper element for a field name.
+    // Only wrappers carry data-field (nested inputs don't), so this uniquely
+    // locates a field's DOM subtree for in-place re-rendering.
+    function fieldWrapperFor(name) {
+        let found = null;
+        document.querySelectorAll("[data-field]").forEach((el) => {
+            if (el.dataset.field === name) found = el;
+        });
+        return found;
+    }
+
+    // normalizeOptions turns a data-source array into the {label,value} shape
+    // the option renderers expect. Accepts ["a","b"] or [{label,value}] /
+    // [{name,value}]. Mirrors optionsFromOutput in launch/internal/http/form.go.
+    function normalizeOptions(raw) {
+        if (!Array.isArray(raw)) return [];
+        const out = [];
+        for (const e of raw) {
+            if (typeof e === "string") {
+                out.push({label: e, value: e});
+            } else if (e && typeof e === "object") {
+                const label = String(e.label != null ? e.label : (e.name != null ? e.name : (e.value != null ? e.value : "")));
+                const value = String(e.value != null ? e.value : label);
+                if (label || value) out.push({label: label || value, value: value || label});
             }
         }
+        return out;
+    }
+
+    // loadDynamicOptions fetches the data-source flow's outputs after first
+    // paint and populates any option-based field with an options_source,
+    // re-rendering just that field in place. Runs asynchronously so a slow
+    // flow never blocks the form from appearing.
+    function loadDynamicOptions(form) {
+        const dynamic = [];
+        for (const page of form.pages)
+            for (const comp of page.components)
+                if (comp.options_source) dynamic.push(comp);
+        if (dynamic.length === 0) return;
+
+        dynamic.forEach((comp) => {
+            const w = fieldWrapperFor(comp.name);
+            if (w) w.classList.add("options-loading");
+        });
+
+        fetch("/form/" + FORM_ID + "/data", {headers: {"Accept": "application/json"}})
+            .then((r) => (r.ok ? r.json() : {}))
+            .then((data) => {
+                for (const comp of dynamic) {
+                    comp.options = normalizeOptions(data[comp.options_source]);
+                    const w = fieldWrapperFor(comp.name);
+                    if (w) {
+                        w.classList.remove("options-loading");
+                        w.innerHTML = "";
+                        renderComponentInto(form, w, comp);
+                    }
+                }
+                validateForm(form);
+            })
+            .catch(() => {
+                dynamic.forEach((comp) => {
+                    const w = fieldWrapperFor(comp.name);
+                    if (w) w.classList.remove("options-loading");
+                });
+            });
     }
 
     function validateForm(form) {
@@ -2447,6 +2532,9 @@
         // Without this, Submit stays disabled even when every required
         // field already has a valid value.
         validateForm(form);
+        // Populate any dynamic (flow-sourced) dropdown options after the
+        // form is on screen, so a slow data flow never delays first paint.
+        loadDynamicOptions(form);
     }
 
     function submitForm(form) {
