@@ -202,6 +202,11 @@ func (s *Service) configure() error {
 	// Configure in Slack App Settings → Interactivity & Shortcuts → Request URL.
 	s.engine.POST("/slack/:agent_id/interact", s.handleSlackInteraction)
 
+	// Human-in-the-Loop web click-link fallback (channel-agnostic). GET shows a
+	// confirm page (so email link-prefetch can't auto-answer); POST commits.
+	s.engine.GET("/respond/:token", s.handleHITLWebConfirm)
+	s.engine.POST("/respond/:token", s.handleHITLWebRespond)
+
 	// Google OAuth2 (public, browser-facing)
 	s.engine.GET("/auth/google/callback", s.handleGoogleAuthCallback)
 	s.engine.GET("/auth/google/identity", s.handleGoogleAuthInitiateIdentity)

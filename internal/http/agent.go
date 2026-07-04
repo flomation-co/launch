@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/agent"
@@ -121,6 +122,23 @@ func (s *Service) handleTelegramWebhook(c *gin.Context) {
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20)) // 1 MB limit
 	if err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	// Human-in-the-Loop: an inline-keyboard button press arrives as a
+	// callback_query. If its data carries the hitl: prefix, resolve it as a
+	// response to a suspended flow instead of an agent message.
+	if cb := telegram.ParseCallback(body); cb != nil {
+		c.Status(http.StatusOK)
+		if strings.HasPrefix(cb.Data, hitlActionPrefix) {
+			var botToken string
+			if isTrigger {
+				botToken = s.resolveTriggerCreds(id)["bot_token"]
+			} else {
+				botToken = s.resolveTelegramCreds(id)["bot_token"]
+			}
+			go s.handleHITLTelegramCallback(cb, botToken)
+		}
 		return
 	}
 
