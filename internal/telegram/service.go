@@ -542,7 +542,27 @@ func SendChatAction(botToken string, chatID int64, action string) error {
 	return nil
 }
 
+// SendMessage sends a text message via the Telegram Bot API. Messages longer
+// than Telegram's 4096 UTF-16-code-unit limit are split into multiple sends on
+// line/word boundaries (rather than failing with "message is too long").
+// Returns the id of the first message sent. Used by the agent service to
+// deliver outbound messages.
 func SendMessage(botToken string, chatID int64, text string, parseMode string) (int64, error) {
+	chunks := splitTelegramMessage(text)
+	var firstID int64
+	for i, chunk := range chunks {
+		id, err := sendMessageChunk(botToken, chatID, chunk, parseMode)
+		if err != nil {
+			return firstID, err
+		}
+		if i == 0 {
+			firstID = id
+		}
+	}
+	return firstID, nil
+}
+
+func sendMessageChunk(botToken string, chatID int64, text string, parseMode string) (int64, error) {
 	payload := map[string]interface{}{
 		"chat_id": chatID,
 		"text":    text,
@@ -582,6 +602,67 @@ func SendMessage(botToken string, chatID int64, text string, parseMode string) (
 	}
 
 	return result.Result.MessageID, nil
+}
+
+// telegramMaxMessageUnits is Telegram's per-message text limit, in UTF-16
+// code units (the unit Telegram counts).
+const telegramMaxMessageUnits = 4096
+
+// splitTelegramMessage splits text into chunks each within Telegram's 4096
+// UTF-16-code-unit limit, breaking on the last newline (then space) before the
+// limit so lines/words aren't cut mid-way. A single over-long token is
+// hard-split on a rune boundary. Returns []{text} unchanged when it fits.
+func splitTelegramMessage(text string) []string {
+	if utf16Len(text) <= telegramMaxMessageUnits {
+		return []string{text}
+	}
+	runes := []rune(text)
+	var chunks []string
+	for len(runes) > 0 {
+		end, units := 0, 0
+		for end < len(runes) {
+			u := 1
+			if runes[end] > 0xFFFF {
+				u = 2
+			}
+			if units+u > telegramMaxMessageUnits {
+				break
+			}
+			units += u
+			end++
+		}
+		if end < len(runes) {
+			if br := lastRuneIndex(runes[:end], '\n'); br > 0 {
+				end = br + 1
+			} else if br := lastRuneIndex(runes[:end], ' '); br > 0 {
+				end = br + 1
+			}
+		}
+		chunks = append(chunks, string(runes[:end]))
+		runes = runes[end:]
+	}
+	return chunks
+}
+
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		if r > 0xFFFF {
+			n += 2
+		} else {
+			n++
+		}
+	}
+	return n
+}
+
+func lastRuneIndex(runes []rune, target rune) int {
+	for i := len(runes) - 1; i >= 0; i-- {
+		if runes[i] == target {
+			return i
+		}
+	}
+	return -1
 }
 
 // DownloadFile downloads a file from Telegram by file_id.
