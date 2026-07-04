@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	sentinel "github.com/flomation-co/sentinel-client"
@@ -23,6 +24,11 @@ type formDefinition struct {
 
 type formPage struct {
 	Components []formComponent `json:"components"`
+
+	// VisibleIf conditionally shows/hides an entire page based on earlier
+	// answers. Nil means always visible. When a page is hidden, navigation
+	// skips it and the server strips every answer belonging to it.
+	VisibleIf *visibilityRule `json:"visible_if,omitempty"`
 }
 
 type formComponent struct {
@@ -69,6 +75,30 @@ type formComponent struct {
 	// AllowGallery lets a camera field also accept an already-taken
 	// photo from the device's gallery instead of forcing capture.
 	AllowGallery bool `json:"allow_gallery,omitempty"`
+
+	// VisibleIf, when set, makes this component conditionally visible based
+	// on the answers to earlier fields. Nil means "always visible" (the
+	// default for every existing form). The client evaluates the same rule
+	// live to show/hide; the server re-evaluates on submit to strip values
+	// for fields that should have been hidden — a hidden branch must never
+	// smuggle answers into the trigger data.
+	VisibleIf *visibilityRule `json:"visible_if,omitempty"`
+}
+
+// visibilityRule is a group of conditions combined with AND ("all") or OR
+// ("any"). An empty / nil rule means the component is always visible.
+type visibilityRule struct {
+	Match string             `json:"match"` // "all" (AND) or "any" (OR)
+	Rules []visibilityClause `json:"rules"`
+}
+
+// visibilityClause is a single comparison of one field's answer against a
+// target value. Operators mirror the Switch action's vocabulary so authors
+// meet one consistent set of comparisons across the product.
+type visibilityClause struct {
+	Field string `json:"field"` // name of the field whose answer is tested
+	Op    string `json:"op"`    // equals, not_equals, contains, ...
+	Value string `json:"value,omitempty"`
 }
 
 // Display-only component types produce no response and take no user input;
@@ -140,6 +170,23 @@ func applySubstitutions(s string, ctx substitutionContext) string {
 	})
 }
 
+// metaText produces a clean value for the page <title> and Open Graph /
+// Twitter meta tags rendered server-side (so link-preview crawlers, which
+// don't run our JavaScript, see the form's real title and description).
+// It strips any leftover ${...} substitution tokens — for a public /
+// unauthenticated crawler ${user.X} resolves to empty and namespaces we
+// deliberately never expose (${secrets.X}, ${flow.X}, ${var.X}) would
+// otherwise leak raw into the preview — then collapses whitespace to a
+// single line. Attribute escaping is handled by html/template at render
+// time; this concerns presentation, not injection safety.
+func metaText(s string) string {
+	if s == "" {
+		return s
+	}
+	s = substitutionPattern.ReplaceAllString(s, "")
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // resolveFormForRender walks the form definition, resolving all
 // substitutable fields (label, placeholder, default_value) per
 // component. Pure function — returns a new definition without mutating
@@ -168,10 +215,10 @@ func resolveFormForRender(def formDefinition, ctx substitutionContext) formDefin
 // the field's Options list is discarded — silently, matching the read-
 // only override philosophy of "trust the definition, not the client".
 //
-// - radio / dropdown: value must be a string matching an Options entry;
-//   anything else (wrong string, wrong type, missing) becomes "".
-// - checkboxes: value must be an array; entries outside the whitelist
-//   are filtered out; anything not-an-array becomes an empty array.
+//   - radio / dropdown: value must be a string matching an Options entry;
+//     anything else (wrong string, wrong type, missing) becomes "".
+//   - checkboxes: value must be an array; entries outside the whitelist
+//     are filtered out; anything not-an-array becomes an empty array.
 //
 // Fields with no Options entries are passed through unchanged (older
 // forms without option-based fields shouldn't be affected).
@@ -321,6 +368,229 @@ func stripReadOnlySubmissions(submission map[string]interface{}, resolved formDe
 	}
 	for k, v := range readOnly {
 		out[k] = v
+	}
+	return out
+}
+
+// evalVisibility reports whether a component with the given rule should be
+// visible, given the current answers. A nil or empty rule is always
+// visible (the default). "all" combines clauses with AND, "any" with OR.
+// This is the Go twin of the identical evaluator in form.html — keep the
+// two in lock-step so the server strips exactly what the client hid.
+func evalVisibility(rule *visibilityRule, values map[string]interface{}) bool {
+	if rule == nil || len(rule.Rules) == 0 {
+		return true
+	}
+	if rule.Match == "any" {
+		for _, c := range rule.Rules {
+			if evalClause(c, values) {
+				return true
+			}
+		}
+		return false
+	}
+	// Default (and explicit "all") is AND.
+	for _, c := range rule.Rules {
+		if !evalClause(c, values) {
+			return false
+		}
+	}
+	return true
+}
+
+// evalClause evaluates a single condition against the answer map. An
+// unrecognised operator resolves to true (visible) so an unknown rule
+// never silently hides a field.
+func evalClause(c visibilityClause, values map[string]interface{}) bool {
+	raw := values[c.Field]
+	target := c.Value
+	switch c.Op {
+	case "empty":
+		return isEmptyAnswer(raw)
+	case "not_empty":
+		return !isEmptyAnswer(raw)
+	case "equals":
+		return answerString(raw) == target
+	case "not_equals":
+		return answerString(raw) != target
+	case "contains":
+		if arr, ok := raw.([]interface{}); ok {
+			return answerArrayContains(arr, target)
+		}
+		return strings.Contains(answerString(raw), target)
+	case "not_contains":
+		if arr, ok := raw.([]interface{}); ok {
+			return !answerArrayContains(arr, target)
+		}
+		return !strings.Contains(answerString(raw), target)
+	case "starts_with":
+		return strings.HasPrefix(answerString(raw), target)
+	case "ends_with":
+		return strings.HasSuffix(answerString(raw), target)
+	case "one_of":
+		options := splitCSV(target)
+		if arr, ok := raw.([]interface{}); ok {
+			for _, o := range options {
+				if answerArrayContains(arr, o) {
+					return true
+				}
+			}
+			return false
+		}
+		s := answerString(raw)
+		for _, o := range options {
+			if s == o {
+				return true
+			}
+		}
+		return false
+	case "greater_than":
+		a, aok := parseNumber(answerString(raw))
+		b, bok := parseNumber(target)
+		return aok && bok && a > b
+	case "less_than":
+		a, aok := parseNumber(answerString(raw))
+		b, bok := parseNumber(target)
+		return aok && bok && a < b
+	default:
+		return true
+	}
+}
+
+// isEmptyAnswer treats nil, "", and empty arrays as empty. Everything else
+// (including false and 0) is a present answer.
+func isEmptyAnswer(raw interface{}) bool {
+	switch v := raw.(type) {
+	case nil:
+		return true
+	case string:
+		return v == ""
+	case []interface{}:
+		return len(v) == 0
+	default:
+		return false
+	}
+}
+
+// answerString renders a scalar answer for string comparisons. Arrays are
+// joined with commas; bools become "true"/"false"; whole-number floats
+// (JSON's default numeric type) drop the trailing ".0".
+func answerString(raw interface{}) string {
+	switch v := raw.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case []interface{}:
+		parts := make([]string, 0, len(v))
+		for _, e := range v {
+			parts = append(parts, answerString(e))
+		}
+		return strings.Join(parts, ",")
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// answerArrayContains reports whether any entry of a multi-value answer
+// (checkboxes / ranking) equals target.
+func answerArrayContains(arr []interface{}, target string) bool {
+	for _, e := range arr {
+		if answerString(e) == target {
+			return true
+		}
+	}
+	return false
+}
+
+// splitCSV splits a comma-separated operator value, trimming surrounding
+// whitespace and dropping empties. Used by the one_of operator.
+func splitCSV(s string) []string {
+	raw := strings.Split(s, ",")
+	out := make([]string, 0, len(raw))
+	for _, p := range raw {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// parseNumber parses a numeric answer for greater_than / less_than. Returns
+// false when the value isn't a number, so a non-numeric field never
+// satisfies a numeric comparison.
+func parseNumber(s string) (float64, bool) {
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+// stripHiddenSubmissions removes answers for components whose visibility
+// rule evaluates to hidden given the submitted answers. It iterates to a
+// fixed point: hiding one field removes its value, which can flip another
+// field's condition that referenced it, so a single pass is insufficient.
+// The iteration is bounded by the component count (each pass hides at least
+// one field or stops), guaranteeing termination.
+//
+// Returns a new map; does not mutate the input.
+func stripHiddenSubmissions(submission map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	// A "unit" is one hideable thing: a single conditional component, or a
+	// whole conditional page (which owns the names of all its components).
+	// Both are evaluated in the same loop so a page condition and a field
+	// condition can each depend on the other's cleared value.
+	type unit struct {
+		names []string
+		rule  *visibilityRule
+	}
+	var units []unit
+	for _, page := range resolved.Pages {
+		if page.VisibleIf != nil && len(page.VisibleIf.Rules) > 0 {
+			names := make([]string, 0, len(page.Components))
+			for _, c := range page.Components {
+				names = append(names, c.Name)
+			}
+			units = append(units, unit{names: names, rule: page.VisibleIf})
+		}
+		for _, c := range page.Components {
+			if c.VisibleIf != nil && len(c.VisibleIf.Rules) > 0 {
+				units = append(units, unit{names: []string{c.Name}, rule: c.VisibleIf})
+			}
+		}
+	}
+
+	out := make(map[string]interface{}, len(submission))
+	for k, v := range submission {
+		out[k] = v
+	}
+	if len(units) == 0 {
+		return out
+	}
+
+	for pass := 0; pass <= len(units); pass++ {
+		changed := false
+		for _, u := range units {
+			if evalVisibility(u.rule, out) {
+				continue
+			}
+			for _, n := range u.names {
+				if _, present := out[n]; present {
+					delete(out, n)
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			break
+		}
 	}
 	return out
 }

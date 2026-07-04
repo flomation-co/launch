@@ -370,3 +370,157 @@ func TestExtractSessionToken_CookiePreferredOverHeader(t *testing.T) {
 	Expect(extractSessionToken("", "")).To(Equal(""))
 	Expect(extractSessionToken("malformed", "")).To(Equal(""))
 }
+
+func TestMetaText_StripsUnresolvedTokensAndCollapsesWhitespace(t *testing.T) {
+	RegisterTestingT(t)
+
+	// Plain text passes through unchanged.
+	Expect(metaText("Contact Us")).To(Equal("Contact Us"))
+	// Empty stays empty.
+	Expect(metaText("")).To(Equal(""))
+	// Unresolved substitution tokens (e.g. secrets/flow that we never
+	// expose to the public form viewer, or an unauthenticated crawler's
+	// empty ${user.X}) are stripped so previews never show raw syntax.
+	Expect(metaText("Welcome ${user.first_name}")).To(Equal("Welcome"))
+	Expect(metaText("Order ${flow.id} for ${secrets.token}")).To(Equal("Order for"))
+	// Newlines / tabs / runs of spaces collapse to a single space so the
+	// value sits cleanly on one line in a <title> or og:description.
+	Expect(metaText("Line one\nLine two\t\ttabbed   spaced")).To(Equal("Line one Line two tabbed spaced"))
+}
+
+func TestEvalVisibility_NilAndEmptyRuleAlwaysVisible(t *testing.T) {
+	RegisterTestingT(t)
+
+	Expect(evalVisibility(nil, map[string]interface{}{})).To(BeTrue())
+	Expect(evalVisibility(&visibilityRule{Match: "all"}, map[string]interface{}{})).To(BeTrue())
+}
+
+func TestEvalVisibility_Operators(t *testing.T) {
+	RegisterTestingT(t)
+
+	values := map[string]interface{}{
+		"plan":     "pro",
+		"seats":    "5",
+		"empty":    "",
+		"topics":   []interface{}{"news", "sport"},
+		"agreed":   true,
+		"quantity": float64(3),
+	}
+	rule := func(op, field, val string) *visibilityRule {
+		return &visibilityRule{Match: "all", Rules: []visibilityClause{{Field: field, Op: op, Value: val}}}
+	}
+
+	Expect(evalVisibility(rule("equals", "plan", "pro"), values)).To(BeTrue())
+	Expect(evalVisibility(rule("equals", "plan", "free"), values)).To(BeFalse())
+	Expect(evalVisibility(rule("not_equals", "plan", "free"), values)).To(BeTrue())
+	Expect(evalVisibility(rule("contains", "plan", "r"), values)).To(BeTrue())
+	Expect(evalVisibility(rule("not_contains", "plan", "z"), values)).To(BeTrue())
+	Expect(evalVisibility(rule("starts_with", "plan", "pr"), values)).To(BeTrue())
+	Expect(evalVisibility(rule("ends_with", "plan", "ro"), values)).To(BeTrue())
+	Expect(evalVisibility(rule("empty", "empty", ""), values)).To(BeTrue())
+	Expect(evalVisibility(rule("not_empty", "plan", ""), values)).To(BeTrue())
+	Expect(evalVisibility(rule("empty", "plan", ""), values)).To(BeFalse())
+
+	// one_of over a scalar and over an array field (checkboxes).
+	Expect(evalVisibility(rule("one_of", "plan", "free, pro , scale"), values)).To(BeTrue())
+	Expect(evalVisibility(rule("one_of", "plan", "free,scale"), values)).To(BeFalse())
+	Expect(evalVisibility(rule("one_of", "topics", "music,sport"), values)).To(BeTrue())
+
+	// contains against an array checks membership, not substring.
+	Expect(evalVisibility(rule("contains", "topics", "news"), values)).To(BeTrue())
+	Expect(evalVisibility(rule("contains", "topics", "new"), values)).To(BeFalse())
+
+	// Boolean answers stringify to "true"/"false".
+	Expect(evalVisibility(rule("equals", "agreed", "true"), values)).To(BeTrue())
+
+	// Numeric comparisons; non-numeric operands never satisfy.
+	Expect(evalVisibility(rule("greater_than", "seats", "3"), values)).To(BeTrue())
+	Expect(evalVisibility(rule("less_than", "quantity", "5"), values)).To(BeTrue())
+	Expect(evalVisibility(rule("greater_than", "plan", "3"), values)).To(BeFalse())
+
+	// Unknown operator resolves to visible (never silently hides).
+	Expect(evalVisibility(rule("bogus", "plan", "x"), values)).To(BeTrue())
+}
+
+func TestEvalVisibility_MatchAnyVsAll(t *testing.T) {
+	RegisterTestingT(t)
+
+	values := map[string]interface{}{"a": "1", "b": "2"}
+	rules := []visibilityClause{
+		{Field: "a", Op: "equals", Value: "1"},
+		{Field: "b", Op: "equals", Value: "99"},
+	}
+	// all → AND → false (b fails); any → OR → true (a passes).
+	Expect(evalVisibility(&visibilityRule{Match: "all", Rules: rules}, values)).To(BeFalse())
+	Expect(evalVisibility(&visibilityRule{Match: "any", Rules: rules}, values)).To(BeTrue())
+}
+
+func TestStripHiddenSubmissions_RemovesHiddenComponents(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{Pages: []formPage{{Components: []formComponent{
+		{Name: "plan"},
+		{Name: "seats", VisibleIf: &visibilityRule{Match: "all", Rules: []visibilityClause{
+			{Field: "plan", Op: "equals", Value: "enterprise"},
+		}}},
+	}}}}
+
+	// plan != enterprise → seats hidden → its value is stripped.
+	out := stripHiddenSubmissions(map[string]interface{}{"plan": "free", "seats": "10"}, def)
+	Expect(out).To(HaveKeyWithValue("plan", "free"))
+	Expect(out).NotTo(HaveKey("seats"))
+
+	// plan == enterprise → seats visible → kept.
+	out = stripHiddenSubmissions(map[string]interface{}{"plan": "enterprise", "seats": "10"}, def)
+	Expect(out).To(HaveKeyWithValue("seats", "10"))
+}
+
+func TestStripHiddenSubmissions_FixedPointChain(t *testing.T) {
+	RegisterTestingT(t)
+
+	// C is shown only if B == "x"; B is shown only if A == "yes".
+	// Submitting A = "no" must cascade: B is hidden (cleared), which in turn
+	// hides C — even though the client posted a value for C.
+	def := formDefinition{Pages: []formPage{{Components: []formComponent{
+		{Name: "a"},
+		{Name: "b", VisibleIf: &visibilityRule{Match: "all", Rules: []visibilityClause{{Field: "a", Op: "equals", Value: "yes"}}}},
+		{Name: "c", VisibleIf: &visibilityRule{Match: "all", Rules: []visibilityClause{{Field: "b", Op: "equals", Value: "x"}}}},
+	}}}}
+
+	out := stripHiddenSubmissions(map[string]interface{}{"a": "no", "b": "x", "c": "keep-me?"}, def)
+	Expect(out).To(HaveKeyWithValue("a", "no"))
+	Expect(out).NotTo(HaveKey("b"))
+	Expect(out).NotTo(HaveKey("c"))
+}
+
+func TestStripHiddenSubmissions_HiddenPageStripsAllItsAnswers(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{Pages: []formPage{
+		{Components: []formComponent{{Name: "role"}}},
+		{
+			VisibleIf:  &visibilityRule{Match: "all", Rules: []visibilityClause{{Field: "role", Op: "equals", Value: "admin"}}},
+			Components: []formComponent{{Name: "admin_note"}, {Name: "admin_level"}},
+		},
+	}}
+
+	// role != admin → the whole second page is hidden → both its answers go.
+	out := stripHiddenSubmissions(map[string]interface{}{"role": "user", "admin_note": "n", "admin_level": "3"}, def)
+	Expect(out).To(HaveKeyWithValue("role", "user"))
+	Expect(out).NotTo(HaveKey("admin_note"))
+	Expect(out).NotTo(HaveKey("admin_level"))
+
+	// role == admin → page visible → answers kept.
+	out = stripHiddenSubmissions(map[string]interface{}{"role": "admin", "admin_note": "n", "admin_level": "3"}, def)
+	Expect(out).To(HaveKeyWithValue("admin_note", "n"))
+	Expect(out).To(HaveKeyWithValue("admin_level", "3"))
+}
+
+func TestStripHiddenSubmissions_NoRules_ShortCircuits(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{Pages: []formPage{{Components: []formComponent{{Name: "a"}, {Name: "b"}}}}}
+	in := map[string]interface{}{"a": "1", "b": "2"}
+	out := stripHiddenSubmissions(in, def)
+	Expect(out).To(Equal(in))
+}

@@ -8,7 +8,18 @@
     <link rel="alternate icon" href="/favicon.ico">
     <link rel="apple-touch-icon" href="/favicon.png">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <title>Flomation Form</title>
+    <title>{{ if .MetaTitle }}{{ .MetaTitle }}{{ else }}Flomation Form{{ end }}</title>
+    {{ if .MetaDescription }}<meta name="description" content="{{ .MetaDescription }}">{{ end }}
+    <!-- Open Graph / Twitter link-preview tags. Rendered server-side from
+         the form's title and description so social / messaging crawlers,
+         which never run the form JavaScript, show meaningful previews. -->
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Flomation">
+    <meta property="og:title" content="{{ if .MetaTitle }}{{ .MetaTitle }}{{ else }}Flomation Form{{ end }}">
+    {{ if .MetaDescription }}<meta property="og:description" content="{{ .MetaDescription }}">{{ end }}
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="{{ if .MetaTitle }}{{ .MetaTitle }}{{ else }}Flomation Form{{ end }}">
+    {{ if .MetaDescription }}<meta name="twitter:description" content="{{ .MetaDescription }}">{{ end }}
     <style>
         :root {
             --bg: #161019;
@@ -801,6 +812,135 @@
     const FORM_ID = "{{ .FormID }}";
     let formValues = {};
     let currentPage = 0;
+    // Names of components / indices of pages currently hidden by a
+    // conditional-visibility rule. Recomputed by applyVisibility on every
+    // answer change and page navigation. Hidden required fields are
+    // skipped by validateForm, and hidden pages are skipped by navigation.
+    let hiddenFields = new Set();
+    let hiddenPages = new Set();
+
+    // ---- Conditional visibility engine ------------------------------------
+    // The exact twin of evalVisibility/evalClause in form.go. The client
+    // uses it to show/hide live; the server uses it to strip answers for
+    // fields that should have been hidden. Keep the two in lock-step.
+    function condIsEmpty(raw) {
+        if (raw === null || raw === undefined) return true;
+        if (typeof raw === "string") return raw === "";
+        if (Array.isArray(raw)) return raw.length === 0;
+        return false;
+    }
+    function condString(raw) {
+        if (raw === null || raw === undefined) return "";
+        if (typeof raw === "boolean") return raw ? "true" : "false";
+        if (Array.isArray(raw)) return raw.map(condString).join(",");
+        return String(raw);
+    }
+    function condArrayContains(arr, target) {
+        return arr.some((e) => condString(e) === target);
+    }
+    function condSplitCSV(s) {
+        return String(s || "").split(",").map((x) => x.trim()).filter(Boolean);
+    }
+    function condNumber(s) {
+        const n = parseFloat(String(s).trim());
+        return isNaN(n) ? null : n;
+    }
+    function evalClause(cond, getVal) {
+        const raw = getVal(cond.field);
+        const target = cond.value || "";
+        switch (cond.op) {
+            case "empty": return condIsEmpty(raw);
+            case "not_empty": return !condIsEmpty(raw);
+            case "equals": return condString(raw) === target;
+            case "not_equals": return condString(raw) !== target;
+            case "contains":
+                return Array.isArray(raw) ? condArrayContains(raw, target) : condString(raw).includes(target);
+            case "not_contains":
+                return Array.isArray(raw) ? !condArrayContains(raw, target) : !condString(raw).includes(target);
+            case "starts_with": return condString(raw).startsWith(target);
+            case "ends_with": return condString(raw).endsWith(target);
+            case "one_of": {
+                const opts = condSplitCSV(target);
+                if (Array.isArray(raw)) return opts.some((o) => condArrayContains(raw, o));
+                const s = condString(raw);
+                return opts.some((o) => o === s);
+            }
+            case "greater_than": {
+                const a = condNumber(condString(raw)), b = condNumber(target);
+                return a !== null && b !== null && a > b;
+            }
+            case "less_than": {
+                const a = condNumber(condString(raw)), b = condNumber(target);
+                return a !== null && b !== null && a < b;
+            }
+            default: return true;
+        }
+    }
+    function evalVisibility(rule, getVal) {
+        if (!rule || !rule.rules || rule.rules.length === 0) return true;
+        const f = (c) => evalClause(c, getVal);
+        if (rule.match === "any") return rule.rules.some(f);
+        return rule.rules.every(f);
+    }
+
+    // applyVisibility recomputes which components and pages are visible and
+    // updates the DOM. It iterates to a fixed point because a hidden field
+    // counts as empty, which can flip a dependent field's or page's rule.
+    // A component is visible only if BOTH its page and its own rule pass.
+    //
+    // It never mutates formValues — the user's typed answers are preserved
+    // across a hide→reshow round-trip. Instead a hidden field reads as empty
+    // only during evaluation (via getVal) and is dropped from the payload at
+    // submit time. This is the browser twin of stripHiddenSubmissions in
+    // launch/internal/http/form.go, which strips into a throwaway copy.
+    function applyVisibility(form) {
+        const compVisible = {};
+        const pageVisible = [];
+        form.pages.forEach((_, i) => (pageVisible[i] = true));
+        for (const p of form.pages) for (const c of p.components) compVisible[c.name] = true;
+
+        // A field reads as empty while it (or its page) is currently deemed
+        // hidden, so a hidden branch's lingering answer can't satisfy another
+        // rule. compVisible mutates across passes — that's the fixed point.
+        const getVal = (name) => (compVisible[name] === false ? null : formValues[name]);
+
+        const maxIter = form.pages.length + Object.keys(compVisible).length + 1;
+        let changed = true, guard = 0;
+        while (changed && guard++ <= maxIter) {
+            changed = false;
+            form.pages.forEach((page, pi) => {
+                const pv = evalVisibility(page.visible_if, getVal);
+                if (pv !== pageVisible[pi]) { pageVisible[pi] = pv; changed = true; }
+                for (const c of page.components) {
+                    const cv = pv && evalVisibility(c.visible_if, getVal);
+                    if (cv !== compVisible[c.name]) { compVisible[c.name] = cv; changed = true; }
+                }
+            });
+        }
+
+        hiddenFields = new Set();
+        for (const name in compVisible) if (!compVisible[name]) hiddenFields.add(name);
+        document.querySelectorAll("[data-field]").forEach((el) => {
+            const n = el.dataset.field;
+            if (Object.prototype.hasOwnProperty.call(compVisible, n)) {
+                el.classList.toggle("hidden", !compVisible[n]);
+            }
+        });
+        hiddenPages = new Set();
+        form.pages.forEach((_, pi) => { if (!pageVisible[pi]) hiddenPages.add(pi); });
+    }
+
+    // Navigation helpers that respect hidden pages.
+    function firstVisiblePageFrom(form, start, dir) {
+        for (let p = start; p >= 0 && p < form.pages.length; p += dir) {
+            if (!hiddenPages.has(p)) return p;
+        }
+        return -1;
+    }
+    function lastVisiblePage(form) {
+        const p = firstVisiblePageFrom(form, form.pages.length - 1, -1);
+        return p < 0 ? 0 : p;
+    }
 
     function renderLabel(component) {
         const el = document.createElement("label");
@@ -2050,10 +2190,17 @@
 
     function renderPageIndicator(form) {
         const indicator = document.getElementById("page-indicator");
-        if (!indicator || form.pages.length <= 1) return;
+        if (!indicator) return;
+
+        // Only count pages currently visible — a conditionally-hidden page
+        // shouldn't leave a phantom dot in the progress row.
+        const visiblePages = [];
+        for (let i = 0; i < form.pages.length; i++) if (!hiddenPages.has(i)) visiblePages.push(i);
 
         indicator.innerHTML = "";
-        for (let i = 0; i < form.pages.length; i++) {
+        if (visiblePages.length <= 1) return;
+
+        for (const i of visiblePages) {
             const dot = document.createElement("span");
             dot.classList.add("page-dot");
             if (i === currentPage) dot.classList.add("active");
@@ -2104,6 +2251,13 @@
                 }
             }
 
+            // Tag every DOM node the render function appends with the
+            // component name so applyVisibility can show/hide it. Recorded
+            // by span (before/after) rather than inside each of the 24
+            // render functions, so it works no matter how many elements a
+            // renderer emits.
+            const childrenBefore = pageContainer.childElementCount;
+
             switch (component.type) {
                 case "text": renderTextbox(form, pageContainer, component); break;
                 case "multiline": renderMultiline(form, pageContainer, component); break;
@@ -2132,16 +2286,25 @@
                 case "ranking": renderRanking(form, pageContainer, component); break;
                 default: renderTextbox(form, pageContainer, component); break;
             }
+
+            for (let i = childrenBefore; i < pageContainer.childElementCount; i++) {
+                pageContainer.children[i].dataset.field = component.name;
+            }
         }
     }
 
     function validateForm(form) {
+        // Recompute visibility first: a field hidden by a condition must not
+        // block Submit, and its value may have just been cleared.
+        applyVisibility(form);
+
         let valid = true;
         const DISPLAY_ONLY = new Set(["section_header", "divider", "info_text"]);
         for (const page of form.pages) {
             for (const comp of page.components) {
                 if (!comp.required) continue;
                 if (DISPLAY_ONLY.has(comp.type)) continue;
+                if (hiddenFields.has(comp.name)) continue; // conditionally hidden — not required
                 const v = formValues[comp.name];
                 // Radio + dropdown: empty string means "not chosen".
                 // Checkboxes: an empty array means "none selected".
@@ -2188,12 +2351,28 @@
 
         const submit = document.getElementById("submit");
         if (submit) {
-            submit.disabled = !valid;
+            // Enable Submit only when every required field is satisfied AND
+            // the viewer is on the last *visible* page — Submit is hidden
+            // elsewhere, but we keep it disabled too as belt-and-braces.
+            const onLastPage = currentPage === lastVisiblePage(form);
+            submit.disabled = !valid || !onLastPage;
         }
     }
 
     function setPage(form, page) {
-        currentPage = Math.max(0, Math.min(page, form.pages.length - 1));
+        // Refresh visibility so page-skipping decisions use current answers.
+        applyVisibility(form);
+
+        // Snap the requested page to the nearest visible page, travelling in
+        // the requested direction first, then falling back the other way.
+        let target = Math.max(0, Math.min(page, form.pages.length - 1));
+        if (hiddenPages.has(target)) {
+            const dir = page >= currentPage ? 1 : -1;
+            let found = firstVisiblePageFrom(form, target, dir);
+            if (found < 0) found = firstVisiblePageFrom(form, target, -dir);
+            target = found < 0 ? 0 : found;
+        }
+        currentPage = target;
 
         for (let p = 0; p < form.pages.length; p++) {
             const el = document.getElementById("page-" + p);
@@ -2201,12 +2380,23 @@
         }
 
         const prev = document.getElementById("previous");
-        if (prev) prev.disabled = currentPage === 0;
+        if (prev) prev.disabled = firstVisiblePageFrom(form, currentPage - 1, -1) < 0;
 
         const next = document.getElementById("next");
-        if (next) next.disabled = currentPage === form.pages.length - 1;
+        if (next) next.disabled = firstVisiblePageFrom(form, currentPage + 1, 1) < 0;
+
+        // Submit is only reachable on the last *visible* page — a user must
+        // page through the whole form before they can complete it. On
+        // single-page forms page 0 is the last page, so it always shows.
+        const submit = document.getElementById("submit");
+        if (submit) submit.classList.toggle("hidden", currentPage !== lastVisiblePage(form));
 
         renderPageIndicator(form);
+        // Re-evaluate the Submit enabled state for the new page. Navigation
+        // doesn't fire an input event, so without this a form that became
+        // valid on an earlier page would land on the last page with Submit
+        // still disabled (or vice-versa).
+        validateForm(form);
     }
 
     function renderForm() {
@@ -2264,10 +2454,17 @@
         submit.disabled = true;
         submit.textContent = "Submitting...";
 
+        // Drop answers for conditionally-hidden fields so a hidden branch's
+        // lingering value isn't submitted. The server strips them again as
+        // defence-in-depth, but sending a clean payload keeps the two honest.
+        applyVisibility(form);
+        const payload = {};
+        for (const k in formValues) if (!hiddenFields.has(k)) payload[k] = formValues[k];
+
         fetch("/form/" + FORM_ID, {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify(formValues)
+            body: JSON.stringify(payload)
         })
         .then(() => {
             const container = document.getElementById("form-container");
