@@ -2377,17 +2377,30 @@
             }, "image/png");
         }
 
-        async function startStream(onReady) {
-            if (!hasMediaDevices) { status.textContent = "Camera unavailable — enter the plate manually."; return; }
+        async function startStream(onReady, onFail) {
+            if (!hasMediaDevices) { status.textContent = "Camera unavailable — enter the plate manually."; if (onFail) onFail(); return; }
             try {
                 stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment"}, audio: false});
             } catch (_) {
                 status.textContent = "Camera unavailable — enter the plate manually.";
                 status.className = "upload-status error";
+                if (onFail) onFail();
                 return;
             }
             video.srcObject = stream; video.style.display = "block"; preview.style.display = "none";
             onReady();
+        }
+
+        // autoStart opens the camera and begins reading with no button press —
+        // the fully hands-off / kiosk path. If the camera isn't ready yet
+        // (permission granted a moment late, or briefly busy) it retries a few
+        // times so it recovers on its own without any interaction.
+        let autoRetries = 0;
+        function autoStart() {
+            startStream(
+                () => { actions.innerHTML = ""; autoLoop(); },
+                () => { if (autoRetries++ < 5) setTimeout(autoStart, 2000); }
+            );
         }
 
         // Manual: capture a single frame, try recognition, then commit.
@@ -2421,15 +2434,14 @@
 
         function renderIdleActions() {
             actions.innerHTML = "";
-            if (!hasMediaDevices) return;
+            // Auto mode is fully hands-off — no Start button; the camera opens
+            // on its own (see autoStart). Only manual mode offers a button.
+            if (!hasMediaDevices || isAuto) return;
             const scanBtn = document.createElement("button");
             scanBtn.type = "button";
             scanBtn.classList.add("btn", "btn-secondary");
-            scanBtn.textContent = isAuto ? "Start camera" : "Scan plate";
-            scanBtn.onclick = () => startStream(() => {
-                if (isAuto) { renderStopActions(); autoLoop(); }
-                else renderCaptureActions();
-            });
+            scanBtn.textContent = "Scan plate";
+            scanBtn.onclick = () => startStream(() => renderCaptureActions());
             if (component.read_only) scanBtn.disabled = true;
             actions.appendChild(scanBtn);
         }
@@ -2450,24 +2462,19 @@
             actions.appendChild(cancelBtn);
         }
 
-        function renderStopActions() {
-            actions.innerHTML = "";
-            const stopBtn = document.createElement("button");
-            stopBtn.type = "button";
-            stopBtn.classList.add("btn", "btn-secondary");
-            stopBtn.textContent = "Stop camera";
-            stopBtn.onclick = () => { stopStream(); renderIdleActions(); };
-            actions.appendChild(stopBtn);
-        }
-
         if (!hasMediaDevices) {
             status.textContent = "Live capture not supported on this device — enter the plate manually.";
+            renderIdleActions();
+        } else if (isAuto) {
+            // Fully hands-off: open the camera immediately and read plates
+            // continuously — no button to press. The browser gates permission.
+            status.textContent = "Looking for a licence plate…";
+            status.className = "upload-status uploading";
+            autoStart();
         } else {
-            status.textContent = isAuto
-                ? "Click Start camera — the plate is read automatically."
-                : "Click Scan plate to use your camera, or type the plate manually below.";
+            status.textContent = "Click Scan plate to use your camera, or type the plate manually below.";
+            renderIdleActions();
         }
-        renderIdleActions();
 
         wrapper.appendChild(video);
         wrapper.appendChild(preview);
