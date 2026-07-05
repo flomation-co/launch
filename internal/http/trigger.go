@@ -77,7 +77,7 @@ func (s *Service) createTrigger(c *gin.Context) {
 
 	// WooCommerce triggers: auto-register one webhook per selected topic pointing
 	// at /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
-	s.registerWooCommerceWebhook(&tr)
+	s.registerWooCommerceWebhook(c.Request.Context(), &tr)
 
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
@@ -169,7 +169,7 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 
 	// Deregister the WooCommerce webhooks we created.
 	if t.Type == launch.TriggerTypeWooCommerceWebhook {
-		s.deregisterWooCommerceWebhook(t)
+		s.deregisterWooCommerceWebhook(c.Request.Context(), t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {

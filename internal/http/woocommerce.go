@@ -2,14 +2,18 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"flomation.app/automate/launch"
@@ -20,8 +24,64 @@ import (
 )
 
 // woocommerceHTTPClient is used for the outbound WooCommerce REST calls that
-// register/deregister webhooks.
-var woocommerceHTTPClient = &http.Client{Timeout: 15 * time.Second}
+// register/deregister webhooks. Unlike the Calendly/Acuity clients (which call
+// fixed provider hosts), the WooCommerce store URL is caller-supplied, so this
+// client is SSRF-hardened the same way as the api's option proxies: the dialer
+// refuses link-local and cloud-metadata destinations (169.254.169.254 et al) on
+// the address actually dialed, and cross-host redirects are refused. Loopback
+// and private LAN ranges stay allowed — self-hosted stores commonly live there.
+var woocommerceHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("stopped after too many redirects")
+		}
+		if req.URL.Host != via[0].URL.Host {
+			return errors.New("cross-host redirect not allowed")
+		}
+		return nil
+	},
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 5 * time.Second,
+			Control: func(network, address string, _ syscall.RawConn) error {
+				host, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return err
+				}
+				ip := net.ParseIP(host)
+				if ip == nil {
+					return nil
+				}
+				if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+					return errors.New("link-local addresses are not allowed")
+				}
+				if isWooCloudMetadataIP(ip) {
+					return errors.New("cloud metadata addresses are not allowed")
+				}
+				return nil
+			},
+		}).DialContext,
+	},
+}
+
+// wooBlockedMetadataIPs are instance-metadata addresses outside the link-local
+// range (AWS IPv6 IMDS and Alibaba's 100.100.100.200). Private RFC1918/ULA
+// ranges are deliberately NOT blocked — a self-hosted store legitimately lives
+// there. Mirrors the api option-proxy's list; keep the two in sync.
+var wooBlockedMetadataIPs = []net.IP{
+	net.ParseIP("fd00:ec2::254"),
+	net.ParseIP("100.100.100.200"),
+}
+
+func isWooCloudMetadataIP(ip net.IP) bool {
+	for _, b := range wooBlockedMetadataIPs {
+		if b != nil && ip.Equal(b) {
+			return true
+		}
+	}
+	return false
+}
 
 // woocommerceAPIPath is the WooCommerce REST API v3 prefix appended to the
 // store URL.
@@ -111,6 +171,11 @@ func wooCredsInQuery(tr *launch.Trigger) bool {
 // woocommerceBaseURL normalises a pasted store URL to scheme+host[+path] with no
 // trailing slash and no REST-API suffix, defaulting to https. Returns "" when
 // the value is blank or not an http(s) URL (e.g. an unresolved ${...} ref).
+//
+// NOTE: this logic is intentionally duplicated in the api
+// (woocommerceOptionsBaseURL) and the executor (NormaliseBaseURL) because those
+// are separate Go modules and there is no shared package. Keep the three in sync
+// — any change to the suffix-stripping/scheme-defaulting here should be mirrored.
 func woocommerceBaseURL(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" || strings.Contains(s, "${") {
@@ -180,7 +245,7 @@ func woocommerceSameEventSet(a, b []string) bool {
 // wooDo performs an authenticated WooCommerce REST request against the store's
 // /wp-json/wc/v3 API. path starts with "/" (e.g. "/webhooks"). Credentials go in
 // the Basic auth header, or the query string when the trigger opted in.
-func wooDo(cr wooCreds, method, path string, body interface{}) (map[string]interface{}, int, error) {
+func wooDo(ctx context.Context, cr wooCreds, method, path string, body interface{}) (map[string]interface{}, int, error) {
 	fullURL := cr.base + woocommerceAPIPath + path
 	if cr.inQuery {
 		sep := "?"
@@ -201,7 +266,7 @@ func wooDo(cr wooCreds, method, path string, body interface{}) (map[string]inter
 		}
 		rdr = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, fullURL, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, rdr)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -252,12 +317,12 @@ func (s *Service) loadWooState(triggerID string) *woocommerceWebhookState {
 }
 
 // deleteWooWebhooks removes the given webhooks from the store (best effort).
-func deleteWooWebhooks(cr wooCreds, regs []wooReg) {
+func deleteWooWebhooks(ctx context.Context, cr wooCreds, regs []wooReg) {
 	for _, r := range regs {
 		if r.ID == "" {
 			continue
 		}
-		if _, status, err := wooDo(cr, http.MethodDelete, "/webhooks/"+r.ID+"?force=true", nil); err != nil || (status >= 300 && status != http.StatusNotFound) {
+		if _, status, err := wooDo(ctx, cr, http.MethodDelete, "/webhooks/"+r.ID+"?force=true", nil); err != nil || (status >= 300 && status != http.StatusNotFound) {
 			log.WithFields(log.Fields{"webhook_id": r.ID, "status": status, "error": err}).Warn("woocommerce trigger: failed to delete webhook")
 		}
 	}
@@ -270,7 +335,7 @@ func deleteWooWebhooks(cr wooCreds, regs []wooReg) {
 // createTrigger runs on every flow save, so an unchanged topic set is left
 // untouched; a changed set recreates every webhook. Errors are logged, never
 // fatal (they must not fail the trigger upsert).
-func (s *Service) registerWooCommerceWebhook(tr *launch.Trigger) {
+func (s *Service) registerWooCommerceWebhook(ctx context.Context, tr *launch.Trigger) {
 	if tr == nil || tr.Type != launch.TriggerTypeWooCommerceWebhook {
 		return
 	}
@@ -293,7 +358,7 @@ func (s *Service) registerWooCommerceWebhook(tr *launch.Trigger) {
 	// webhooks before creating replacements. The callback is keyed on the stable
 	// trigger ID, so stale webhooks would double-fire the flow.
 	if state != nil && len(state.Webhooks) > 0 {
-		deleteWooWebhooks(cr, state.Webhooks)
+		deleteWooWebhooks(ctx, cr, state.Webhooks)
 	}
 
 	secretBytes := make([]byte, 32)
@@ -312,7 +377,7 @@ func (s *Service) registerWooCommerceWebhook(tr *launch.Trigger) {
 			"secret":       secret,
 			"status":       "active",
 		}
-		resp, status, err := wooDo(cr, http.MethodPost, "/webhooks", body)
+		resp, status, err := wooDo(ctx, cr, http.MethodPost, "/webhooks", body)
 		if err != nil || status >= 300 {
 			log.WithFields(log.Fields{"trigger_id": tr.ID, "topic": topic, "status": status, "error": err, "response": resp}).Warn("failed to register WooCommerce webhook")
 			continue
@@ -331,21 +396,41 @@ func (s *Service) registerWooCommerceWebhook(tr *launch.Trigger) {
 		regs = append(regs, wooReg{Topic: topic, ID: id})
 	}
 	if len(regs) == 0 {
+		log.WithFields(log.Fields{"trigger_id": tr.ID, "requested_topics": cr.events}).Warn("woocommerce trigger: no webhooks could be registered (all topics failed)")
 		return
 	}
+	registeredTopics := make([]string, 0, len(regs))
+	for _, r := range regs {
+		registeredTopics = append(registeredTopics, r.Topic)
+	}
+	// Summary log when only some topics registered, so a partial failure is
+	// diagnosable at a glance (which topics are live vs missing) rather than
+	// having to reconstruct it from the per-topic warnings above.
+	if len(regs) < len(cr.events) {
+		log.WithFields(log.Fields{
+			"trigger_id":       tr.ID,
+			"registered":       registeredTopics,
+			"registered_count": len(regs),
+			"requested_count":  len(cr.events),
+			"requested_topics": cr.events,
+		}).Warn("woocommerce trigger: partial webhook registration — some topics failed and will not fire")
+	}
 
-	stateJSON, _ := json.Marshal(woocommerceWebhookState{Webhooks: regs, Secret: secret, Events: cr.events, Base: cr.base})
+	// Persist the topics that ACTUALLY registered (not the requested set), so a
+	// partial registration self-heals: the next save's change-check sees
+	// registered != requested and recreates the missing webhooks.
+	stateJSON, _ := json.Marshal(woocommerceWebhookState{Webhooks: regs, Secret: secret, Events: registeredTopics, Base: cr.base})
 	if err := s.db.UpsertTriggerState(tr.ID, woocommerceStateKey, stateJSON); err != nil {
 		// Without the secret every delivery would be rejected; remove the
 		// just-created webhooks so the next save retries cleanly.
 		log.WithFields(log.Fields{"trigger_id": tr.ID, "error": err}).Error("woocommerce trigger: unable to persist state; removing webhooks")
-		deleteWooWebhooks(cr, regs)
+		deleteWooWebhooks(ctx, cr, regs)
 	}
 }
 
 // deregisterWooCommerceWebhook removes every webhook we registered for this
 // trigger (best effort; logged, never fatal).
-func (s *Service) deregisterWooCommerceWebhook(tr *launch.Trigger) {
+func (s *Service) deregisterWooCommerceWebhook(ctx context.Context, tr *launch.Trigger) {
 	if tr == nil || tr.Type != launch.TriggerTypeWooCommerceWebhook {
 		return
 	}
@@ -357,7 +442,7 @@ func (s *Service) deregisterWooCommerceWebhook(tr *launch.Trigger) {
 	if !ok {
 		return
 	}
-	deleteWooWebhooks(cr, state.Webhooks)
+	deleteWooWebhooks(ctx, cr, state.Webhooks)
 	if err := s.db.DeleteTriggerState(tr.ID, woocommerceStateKey); err != nil {
 		log.WithFields(log.Fields{"trigger_id": tr.ID, "error": err}).Warn("woocommerce trigger: unable to delete state")
 	}
