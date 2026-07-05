@@ -75,6 +75,10 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
 	s.registerAcuityWebhook(&tr)
 
+	// WooCommerce triggers: auto-register one webhook per selected topic pointing
+	// at /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
+	s.registerWooCommerceWebhook(c.Request.Context(), &tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -161,6 +165,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the Acuity webhook subscriptions we created.
 	if t.Type == launch.TriggerTypeAcuityWebhook {
 		s.deregisterAcuityWebhook(t)
+	}
+
+	// Deregister the WooCommerce webhooks we created.
+	if t.Type == launch.TriggerTypeWooCommerceWebhook {
+		s.deregisterWooCommerceWebhook(c.Request.Context(), t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {

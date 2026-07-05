@@ -6,31 +6,32 @@ import (
 )
 
 const (
-	TriggerTypeManual            = "manual"
-	TriggerTypeScheduled         = "schedule"
-	TriggerTypeQR                = "qr"
-	TriggerTypeImage             = "image"
-	TriggerTypeEmail             = "email"
-	TriggerTypeTelegram          = "telegram"
-	TriggerTypeForm              = "form"
-	TriggerTypeWebhook           = "webhook"
-	TriggerTypeGitPoll           = "git-poll"
-	TriggerTypeS3                = "s3"
-	TriggerTypeGitLabWebhook     = "gitlab-webhook"
-	TriggerTypeGitHubWebhook     = "github-webhook"
-	TriggerTypeFacebookMessenger = "facebook-messenger"
-	TriggerTypeFacebookFeed      = "facebook-feed"
-	TriggerTypeLinkedInPoll      = "linkedin-poll"
-	TriggerTypeGoogleDrive       = "google-drive"
-	TriggerTypeMicrosoftOutlook  = "microsoft-outlook"
-	TriggerTypeTeams             = "teams"
-	TriggerTypeMailchimpWebhook  = "mailchimp-webhook" // #nosec G101 — trigger type identifier, not a credential
-	TriggerTypeShopifyWebhook    = "shopify-webhook"   // #nosec G101 — trigger type identifier, not a credential
-	TriggerTypeCalendlyWebhook   = "calendly-webhook"  // #nosec G101 — trigger type identifier, not a credential
-	TriggerTypeZendeskWebhook    = "zendesk-webhook"   // #nosec G101 — trigger type identifier, not a credential
-	TriggerTypeCalcomWebhook     = "calcom-webhook"    // #nosec G101 — trigger type identifier, not a credential
-	TriggerTypeAcuityWebhook     = "acuity-webhook"    // #nosec G101 — trigger type identifier, not a credential
-	TriggerTypeStripeWebhook     = "stripe-webhook"    // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeManual             = "manual"
+	TriggerTypeScheduled          = "schedule"
+	TriggerTypeQR                 = "qr"
+	TriggerTypeImage              = "image"
+	TriggerTypeEmail              = "email"
+	TriggerTypeTelegram           = "telegram"
+	TriggerTypeForm               = "form"
+	TriggerTypeWebhook            = "webhook"
+	TriggerTypeGitPoll            = "git-poll"
+	TriggerTypeS3                 = "s3"
+	TriggerTypeGitLabWebhook      = "gitlab-webhook"
+	TriggerTypeGitHubWebhook      = "github-webhook"
+	TriggerTypeFacebookMessenger  = "facebook-messenger"
+	TriggerTypeFacebookFeed       = "facebook-feed"
+	TriggerTypeLinkedInPoll       = "linkedin-poll"
+	TriggerTypeGoogleDrive        = "google-drive"
+	TriggerTypeMicrosoftOutlook   = "microsoft-outlook"
+	TriggerTypeTeams              = "teams"
+	TriggerTypeMailchimpWebhook   = "mailchimp-webhook"   // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeShopifyWebhook     = "shopify-webhook"     // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeCalendlyWebhook    = "calendly-webhook"    // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeZendeskWebhook     = "zendesk-webhook"     // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeCalcomWebhook      = "calcom-webhook"      // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeAcuityWebhook      = "acuity-webhook"      // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeStripeWebhook      = "stripe-webhook"      // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeWooCommerceWebhook = "woocommerce-webhook" // #nosec G101 — trigger type identifier, not a credential
 )
 
 type Trigger struct {
