@@ -404,6 +404,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeShopifyWebhook:
 		s.handleShopifyWebhook(c, tr)
 		return
+	case launch.TriggerTypeStripeWebhook:
+		s.handleStripeWebhook(c, tr)
+		return
 	case launch.TriggerTypeCalendlyWebhook:
 		s.handleCalendlyWebhook(c, tr)
 		return
