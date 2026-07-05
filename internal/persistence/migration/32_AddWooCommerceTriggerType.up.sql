@@ -1,0 +1,12 @@
+-- Add the WooCommerce webhook trigger type to launch's TriggerType enum.
+-- Without it, CreateTrigger's INSERT INTO trigger (type) ... = 'woocommerce-webhook'
+-- is rejected by Postgres (invalid enum value) and the trigger silently fails to
+-- register in launch, so inbound webhooks 404.
+--
+-- Migration NUMBERING NOTE: 31 is deliberately left for the separate
+-- "repair calcom/acuity trigger types" MR (those two webhook trigger types were
+-- likewise never added to this enum). That repair (31) must merge BEFORE this
+-- migration (32): golang-migrate applies versions in ascending order and
+-- silently skips a lower-numbered migration that lands after a higher one has
+-- already been applied. See that MR.
+ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'woocommerce-webhook';

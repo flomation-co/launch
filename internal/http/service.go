@@ -422,6 +422,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeAcuityWebhook:
 		s.handleAcuityWebhook(c, tr)
 		return
+	case launch.TriggerTypeWooCommerceWebhook:
+		s.handleWooCommerceWebhook(c, tr)
+		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
 	default:
