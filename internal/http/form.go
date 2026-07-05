@@ -26,6 +26,27 @@ type formDefinition struct {
 	// placeholders and default values. Nil (the default for every existing
 	// form) means no autofill. See formDataResolver for the caching model.
 	DataSource *formDataSource `json:"data_source,omitempty"`
+
+	// Submit configures what happens after a successful submission. Nil keeps
+	// the default "Thank you!" card.
+	Submit *formSubmit `json:"submit,omitempty"`
+}
+
+// formSubmit configures the post-submission experience.
+type formSubmit struct {
+	// SuccessMessage overrides the default "Your response has been submitted
+	// successfully." text. Shown for the "message" and "restart" modes.
+	SuccessMessage string `json:"success_message,omitempty"`
+	// OnSubmit selects the behaviour: "message" (default — a thank-you card),
+	// "restart" (reset the form for another response — kiosk loop), or
+	// "redirect" (send the browser to RedirectURL).
+	OnSubmit string `json:"on_submit,omitempty"`
+	// RedirectURL is the destination for the "redirect" mode. The client only
+	// follows http(s) URLs.
+	RedirectURL string `json:"redirect_url,omitempty"`
+	// RedirectDelaySeconds optionally holds the thank-you view for a moment
+	// before redirecting. Zero redirects immediately.
+	RedirectDelaySeconds int `json:"redirect_delay_seconds,omitempty"`
 }
 
 // formDataSource configures form-field autofill from a flow's outputs.
@@ -255,6 +276,14 @@ func resolveFormForRender(def formDefinition, ctx substitutionContext) formDefin
 			comps[ci] = comp
 		}
 		resolved.Pages[pi] = formPage{Components: comps}
+	}
+	// Interpolate the post-submission thank-you message the same way as labels,
+	// so it can reference ${user.X}/${data.X}/${query.X}. Copy the struct so we
+	// never mutate the (possibly cached) source definition.
+	if resolved.Submit != nil {
+		sub := *resolved.Submit
+		sub.SuccessMessage = applySubstitutions(sub.SuccessMessage, ctx)
+		resolved.Submit = &sub
 	}
 	return resolved
 }

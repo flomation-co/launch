@@ -612,7 +612,8 @@
 
         .success-icon { font-size: 48px; margin-bottom: 16px; }
         .success-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
-        .success-text { font-size: 14px; color: var(--text-muted); }
+        .success-text { font-size: 14px; color: var(--text-muted); white-space: pre-wrap; }
+        .success-subtext { font-size: 12px; color: var(--text-muted); opacity: 0.7; margin-top: 12px; }
 
         .footer {
             margin-top: 32px;
@@ -2915,14 +2916,7 @@
             body: JSON.stringify(payload)
         })
         .then(() => {
-            const container = document.getElementById("form-container");
-            container.innerHTML = `
-                <div class="success-message">
-                    <div class="success-icon">&#x2705;</div>
-                    <div class="success-title">Thank you!</div>
-                    <div class="success-text">Your response has been submitted successfully.</div>
-                </div>
-            `;
+            handleSubmitSuccess(form);
         })
         .catch(() => {
             submit.disabled = false;
@@ -2930,6 +2924,76 @@
         });
     }
 
+    // handleSubmitSuccess runs the author-configured post-submission behaviour:
+    // a custom thank-you message, resetting the form for another response
+    // (kiosk loop), or redirecting the browser.
+    function handleSubmitSuccess(form) {
+        const cfg = (form && form.submit) || {};
+        const mode = cfg.on_submit || "message";
+        const msg = (cfg.success_message && cfg.success_message.trim())
+            ? cfg.success_message
+            : "Your response has been submitted successfully.";
+
+        if (mode === "redirect") {
+            const url = safeRedirectURL(cfg.redirect_url);
+            if (url) {
+                showThankYou(msg, "Redirecting…");
+                const delay = Math.max(0, cfg.redirect_delay_seconds || 0) * 1000;
+                setTimeout(() => { window.location.assign(url); }, delay);
+                return;
+            }
+            // Missing/unsafe URL — fall through to a plain thank-you message.
+        }
+
+        if (mode === "restart") {
+            showThankYou(msg, "Resetting…");
+            setTimeout(() => restartForm(form), 2500);
+            return;
+        }
+
+        showThankYou(msg, "");
+    }
+
+    // showThankYou renders the success card. The message is author-controlled,
+    // so it is set via textContent (never innerHTML) to avoid script injection.
+    function showThankYou(text, subtext) {
+        const container = document.getElementById("form-container");
+        container.innerHTML =
+            '<div class="success-message">' +
+              '<div class="success-icon">&#x2705;</div>' +
+              '<div class="success-title">Thank you!</div>' +
+              '<div class="success-text"></div>' +
+              (subtext ? '<div class="success-subtext"></div>' : '') +
+            '</div>';
+        container.querySelector(".success-text").textContent = text;
+        if (subtext) container.querySelector(".success-subtext").textContent = subtext;
+    }
+
+    // safeRedirectURL only permits http(s) destinations — never javascript:,
+    // data:, etc. Relative URLs resolve against the current origin.
+    function safeRedirectURL(u) {
+        if (!u) return null;
+        try {
+            const url = new URL(u, window.location.origin);
+            return (url.protocol === "http:" || url.protocol === "https:") ? url.href : null;
+        } catch (_) { return null; }
+    }
+
+    // restartForm resets all state and re-renders the blank form from the
+    // captured skeleton — used by the "restart" mode (e.g. an unattended
+    // car-park kiosk reading the next vehicle).
+    function restartForm(form) {
+        formValues = {};
+        currentPage = 0;
+        hiddenFields = new Set();
+        hiddenPages = new Set();
+        document.getElementById("form-container").innerHTML = FORM_SKELETON;
+        renderForm();
+    }
+
+    // Capture the blank form skeleton before first render so restartForm can
+    // rebuild it after a submission replaces the container with the thank-you.
+    const FORM_SKELETON = document.getElementById("form-container").innerHTML;
     renderForm();
 </script>
 {{ end }}
