@@ -55,6 +55,11 @@ type woocommerceWebhookState struct {
 	Webhooks []wooReg `json:"webhooks"`
 	Secret   string   `json:"secret"`
 	Events   []string `json:"events"`
+	// Base is the store the webhooks were created on. Persisted so that
+	// re-pointing the trigger at a different store (same event set) is detected
+	// and the webhooks are recreated on the new store, rather than silently
+	// leaving them on the old one.
+	Base string `json:"base"`
 }
 
 // wooCreds is the resolved connection for a WooCommerce trigger.
@@ -280,7 +285,7 @@ func (s *Service) registerWooCommerceWebhook(tr *launch.Trigger) {
 	// existing webhooks. Checked before any REST call — createTrigger runs on
 	// every flow save and the common case must not cost a round-trip.
 	state := s.loadWooState(tr.ID)
-	if state != nil && len(state.Webhooks) > 0 && state.Secret != "" && woocommerceSameEventSet(state.Events, cr.events) {
+	if state != nil && len(state.Webhooks) > 0 && state.Secret != "" && state.Base == cr.base && woocommerceSameEventSet(state.Events, cr.events) {
 		return
 	}
 
@@ -329,7 +334,7 @@ func (s *Service) registerWooCommerceWebhook(tr *launch.Trigger) {
 		return
 	}
 
-	stateJSON, _ := json.Marshal(woocommerceWebhookState{Webhooks: regs, Secret: secret, Events: cr.events})
+	stateJSON, _ := json.Marshal(woocommerceWebhookState{Webhooks: regs, Secret: secret, Events: cr.events, Base: cr.base})
 	if err := s.db.UpsertTriggerState(tr.ID, woocommerceStateKey, stateJSON); err != nil {
 		// Without the secret every delivery would be rejected; remove the
 		// just-created webhooks so the next save retries cleanly.
@@ -401,16 +406,20 @@ func (s *Service) handleWooCommerceWebhook(c *gin.Context, tr *launch.Trigger) {
 		return
 	}
 
-	// Topic filter (e.g. ["order.created"]); empty matches all. The webhook set
-	// is already topic-scoped, but this also guards deliveries from a webhook
-	// created before a config change.
-	var triggerData map[string]interface{}
-	_ = json.Unmarshal(tr.Data, &triggerData)
+	// Topic filter against the topics we actually registered (state.Events, the
+	// RESOLVED selection). The config field triggerData["events"] can hold an
+	// unresolved ${...} reference — registration resolves it, so filtering on the
+	// raw field would drop every delivery when a variable is used. The webhook
+	// set is already topic-scoped; this is a guard for deliveries from a webhook
+	// created before a config change. Empty registered set matches all.
 	topic, _ := data["topic"].(string)
-	if !woocommercewh.MatchesFilter(topic, asString(triggerData["events"])) {
+	if !woocommercewh.MatchesFilter(topic, strings.Join(state.Events, ",")) {
 		c.Status(http.StatusOK)
 		return
 	}
+
+	var triggerData map[string]interface{}
+	_ = json.Unmarshal(tr.Data, &triggerData)
 
 	// Carry __node_id so the executor injects event data into the correct
 	// trigger node in multi-trigger flows.
