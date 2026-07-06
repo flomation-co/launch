@@ -433,9 +433,20 @@ func (s *Service) handleJiraWebhook(c *gin.Context, tr *launch.Trigger) {
 
 	state := s.loadJiraState(id)
 
-	// Verify the HMAC-SHA256 signature when a secret was registered.
-	if state != nil && state.Secret != "" {
-		if !jiraVerifySignature(body, c.GetHeader("X-Hub-Signature"), state.Secret) {
+	// Resolve the signing secret from the trigger's own config — this works
+	// whether the webhook was auto-registered by launch OR created manually on
+	// Jira (the common case), since it reads the same `secret` field the operator
+	// entered. Fall back to the auto-registered state secret if the config no
+	// longer resolves. Verify the HMAC-SHA256 signature whenever a secret is set.
+	secret := ""
+	if creds, ok := s.resolveJiraCreds(tr); ok {
+		secret = creds.secret
+	}
+	if secret == "" && state != nil {
+		secret = state.Secret
+	}
+	if secret != "" {
+		if !jiraVerifySignature(body, c.GetHeader("X-Hub-Signature"), secret) {
 			log.WithFields(log.Fields{"id": id}).Warn("Jira webhook signature verification failed")
 			c.AbortWithStatus(http.StatusUnauthorized)
 			return
