@@ -97,6 +97,17 @@ const jiraMaxSecretLen = 128
 var jiraAllEvents = []string{
 	"jira:issue_created", "jira:issue_updated", "jira:issue_deleted",
 	"comment_created", "comment_updated", "comment_deleted",
+	"worklog_created", "worklog_updated", "worklog_deleted",
+	"issuelink_created", "issuelink_deleted",
+	"jira:version_created", "jira:version_updated", "jira:version_deleted",
+	"jira:version_released", "jira:version_unreleased", "jira:version_moved",
+	"sprint_created", "sprint_updated", "sprint_deleted", "sprint_started", "sprint_closed",
+	"board_created", "board_updated", "board_deleted", "board_configuration_changed",
+	"project_created", "project_updated", "project_deleted",
+	"user_created", "user_updated", "user_deleted",
+	"option_voting_changed", "option_watching_changed", "option_unassigned_issues_changed",
+	"option_subtasks_changed", "option_attachments_changed", "option_issuelinks_changed",
+	"option_timetracking_changed",
 }
 
 // jiraIssueEvents / jiraCommentEvents back the operator-friendly "issues" /
