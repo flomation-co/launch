@@ -3,6 +3,9 @@ package http
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -111,6 +114,11 @@ type jiraWebhookState struct {
 	Events []string `json:"events"`
 	JQL    string   `json:"jql"`
 	Base   string   `json:"base"`
+	// Secret is the shared secret registered with Jira. When non-empty, Jira
+	// signs each delivery (HMAC-SHA256 in X-Hub-Signature) and inbound requests
+	// are verified against it. Persisted so the inbound handler can verify
+	// without re-resolving the trigger's credentials.
+	Secret string `json:"secret,omitempty"`
 }
 
 // jiraCreds is the resolved connection for a Jira trigger.
@@ -120,6 +128,7 @@ type jiraCreds struct {
 	apiToken string
 	events   []string
 	jql      string
+	secret   string // optional webhook signing secret (HMAC-SHA256)
 }
 
 // resolveJiraCreds pulls and normalises the trigger's Jira connection. ok is
@@ -138,6 +147,7 @@ func (s *Service) resolveJiraCreds(tr *launch.Trigger) (jiraCreds, bool) {
 		apiToken: apiToken,
 		events:   jiraEvents(c["events"]),
 		jql:      strings.TrimSpace(c["jql"]),
+		secret:   strings.TrimSpace(c["secret"]),
 	}, true
 }
 
@@ -329,7 +339,7 @@ func (s *Service) registerJiraWebhook(ctx context.Context, tr *launch.Trigger) {
 	// before any REST call — createTrigger runs on every flow save and the
 	// common case must not cost a round-trip.
 	state := s.loadJiraState(tr.ID)
-	if state != nil && state.Self != "" && state.Base == cr.base && state.JQL == cr.jql && jiraSameEventSet(state.Events, cr.events) {
+	if state != nil && state.Self != "" && state.Base == cr.base && state.JQL == cr.jql && state.Secret == cr.secret && jiraSameEventSet(state.Events, cr.events) {
 		return
 	}
 
@@ -350,6 +360,11 @@ func (s *Service) registerJiraWebhook(ctx context.Context, tr *launch.Trigger) {
 	if cr.jql != "" {
 		body["filters"] = map[string]interface{}{"issue-related-events-section": cr.jql}
 	}
+	// When a signing secret is supplied, register it so Jira signs each delivery
+	// (HMAC-SHA256 in X-Hub-Signature); inbound requests are then verified.
+	if cr.secret != "" {
+		body["secret"] = cr.secret
+	}
 
 	resp, status, err := jiraDo(ctx, cr, http.MethodPost, cr.base+jiraWebhookAPIPath, body)
 	if err != nil || status >= 300 {
@@ -368,7 +383,7 @@ func (s *Service) registerJiraWebhook(ctx context.Context, tr *launch.Trigger) {
 		id = self[idx+1:]
 	}
 
-	stateJSON, _ := json.Marshal(jiraWebhookState{Self: self, ID: id, Events: cr.events, JQL: cr.jql, Base: cr.base})
+	stateJSON, _ := json.Marshal(jiraWebhookState{Self: self, ID: id, Events: cr.events, JQL: cr.jql, Base: cr.base, Secret: cr.secret})
 	if err := s.db.UpsertTriggerState(tr.ID, jiraStateKey, stateJSON); err != nil {
 		// Without persisted state we can never deregister; remove the
 		// just-created webhook so the next save retries cleanly.
@@ -399,12 +414,14 @@ func (s *Service) deregisterJiraWebhook(ctx context.Context, tr *launch.Trigger)
 
 // handleJiraWebhook handles an inbound Jira webhook for a trigger.
 //
-// No signature verification: the Jira classic webhook API (/rest/webhooks/1.0)
-// does not support signing or a shared secret — there is simply no signature to
-// verify (unlike WooCommerce's HMAC). This is a platform limitation, not an
-// oversight. Security therefore rests on the unguessable trigger-id embedded in
-// the per-trigger callback URL, consistent with the other unsigned-webhook
-// triggers. Called from handleWebhook after the trigger is fetched + type-checked.
+// Signature verification: Jira Cloud classic webhooks (/rest/webhooks/1.0)
+// support a shared secret — when one is configured, Jira signs each delivery
+// with HMAC-SHA256 over the raw body, delivered as "X-Hub-Signature: sha256=…".
+// If the trigger stored a secret, a delivery with a missing or mismatched
+// signature is rejected (401). When no secret is set the endpoint accepts the
+// delivery and security rests on the unguessable trigger-id in the callback URL
+// (consistent with the other webhook triggers, but the secret is recommended).
+// Called from handleWebhook after the trigger is fetched + type-checked.
 func (s *Service) handleJiraWebhook(c *gin.Context, tr *launch.Trigger) {
 	id := tr.ID
 
@@ -412,6 +429,17 @@ func (s *Service) handleJiraWebhook(c *gin.Context, tr *launch.Trigger) {
 	if err != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
+	}
+
+	state := s.loadJiraState(id)
+
+	// Verify the HMAC-SHA256 signature when a secret was registered.
+	if state != nil && state.Secret != "" {
+		if !jiraVerifySignature(body, c.GetHeader("X-Hub-Signature"), state.Secret) {
+			log.WithFields(log.Fields{"id": id}).Warn("Jira webhook signature verification failed")
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
 	}
 
 	var data map[string]interface{}
@@ -430,11 +458,32 @@ func (s *Service) handleJiraWebhook(c *gin.Context, tr *launch.Trigger) {
 	// fired event in the payload's webhookEvent field. The webhook is already
 	// event-scoped, but this guards deliveries from a webhook created before a
 	// config change. Empty registered set matches all.
-	state := s.loadJiraState(id)
 	event, _ := data["webhookEvent"].(string)
 	if state != nil && !jiraMatchesFilter(event, state.Events) {
 		c.Status(http.StatusOK)
 		return
+	}
+
+	// Flatten the nested Jira payload into the trigger node's declared outputs
+	// (webhook_event / issue_key / issue_id / user / timestamp / body), mirroring
+	// the WooCommerce trigger — the executor node echoes exactly these fields.
+	out := map[string]interface{}{
+		"webhook_event": event,
+		"body":          string(body),
+	}
+	if ts, ok := data["timestamp"]; ok {
+		out["timestamp"] = fmt.Sprintf("%v", ts)
+	}
+	if iss, ok := data["issue"].(map[string]interface{}); ok {
+		out["issue_key"] = asString(iss["key"])
+		out["issue_id"] = asString(iss["id"])
+	}
+	if u, ok := data["user"].(map[string]interface{}); ok {
+		if name := asString(u["displayName"]); name != "" {
+			out["user"] = name
+		} else {
+			out["user"] = asString(u["accountId"])
+		}
 	}
 
 	var triggerData map[string]interface{}
@@ -443,14 +492,31 @@ func (s *Service) handleJiraWebhook(c *gin.Context, tr *launch.Trigger) {
 	// Carry __node_id so the executor injects event data into the correct
 	// trigger node in multi-trigger flows.
 	if nodeID := asString(triggerData["__node_id"]); nodeID != "" {
-		data["__node_id"] = nodeID
+		out["__node_id"] = nodeID
 	}
 
 	go func() {
-		if err := s.trigger.Trigger(tr, data); err != nil {
+		if err := s.trigger.Trigger(tr, out); err != nil {
 			log.WithFields(log.Fields{"error": err}).Error("unable to fire Jira webhook trigger")
 		}
 	}()
 
 	c.Status(http.StatusOK)
+}
+
+// jiraVerifySignature checks a Jira "X-Hub-Signature" header ("sha256=<hex>")
+// against the HMAC-SHA256 of the raw body keyed by secret, using a constant-time
+// comparison. A missing/malformed header fails closed.
+func jiraVerifySignature(body []byte, header, secret string) bool {
+	const prefix = "sha256="
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	want, err := hex.DecodeString(strings.TrimPrefix(header, prefix))
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hmac.Equal(want, mac.Sum(nil))
 }
