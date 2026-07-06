@@ -87,6 +87,11 @@ func isJiraCloudMetadataIP(ip net.IP) bool {
 // webhook API lives at /rest/webhooks/1.0, NOT under /rest/api/2.
 const jiraWebhookAPIPath = "/rest/webhooks/1.0/webhook"
 
+// jiraMaxSecretLen is Jira's maximum length for a webhook signing secret. A
+// longer value is rejected by Jira's registration endpoint (HTTP 400), so it is
+// never sent — note an Atlassian API token exceeds this and can't be reused.
+const jiraMaxSecretLen = 128
+
 // jiraAllEvents is the default event selection when the trigger config carries
 // none (matching the WooCommerce/Acuity convention: empty = all).
 var jiraAllEvents = []string{
@@ -361,9 +366,17 @@ func (s *Service) registerJiraWebhook(ctx context.Context, tr *launch.Trigger) {
 		body["filters"] = map[string]interface{}{"issue-related-events-section": cr.jql}
 	}
 	// When a signing secret is supplied, register it so Jira signs each delivery
-	// (HMAC-SHA256 in X-Hub-Signature); inbound requests are then verified.
+	// (HMAC-SHA256 in X-Hub-Signature); inbound requests are then verified. Jira
+	// caps the secret at 128 chars (an API token is longer, so it can't be reused
+	// here) — a longer value would make Jira reject the whole registration, so
+	// omit it and warn rather than fail the webhook outright.
 	if cr.secret != "" {
-		body["secret"] = cr.secret
+		if len(cr.secret) > jiraMaxSecretLen {
+			log.WithFields(log.Fields{"trigger_id": tr.ID, "length": len(cr.secret)}).
+				Warn("jira trigger: signing secret exceeds Jira's 128-char limit; registering WITHOUT signature verification — use a shorter dedicated secret, not the API token")
+		} else {
+			body["secret"] = cr.secret
+		}
 	}
 
 	resp, status, err := jiraDo(ctx, cr, http.MethodPost, cr.base+jiraWebhookAPIPath, body)
