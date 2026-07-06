@@ -342,7 +342,11 @@ func (s *Service) registerJiraWebhook(ctx context.Context, tr *launch.Trigger) {
 
 	// Nothing changed since the last save: keep the existing webhook. Checked
 	// before any REST call — createTrigger runs on every flow save and the
-	// common case must not cost a round-trip.
+	// common case must not cost a round-trip. The plain `==` on Secret is a
+	// change-detection compare of two values we own (persisted state vs freshly
+	// resolved config), NOT a verification against untrusted input — there is no
+	// timing oracle to worry about, so constant-time hmac.Equal isn't needed here
+	// (unlike the signature check in handleJiraWebhook, which does use it).
 	state := s.loadJiraState(tr.ID)
 	if state != nil && state.Self != "" && state.Base == cr.base && state.JQL == cr.jql && state.Secret == cr.secret && jiraSameEventSet(state.Events, cr.events) {
 		return
@@ -480,7 +484,10 @@ func (s *Service) handleJiraWebhook(c *gin.Context, tr *launch.Trigger) {
 	// Event filter against the events we actually registered. Jira reports the
 	// fired event in the payload's webhookEvent field. The webhook is already
 	// event-scoped, but this guards deliveries from a webhook created before a
-	// config change. Empty registered set matches all.
+	// config change. Empty registered set matches all. When state is nil (a
+	// webhook registered manually on Jira, with no persisted state) the filter is
+	// skipped entirely — deliberate: Jira only delivers the events the manual
+	// webhook subscribed to, so there is nothing extra to filter out here.
 	event, _ := data["webhookEvent"].(string)
 	if state != nil && !jiraMatchesFilter(event, state.Events) {
 		c.Status(http.StatusOK)
