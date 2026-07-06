@@ -425,6 +425,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeWooCommerceWebhook:
 		s.handleWooCommerceWebhook(c, tr)
 		return
+	case launch.TriggerTypeJiraWebhook:
+		s.handleJiraWebhook(c, tr)
+		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
 	default:

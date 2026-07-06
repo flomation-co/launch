@@ -79,6 +79,10 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// at /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
 	s.registerWooCommerceWebhook(c.Request.Context(), &tr)
 
+	// Jira triggers: auto-register one classic webhook covering the selected
+	// events pointing at /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
+	s.registerJiraWebhook(c.Request.Context(), &tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -170,6 +174,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the WooCommerce webhooks we created.
 	if t.Type == launch.TriggerTypeWooCommerceWebhook {
 		s.deregisterWooCommerceWebhook(c.Request.Context(), t)
+	}
+
+	// Deregister the Jira webhook we created.
+	if t.Type == launch.TriggerTypeJiraWebhook {
+		s.deregisterJiraWebhook(c.Request.Context(), t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {
