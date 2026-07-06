@@ -157,7 +157,9 @@ func jiraBaseURL(raw string) string {
 		return ""
 	}
 	path := strings.TrimRight(u.Path, "/")
-	for _, suffix := range []string{jiraWebhookAPIPath, "/rest/webhooks/1.0", "/rest/api/2", "/rest/api/3", "/rest"} {
+	// REST-suffix strip set kept in sync with the api option-proxy and executor
+	// normalisers (incl. /rest/api/latest).
+	for _, suffix := range []string{jiraWebhookAPIPath, "/rest/webhooks/1.0", "/rest/api/2", "/rest/api/3", "/rest/api/latest", "/rest"} {
 		if strings.HasSuffix(path, suffix) {
 			path = strings.TrimSuffix(path, suffix)
 			break
@@ -395,10 +397,14 @@ func (s *Service) deregisterJiraWebhook(ctx context.Context, tr *launch.Trigger)
 	}
 }
 
-// handleJiraWebhook handles an inbound Jira webhook for a trigger. Jira classic
-// webhooks are NOT signed by default, so the body is accepted as-is and handed
-// to the flow (unlike WooCommerce, there is no signature to verify). Called from
-// handleWebhook after the trigger has been fetched and type-checked.
+// handleJiraWebhook handles an inbound Jira webhook for a trigger.
+//
+// No signature verification: the Jira classic webhook API (/rest/webhooks/1.0)
+// does not support signing or a shared secret — there is simply no signature to
+// verify (unlike WooCommerce's HMAC). This is a platform limitation, not an
+// oversight. Security therefore rests on the unguessable trigger-id embedded in
+// the per-trigger callback URL, consistent with the other unsigned-webhook
+// triggers. Called from handleWebhook after the trigger is fetched + type-checked.
 func (s *Service) handleJiraWebhook(c *gin.Context, tr *launch.Trigger) {
 	id := tr.ID
 
