@@ -1,0 +1,552 @@
+package http
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"syscall"
+	"time"
+
+	"flomation.app/automate/launch"
+
+	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
+)
+
+// jiraHTTPClient is used for the outbound Jira REST calls that
+// register/deregister webhooks. The Jira site URL is caller-supplied, so this
+// client is SSRF-hardened the same way as the WooCommerce client (and the api's
+// option proxies): the dialer refuses link-local and cloud-metadata
+// destinations (169.254.169.254 et al) on the address actually dialed, and
+// cross-host redirects are refused. Loopback and private LAN ranges stay
+// allowed — self-hosted Jira Data Center instances commonly live there.
+var jiraHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("stopped after too many redirects")
+		}
+		if req.URL.Host != via[0].URL.Host {
+			return errors.New("cross-host redirect not allowed")
+		}
+		return nil
+	},
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 5 * time.Second,
+			Control: func(network, address string, _ syscall.RawConn) error {
+				host, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return err
+				}
+				ip := net.ParseIP(host)
+				if ip == nil {
+					return nil
+				}
+				if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+					return errors.New("link-local addresses are not allowed")
+				}
+				if isJiraCloudMetadataIP(ip) {
+					return errors.New("cloud metadata addresses are not allowed")
+				}
+				return nil
+			},
+		}).DialContext,
+	},
+}
+
+// jiraBlockedMetadataIPs are instance-metadata addresses outside the link-local
+// range (AWS IPv6 IMDS and Alibaba's 100.100.100.200). Private RFC1918/ULA
+// ranges are deliberately NOT blocked — a self-hosted Jira Data Center
+// legitimately lives there. Mirrors the WooCommerce dialer's list; keep in sync.
+var jiraBlockedMetadataIPs = []net.IP{
+	net.ParseIP("fd00:ec2::254"),
+	net.ParseIP("100.100.100.200"),
+}
+
+func isJiraCloudMetadataIP(ip net.IP) bool {
+	for _, b := range jiraBlockedMetadataIPs {
+		if b != nil && ip.Equal(b) {
+			return true
+		}
+	}
+	return false
+}
+
+// jiraWebhookAPIPath is the Jira classic-webhook REST endpoint. NOTE: the
+// webhook API lives at /rest/webhooks/1.0, NOT under /rest/api/2.
+const jiraWebhookAPIPath = "/rest/webhooks/1.0/webhook"
+
+// jiraMaxSecretLen is Jira's maximum length for a webhook signing secret. A
+// longer value is rejected by Jira's registration endpoint (HTTP 400), so it is
+// never sent.
+const jiraMaxSecretLen = 128
+
+// jiraAllEvents is the default event selection when the trigger config carries
+// none (matching the WooCommerce/Acuity convention: empty = all).
+var jiraAllEvents = []string{
+	"jira:issue_created", "jira:issue_updated", "jira:issue_deleted",
+	"comment_created", "comment_updated", "comment_deleted",
+}
+
+// jiraIssueEvents / jiraCommentEvents back the operator-friendly "issues" /
+// "comments" shortcuts in the events config.
+var jiraIssueEvents = []string{"jira:issue_created", "jira:issue_updated", "jira:issue_deleted"}
+var jiraCommentEvents = []string{"comment_created", "comment_updated", "comment_deleted"}
+
+// jiraStateKey is the trigger_state key holding the webhook created for a
+// jira-webhook trigger.
+const jiraStateKey = "jira_webhook"
+
+// jiraWebhookState is what we persist per trigger: the absolute self URL of the
+// webhook we created (so it can be removed on delete), its parsed id, the event
+// set + JQL filter it covers (so a config change is detected and the webhook
+// recreated), and the site it was created on (so re-pointing the trigger at a
+// different site recreates the webhook there).
+type jiraWebhookState struct {
+	Self   string   `json:"self"`
+	ID     string   `json:"id"`
+	Events []string `json:"events"`
+	JQL    string   `json:"jql"`
+	Base   string   `json:"base"`
+	// Secret is the shared secret registered with Jira. When non-empty, Jira
+	// signs each delivery (HMAC-SHA256 in X-Hub-Signature) and inbound requests
+	// are verified against it. Persisted so the inbound handler can verify
+	// without re-resolving the trigger's credentials.
+	Secret string `json:"secret,omitempty"`
+}
+
+// jiraCreds is the resolved connection for a Jira trigger.
+type jiraCreds struct {
+	base     string // normalised site URL (scheme+host[+path], no trailing slash)
+	email    string
+	apiToken string
+	events   []string
+	jql      string
+	secret   string // optional webhook signing secret (HMAC-SHA256)
+}
+
+// resolveJiraCreds pulls and normalises the trigger's Jira connection. ok is
+// false when a required part is missing.
+func (s *Service) resolveJiraCreds(tr *launch.Trigger) (jiraCreds, bool) {
+	c := s.resolveTriggerCreds(tr.ID)
+	base := jiraBaseURL(c["url"])
+	email := strings.TrimSpace(c["email"])
+	apiToken := strings.TrimSpace(c["api_token"])
+	if base == "" || email == "" || apiToken == "" {
+		return jiraCreds{}, false
+	}
+	return jiraCreds{
+		base:     base,
+		email:    email,
+		apiToken: apiToken,
+		events:   jiraEvents(c["events"]),
+		jql:      strings.TrimSpace(c["jql"]),
+		secret:   strings.TrimSpace(c["secret"]),
+	}, true
+}
+
+// jiraBaseURL normalises a pasted site URL to scheme+host[+path] with no
+// trailing slash and no REST-API suffix, defaulting to https. Returns "" when
+// the value is blank or not an http(s) URL (e.g. an unresolved ${...} ref).
+func jiraBaseURL(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.Contains(s, "${") {
+		return ""
+	}
+	if !strings.Contains(s, "://") {
+		s = "https://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	path := strings.TrimRight(u.Path, "/")
+	// REST-suffix strip set kept in sync with the api option-proxy and executor
+	// normalisers (incl. /rest/api/latest).
+	for _, suffix := range []string{jiraWebhookAPIPath, "/rest/webhooks/1.0", "/rest/api/2", "/rest/api/3", "/rest/api/latest", "/rest"} {
+		if strings.HasSuffix(path, suffix) {
+			path = strings.TrimSuffix(path, suffix)
+			break
+		}
+	}
+	u.User = nil
+	return u.Scheme + "://" + u.Host + path
+}
+
+// jiraEvents parses the trigger's event selection (a plain string from
+// resolveTriggerCreds). It accepts the operator-friendly shortcuts
+// "all"/"issues"/"comments", or an explicit comma-separated / JSON-array list of
+// Jira event names. Empty (or "all") → all six events.
+func jiraEvents(sel string) []string {
+	sel = strings.TrimSpace(sel)
+	switch strings.ToLower(sel) {
+	case "", "all":
+		return jiraAllEvents
+	case "issues":
+		return jiraIssueEvents
+	case "comments":
+		return jiraCommentEvents
+	}
+	var out []string
+	if strings.HasPrefix(sel, "[") {
+		var arr []string
+		if json.Unmarshal([]byte(sel), &arr) == nil {
+			for _, e := range arr {
+				if t := strings.TrimSpace(e); t != "" {
+					out = append(out, t)
+				}
+			}
+		}
+	} else {
+		for _, p := range strings.Split(sel, ",") {
+			if t := strings.TrimSpace(p); t != "" {
+				out = append(out, t)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return jiraAllEvents
+	}
+	return out
+}
+
+func jiraSameEventSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[string]bool, len(a))
+	for _, e := range a {
+		set[e] = true
+	}
+	for _, e := range b {
+		if !set[e] {
+			return false
+		}
+	}
+	return true
+}
+
+// jiraMatchesFilter reports whether a fired event is in the registered set.
+// An empty registered set matches all.
+func jiraMatchesFilter(event string, events []string) bool {
+	if len(events) == 0 {
+		return true
+	}
+	for _, e := range events {
+		if e == event {
+			return true
+		}
+	}
+	return false
+}
+
+// jiraDo performs an authenticated Jira REST request. fullURL is an absolute
+// URL (the register endpoint built from the site base, or an absolute webhook
+// self URL for deletion). Credentials go in the HTTP Basic auth header
+// (email:api_token).
+func jiraDo(ctx context.Context, cr jiraCreds, method, fullURL string, body interface{}) (map[string]interface{}, int, error) {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, 0, err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, rdr)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.SetBasicAuth(cr.email, cr.apiToken)
+	req.Header.Set("Accept", "application/json")
+	if rdr != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := jiraHTTPClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var out map[string]interface{}
+	if len(raw) > 0 {
+		if uerr := json.Unmarshal(raw, &out); uerr != nil {
+			b := string(raw)
+			if len(b) > 512 {
+				b = b[:512]
+			}
+			log.WithFields(log.Fields{"status": resp.StatusCode, "body": b}).Warn("jira: non-JSON response body")
+		}
+	}
+	return out, resp.StatusCode, nil
+}
+
+// loadJiraState reads the persisted webhook for a trigger. A missing row yields
+// a nil state, not an error.
+func (s *Service) loadJiraState(triggerID string) *jiraWebhookState {
+	rows, err := s.db.GetTriggerState(triggerID)
+	if err != nil {
+		log.WithFields(log.Fields{"trigger_id": triggerID, "error": err}).Warn("jira trigger: unable to load state")
+		return nil
+	}
+	raw, ok := rows[jiraStateKey]
+	if !ok {
+		return nil
+	}
+	var st jiraWebhookState
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return nil
+	}
+	return &st
+}
+
+// deleteJiraWebhook removes the given webhook from the site (best effort). self
+// is the absolute self URL Jira returned at creation; a 404 is treated as
+// already-gone.
+func deleteJiraWebhook(ctx context.Context, cr jiraCreds, self string) {
+	if self == "" {
+		return
+	}
+	if _, status, err := jiraDo(ctx, cr, http.MethodDelete, self, nil); err != nil || (status >= 300 && status != http.StatusNotFound) {
+		log.WithFields(log.Fields{"self": self, "status": status, "error": err}).Warn("jira trigger: failed to delete webhook")
+	}
+}
+
+// registerJiraWebhook auto-registers one Jira classic webhook covering the
+// selected events, pointing at {PublicURL}/webhook/{trigger_id}. Idempotent —
+// createTrigger runs on every flow save, so an unchanged event set + JQL + site
+// is left untouched; a changed one recreates the webhook. Errors are logged,
+// never fatal (they must not fail the trigger upsert).
+func (s *Service) registerJiraWebhook(ctx context.Context, tr *launch.Trigger) {
+	if tr == nil || tr.Type != launch.TriggerTypeJiraWebhook {
+		return
+	}
+	cr, ok := s.resolveJiraCreds(tr)
+	if !ok {
+		log.WithField("trigger_id", tr.ID).Warn("jira trigger: missing site URL / email / api token; skipping webhook registration")
+		return
+	}
+	callback := fmt.Sprintf("%s/webhook/%s", s.config.PublicURL, tr.ID)
+
+	// Nothing changed since the last save: keep the existing webhook. Checked
+	// before any REST call — createTrigger runs on every flow save and the
+	// common case must not cost a round-trip. The plain `==` on Secret is a
+	// change-detection compare of two values we own (persisted state vs freshly
+	// resolved config), NOT a verification against untrusted input — there is no
+	// timing oracle to worry about, so constant-time hmac.Equal isn't needed here
+	// (unlike the signature check in handleJiraWebhook, which does use it).
+	state := s.loadJiraState(tr.ID)
+	if state != nil && state.Self != "" && state.Base == cr.base && state.JQL == cr.jql && state.Secret == cr.secret && jiraSameEventSet(state.Events, cr.events) {
+		return
+	}
+
+	// The config changed (or stored state is unusable): remove the old webhook
+	// before creating a replacement. The callback is keyed on the stable trigger
+	// ID, so a stale webhook would double-fire the flow.
+	if state != nil && state.Self != "" {
+		deleteJiraWebhook(ctx, cr, state.Self)
+	}
+
+	body := map[string]interface{}{
+		"name":        "Flomation trigger " + tr.ID,
+		"url":         callback,
+		"events":      cr.events,
+		"excludeBody": false,
+	}
+	// The JQL filter is optional; omit the filter key entirely when blank.
+	if cr.jql != "" {
+		body["filters"] = map[string]interface{}{"issue-related-events-section": cr.jql}
+	}
+	// When a signing secret is supplied, register it so Jira signs each delivery
+	// (HMAC-SHA256 in X-Hub-Signature); inbound requests are then verified. Jira
+	// caps the secret at 128 chars — a longer value would make Jira reject the
+	// whole registration, so omit it and warn rather than fail the webhook.
+	if cr.secret != "" {
+		if len(cr.secret) > jiraMaxSecretLen {
+			log.WithFields(log.Fields{"trigger_id": tr.ID, "length": len(cr.secret)}).
+				Warn("jira trigger: signing secret exceeds Jira's 128-char limit; registering WITHOUT signature verification — use a shorter secret")
+		} else {
+			body["secret"] = cr.secret
+		}
+	}
+
+	resp, status, err := jiraDo(ctx, cr, http.MethodPost, cr.base+jiraWebhookAPIPath, body)
+	if err != nil || status >= 300 {
+		log.WithFields(log.Fields{"trigger_id": tr.ID, "status": status, "error": err, "response": resp}).Warn("failed to register Jira webhook")
+		return
+	}
+	self := asString(resp["self"])
+	if self == "" {
+		log.WithFields(log.Fields{"trigger_id": tr.ID}).Warn("jira trigger: webhook created but no self URL returned")
+		return
+	}
+	// The id is the last path segment of the self URL (Jira does not return a
+	// separate id field on classic webhooks). Persisted for diagnostics.
+	id := self
+	if idx := strings.LastIndex(self, "/"); idx >= 0 && idx+1 < len(self) {
+		id = self[idx+1:]
+	}
+
+	stateJSON, _ := json.Marshal(jiraWebhookState{Self: self, ID: id, Events: cr.events, JQL: cr.jql, Base: cr.base, Secret: cr.secret})
+	if err := s.db.UpsertTriggerState(tr.ID, jiraStateKey, stateJSON); err != nil {
+		// Without persisted state we can never deregister; remove the
+		// just-created webhook so the next save retries cleanly.
+		log.WithFields(log.Fields{"trigger_id": tr.ID, "error": err}).Error("jira trigger: unable to persist state; removing webhook")
+		deleteJiraWebhook(ctx, cr, self)
+	}
+}
+
+// deregisterJiraWebhook removes the webhook we registered for this trigger
+// (best effort; logged, never fatal).
+func (s *Service) deregisterJiraWebhook(ctx context.Context, tr *launch.Trigger) {
+	if tr == nil || tr.Type != launch.TriggerTypeJiraWebhook {
+		return
+	}
+	state := s.loadJiraState(tr.ID)
+	if state == nil || state.Self == "" {
+		return
+	}
+	cr, ok := s.resolveJiraCreds(tr)
+	if !ok {
+		return
+	}
+	deleteJiraWebhook(ctx, cr, state.Self)
+	if err := s.db.DeleteTriggerState(tr.ID, jiraStateKey); err != nil {
+		log.WithFields(log.Fields{"trigger_id": tr.ID, "error": err}).Warn("jira trigger: unable to delete state")
+	}
+}
+
+// handleJiraWebhook handles an inbound Jira webhook for a trigger.
+//
+// Signature verification: Jira Cloud classic webhooks (/rest/webhooks/1.0)
+// support a shared secret — when one is configured, Jira signs each delivery
+// with HMAC-SHA256 over the raw body, delivered as "X-Hub-Signature: sha256=…".
+// If the trigger stored a secret, a delivery with a missing or mismatched
+// signature is rejected (401). When no secret is set the endpoint accepts the
+// delivery and security rests on the unguessable trigger-id in the callback URL
+// (consistent with the other webhook triggers, but the secret is recommended).
+// Called from handleWebhook after the trigger is fetched + type-checked.
+func (s *Service) handleJiraWebhook(c *gin.Context, tr *launch.Trigger) {
+	id := tr.ID
+
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 8<<20))
+	if err != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	state := s.loadJiraState(id)
+
+	// Resolve the signing secret from the trigger's own config — this works
+	// whether the webhook was auto-registered by launch OR created manually on
+	// Jira (the common case), since it reads the same `secret` field the operator
+	// entered. Fall back to the auto-registered state secret if the config no
+	// longer resolves. Verify the HMAC-SHA256 signature whenever a secret is set.
+	secret := ""
+	if creds, ok := s.resolveJiraCreds(tr); ok {
+		secret = creds.secret
+	}
+	if secret == "" && state != nil {
+		secret = state.Secret
+	}
+	if secret != "" {
+		if !jiraVerifySignature(body, c.GetHeader("X-Hub-Signature"), secret) {
+			log.WithFields(log.Fields{"id": id}).Warn("Jira webhook signature verification failed")
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+	}
+
+	var data map[string]interface{}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &data); err != nil {
+			log.WithFields(log.Fields{"id": id, "error": err}).Error("Jira webhook parse failed")
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+	}
+	if data == nil {
+		data = map[string]interface{}{}
+	}
+
+	// Event filter against the events we actually registered. Jira reports the
+	// fired event in the payload's webhookEvent field. The webhook is already
+	// event-scoped, but this guards deliveries from a webhook created before a
+	// config change. Empty registered set matches all. When state is nil (a
+	// webhook registered manually on Jira, with no persisted state) the filter is
+	// skipped entirely — deliberate: Jira only delivers the events the manual
+	// webhook subscribed to, so there is nothing extra to filter out here.
+	event, _ := data["webhookEvent"].(string)
+	if state != nil && !jiraMatchesFilter(event, state.Events) {
+		c.Status(http.StatusOK)
+		return
+	}
+
+	// Flatten the nested Jira payload into the trigger node's declared outputs
+	// (webhook_event / issue_key / issue_id / user / timestamp / body), mirroring
+	// the WooCommerce trigger — the executor node echoes exactly these fields.
+	out := map[string]interface{}{
+		"webhook_event": event,
+		"body":          string(body),
+	}
+	if ts, ok := data["timestamp"]; ok {
+		out["timestamp"] = fmt.Sprintf("%v", ts)
+	}
+	if iss, ok := data["issue"].(map[string]interface{}); ok {
+		out["issue_key"] = asString(iss["key"])
+		out["issue_id"] = asString(iss["id"])
+	}
+	if u, ok := data["user"].(map[string]interface{}); ok {
+		if name := asString(u["displayName"]); name != "" {
+			out["user"] = name
+		} else {
+			out["user"] = asString(u["accountId"])
+		}
+	}
+
+	var triggerData map[string]interface{}
+	_ = json.Unmarshal(tr.Data, &triggerData)
+
+	// Carry __node_id so the executor injects event data into the correct
+	// trigger node in multi-trigger flows.
+	if nodeID := asString(triggerData["__node_id"]); nodeID != "" {
+		out["__node_id"] = nodeID
+	}
+
+	go func() {
+		if err := s.trigger.Trigger(tr, out); err != nil {
+			log.WithFields(log.Fields{"error": err}).Error("unable to fire Jira webhook trigger")
+		}
+	}()
+
+	c.Status(http.StatusOK)
+}
+
+// jiraVerifySignature checks a Jira "X-Hub-Signature" header ("sha256=<hex>")
+// against the HMAC-SHA256 of the raw body keyed by secret, using a constant-time
+// comparison. A missing/malformed header fails closed.
+func jiraVerifySignature(body []byte, header, secret string) bool {
+	const prefix = "sha256="
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	want, err := hex.DecodeString(strings.TrimPrefix(header, prefix))
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hmac.Equal(want, mac.Sum(nil))
+}

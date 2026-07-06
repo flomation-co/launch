@@ -32,6 +32,7 @@ const (
 	TriggerTypeAcuityWebhook      = "acuity-webhook"      // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeStripeWebhook      = "stripe-webhook"      // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeWooCommerceWebhook = "woocommerce-webhook" // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeJiraWebhook        = "jira-webhook"        // #nosec G101 — trigger type identifier, not a credential
 )
 
 type Trigger struct {
