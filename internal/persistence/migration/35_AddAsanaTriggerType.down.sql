@@ -1,0 +1,4 @@
+-- PostgreSQL cannot remove a value from an enum type. Rolling back
+-- 'asana-webhook' requires MANUAL INTERVENTION (recreate the enum without it
+-- after ensuring no trigger rows reference it). This is intentionally a no-op so
+-- the down migration doesn't fail; see the enum-rollback runbook.

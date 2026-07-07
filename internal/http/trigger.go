@@ -87,6 +87,11 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// pointing at /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
 	s.registerTrelloWebhook(c.Request.Context(), &tr)
 
+	// Asana triggers: auto-register one webhook watching the selected resource
+	// pointing at /webhook/{trigger_id} (idempotent, with an X-Hook-Secret
+	// handshake). Errors are logged, not fatal.
+	s.registerAsanaWebhook(c.Request.Context(), &tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -188,6 +193,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the Trello webhook we created.
 	if t.Type == launch.TriggerTypeTrelloWebhook {
 		s.deregisterTrelloWebhook(c.Request.Context(), t)
+	}
+
+	// Deregister the Asana webhook we created.
+	if t.Type == launch.TriggerTypeAsanaWebhook {
+		s.deregisterAsanaWebhook(c.Request.Context(), t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {
