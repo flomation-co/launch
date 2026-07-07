@@ -59,10 +59,13 @@ type asanaWebhookState struct {
 	Secret string `json:"secret,omitempty"`
 }
 
-// asanaCreds is the resolved connection for an Asana trigger.
+// asanaCreds is the resolved connection for an Asana trigger. workspace is
+// optional and used only to reconcile with an existing Asana webhook when local
+// state was lost (Asana's GET /webhooks requires a workspace).
 type asanaCreds struct {
-	token    string
-	resource string
+	token     string
+	resource  string
+	workspace string
 }
 
 // resolveAsanaCreds pulls the trigger's Asana connection. ok is false when a
@@ -74,7 +77,40 @@ func (s *Service) resolveAsanaCreds(tr *launch.Trigger) (asanaCreds, bool) {
 	if token == "" || resource == "" {
 		return asanaCreds{}, false
 	}
-	return asanaCreds{token: token, resource: resource}, true
+	return asanaCreds{token: token, resource: resource, workspace: strings.TrimSpace(c["workspace"])}, true
+}
+
+// findAsanaWebhookByTarget looks up an existing Asana webhook whose target
+// matches ours, returning its gid (or "" if none / not resolvable). Used to
+// reconcile when local trigger_state was lost but the Asana webhook still exists
+// — otherwise a fresh POST /webhooks is rejected as a duplicate and the trigger
+// silently stops firing. Requires a workspace (Asana scopes the listing by it).
+func findAsanaWebhookByTarget(ctx context.Context, token, workspace, target string) string {
+	if workspace == "" {
+		return ""
+	}
+	q := url.Values{}
+	q.Set("workspace", workspace)
+	q.Set("opt_fields", "target")
+	q.Set("limit", "100")
+	resp, status, err := asanaDo(ctx, token, http.MethodGet, "/webhooks?"+q.Encode(), nil)
+	if err != nil || status < 200 || status >= 300 {
+		return ""
+	}
+	data, ok := resp["data"].([]interface{})
+	if !ok {
+		return ""
+	}
+	for _, row := range data {
+		m, ok := row.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if asString(m["target"]) == target {
+			return asString(m["gid"])
+		}
+	}
+	return ""
 }
 
 // asanaDo performs an authenticated Asana REST request. bodyData, when non-nil,
@@ -188,13 +224,22 @@ func (s *Service) registerAsanaWebhook(ctx context.Context, tr *launch.Trigger) 
 	// POST /webhooks triggers Asana's synchronous handshake against our callback.
 	// handleAsanaWebhook stores the X-Hook-Secret under this trigger's state and
 	// echoes it; only then does this call return with the webhook gid.
-	resp, status, err := asanaDo(ctx, cr.token, http.MethodPost, "/webhooks", map[string]interface{}{
-		"resource": cr.resource,
-		"target":   target,
-	})
+	body := map[string]interface{}{"resource": cr.resource, "target": target}
+	resp, status, err := asanaDo(ctx, cr.token, http.MethodPost, "/webhooks", body)
 	if err != nil || status >= 300 {
-		log.WithFields(log.Fields{"trigger_id": tr.ID, "status": status, "error": err, "response": resp}).Warn("failed to register Asana webhook")
-		return
+		// A likely cause is a duplicate: our local state was lost but the Asana
+		// webhook still exists, so Asana rejects an identical resource+target.
+		// Find and delete the stale webhook, then retry once with a fresh
+		// handshake (which mints a new secret).
+		if existing := findAsanaWebhookByTarget(ctx, cr.token, cr.workspace, target); existing != "" {
+			log.WithFields(log.Fields{"trigger_id": tr.ID, "gid": existing}).Info("asana trigger: adopting/replacing an orphaned webhook")
+			deleteAsanaWebhook(ctx, cr.token, existing)
+			resp, status, err = asanaDo(ctx, cr.token, http.MethodPost, "/webhooks", body)
+		}
+		if err != nil || status >= 300 {
+			log.WithFields(log.Fields{"trigger_id": tr.ID, "status": status, "error": err, "response": resp}).Warn("failed to register Asana webhook")
+			return
+		}
 	}
 	gid := ""
 	if data, ok := resp["data"].(map[string]interface{}); ok {
@@ -205,13 +250,22 @@ func (s *Service) registerAsanaWebhook(ctx context.Context, tr *launch.Trigger) 
 		return
 	}
 
-	// Re-load the state written by the handshake so we keep the secret, then add
-	// the gid/resource/target.
-	secret := ""
-	if st := s.loadAsanaState(tr.ID); st != nil {
-		secret = st.Secret
+	// Re-load the state the handshake wrote — it MUST carry the secret by now
+	// (Asana only returns from POST /webhooks after our handshake handler
+	// committed the secret and echoed the 200). Merge the gid into it rather than
+	// rebuilding: overwriting with an empty secret would permanently disable
+	// verification (deliveries then fail closed and the trigger stops firing). If
+	// the secret is somehow missing, remove the webhook so the next save retries.
+	st := s.loadAsanaState(tr.ID)
+	if st == nil || st.Secret == "" {
+		log.WithField("trigger_id", tr.ID).Error("asana trigger: handshake secret missing after registration; removing webhook to retry")
+		deleteAsanaWebhook(ctx, cr.token, gid)
+		return
 	}
-	stateJSON, _ := json.Marshal(asanaWebhookState{GID: gid, Resource: cr.resource, Target: target, Secret: secret})
+	st.GID = gid
+	st.Resource = cr.resource
+	st.Target = target
+	stateJSON, _ := json.Marshal(st)
 	if err := s.db.UpsertTriggerState(tr.ID, asanaStateKey, stateJSON); err != nil {
 		log.WithFields(log.Fields{"trigger_id": tr.ID, "error": err}).Error("asana trigger: unable to persist state; removing webhook")
 		deleteAsanaWebhook(ctx, cr.token, gid)
@@ -283,17 +337,21 @@ func (s *Service) handleAsanaWebhook(c *gin.Context, tr *launch.Trigger) {
 	}
 
 	// --- Delivery ---
+	// Asana ALWAYS issues a signing secret during the handshake, so a delivery
+	// with no secret on record means the handshake never completed or the state
+	// was lost — fail CLOSED (reject) rather than fire an unverified flow. (This
+	// differs from the Trello/Jira triggers, where the signing secret is optional
+	// and absence legitimately means "unsigned".)
 	state := s.loadAsanaState(id)
-	secret := ""
-	if state != nil {
-		secret = state.Secret
+	if state == nil || state.Secret == "" {
+		log.WithFields(log.Fields{"id": id}).Warn("Asana webhook delivery with no stored secret — rejecting")
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
 	}
-	if secret != "" {
-		if !asanaVerifySignature(body, c.GetHeader("X-Hook-Signature"), secret) {
-			log.WithFields(log.Fields{"id": id}).Warn("Asana webhook signature verification failed")
-			c.AbortWithStatus(http.StatusUnauthorized)
-			return
-		}
+	if !asanaVerifySignature(body, c.GetHeader("X-Hook-Signature"), state.Secret) {
+		log.WithFields(log.Fields{"id": id}).Warn("Asana webhook signature verification failed")
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
 	}
 
 	var payload struct {
