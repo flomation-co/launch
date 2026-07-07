@@ -1,0 +1,6 @@
+-- PostgreSQL does not support removing values from an enum type.
+-- Rolling back 'trello-webhook' therefore REQUIRES MANUAL INTERVENTION: recreate
+-- the TriggerType enum without this value (create a new enum, ALTER every column
+-- that uses it, drop the old type), after ensuring no `trigger` rows still
+-- reference 'trello-webhook'. This is intentionally a no-op so the down migration
+-- doesn't fail; see the enum-rollback runbook before attempting a real revert.
