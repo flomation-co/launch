@@ -83,6 +83,10 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// events pointing at /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
 	s.registerJiraWebhook(c.Request.Context(), &tr)
 
+	// Trello triggers: auto-register one webhook watching the selected model
+	// pointing at /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
+	s.registerTrelloWebhook(c.Request.Context(), &tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -179,6 +183,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the Jira webhook we created.
 	if t.Type == launch.TriggerTypeJiraWebhook {
 		s.deregisterJiraWebhook(c.Request.Context(), t)
+	}
+
+	// Deregister the Trello webhook we created.
+	if t.Type == launch.TriggerTypeTrelloWebhook {
+		s.deregisterTrelloWebhook(c.Request.Context(), t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {

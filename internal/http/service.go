@@ -159,6 +159,11 @@ func (s *Service) configure() error {
 
 	s.engine.GET("/webhook/:id", s.handleWebhook)
 	s.engine.POST("/webhook/:id", s.handleWebhook)
+	// Trello validates a webhook's callbackURL at registration by sending it a
+	// HEAD request that must return 200, or the webhook is never created. Gin does
+	// not auto-answer HEAD for a GET route, so register one explicitly. Any
+	// provider that probes with HEAD is satisfied by this 200.
+	s.engine.HEAD("/webhook/:id", s.handleWebhookHead)
 	s.engine.GET("/qr/:id", s.handleQr)
 	s.engine.GET("/form/:id", s.handleForm)
 	s.engine.GET("/form/:id/data", s.handleFormData)
@@ -427,6 +432,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 		return
 	case launch.TriggerTypeJiraWebhook:
 		s.handleJiraWebhook(c, tr)
+		return
+	case launch.TriggerTypeTrelloWebhook:
+		s.handleTrelloWebhook(c, tr)
 		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
