@@ -91,7 +91,10 @@ func mondayGraphQL(ctx context.Context, token, query string, variables map[strin
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("monday: failed to read response: %w", err)
+	}
 	var env struct {
 		Data   map[string]interface{} `json:"data"`
 		Errors []struct {
