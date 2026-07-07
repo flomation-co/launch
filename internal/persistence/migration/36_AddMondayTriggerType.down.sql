@@ -1,0 +1,2 @@
+-- PostgreSQL cannot remove an enum value. Rolling back 'monday-webhook' requires
+-- MANUAL INTERVENTION (recreate the enum without it). Intentionally a no-op.
