@@ -111,13 +111,19 @@ func trelloDo(ctx context.Context, cr trelloCreds, method, path string, params u
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var out map[string]interface{}
 	if len(raw) > 0 {
-		if uerr := json.Unmarshal(raw, &out); uerr != nil {
-			b := string(raw)
-			if len(b) > 512 {
-				b = b[:512]
-			}
-			log.WithFields(log.Fields{"status": resp.StatusCode, "body": b}).Warn("trello: non-JSON response body")
+		_ = json.Unmarshal(raw, &out) // best-effort; Trello errors are often plain text
+	}
+	// Log the raw body on any error status. Trello returns validation failures as
+	// a short plain-text body (e.g. "A webhook with that callback, model, and
+	// token already exists"), which json.Unmarshal drops on the floor — without
+	// this, a failed registration only surfaces "response: <nil>" at the call
+	// site, hiding the actual reason. Bounded to 512 chars.
+	if resp.StatusCode >= 300 && len(raw) > 0 {
+		b := string(raw)
+		if len(b) > 512 {
+			b = b[:512]
 		}
+		log.WithFields(log.Fields{"status": resp.StatusCode, "body": b}).Warn("trello: API error response")
 	}
 	return out, resp.StatusCode, nil
 }
