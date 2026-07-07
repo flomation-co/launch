@@ -92,6 +92,11 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// handshake). Errors are logged, not fatal.
 	s.registerAsanaWebhook(c.Request.Context(), &tr)
 
+	// Monday.com triggers: auto-register one webhook for the selected board+event
+	// pointing at /webhook/{trigger_id} (idempotent, with a challenge handshake).
+	// Errors are logged, not fatal.
+	s.registerMondayWebhook(c.Request.Context(), &tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -198,6 +203,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the Asana webhook we created.
 	if t.Type == launch.TriggerTypeAsanaWebhook {
 		s.deregisterAsanaWebhook(c.Request.Context(), t)
+	}
+
+	// Deregister the Monday.com webhook we created.
+	if t.Type == launch.TriggerTypeMondayWebhook {
+		s.deregisterMondayWebhook(c.Request.Context(), t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {
