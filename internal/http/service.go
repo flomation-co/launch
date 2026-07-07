@@ -436,6 +436,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeTrelloWebhook:
 		s.handleTrelloWebhook(c, tr)
 		return
+	case launch.TriggerTypeAsanaWebhook:
+		s.handleAsanaWebhook(c, tr)
+		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
 	default:
