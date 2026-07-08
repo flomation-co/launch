@@ -162,7 +162,8 @@ func (s *Service) configure() error {
 	// Trello validates a webhook's callbackURL at registration by sending it a
 	// HEAD request that must return 200, or the webhook is never created. Gin does
 	// not auto-answer HEAD for a GET route, so register one explicitly. Any
-	// provider that probes with HEAD is satisfied by this 200.
+	// provider that probes with HEAD is satisfied by this 200 — Intercom does the
+	// same when the user saves the endpoint URL in its Developer Hub.
 	s.engine.HEAD("/webhook/:id", s.handleWebhookHead)
 	s.engine.GET("/qr/:id", s.handleQr)
 	s.engine.GET("/form/:id", s.handleForm)
@@ -441,6 +442,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 		return
 	case launch.TriggerTypeMondayWebhook:
 		s.handleMondayWebhook(c, tr)
+		return
+	case launch.TriggerTypeIntercomWebhook:
+		s.handleIntercomWebhook(c, tr)
 		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
