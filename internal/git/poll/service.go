@@ -10,6 +10,7 @@ import (
 
 	git "github.com/go-git/go-git/v6"
 	gitconfig "github.com/go-git/go-git/v6/config"
+	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	gitssh "github.com/go-git/go-git/v6/plumbing/transport/ssh"
 	"github.com/go-git/go-git/v6/storage/memory"
 	log "github.com/sirupsen/logrus"
@@ -204,7 +205,9 @@ func lsRemote(repoURL string, sshKey string) ([]branchRef, error) {
 		if err != nil {
 			return nil, fmt.Errorf("unable to create SSH auth: %w", err)
 		}
-		listOpts.Auth = auth
+		// go-git v6.0.0-alpha.4 moved per-operation auth off ListOptions and
+		// onto transport client options.
+		listOpts.ClientOptions = append(listOpts.ClientOptions, gitclient.WithSSHAuth(auth))
 	}
 
 	refs, err := remote.List(listOpts)
