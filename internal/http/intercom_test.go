@@ -130,16 +130,29 @@ func TestIntercomEventOutputs_ItemKinds(t *testing.T) {
 	if out := intercomEventOutputs(build("company", "co1"), nil); out["company_id"] != "co1" {
 		t.Errorf("company item should fill company_id, got %#v", out["company_id"])
 	}
-	// Contact fallback: no contacts list, source author fills contact_id.
+	// Contact fallback: no contacts list, a customer-typed source author fills
+	// contact_id.
 	conv := map[string]interface{}{
 		"topic": "conversation.user.created",
 		"data": map[string]interface{}{"item": map[string]interface{}{
 			"type": "conversation", "id": "c9",
-			"source": map[string]interface{}{"author": map[string]interface{}{"id": "au1"}},
+			"source": map[string]interface{}{"author": map[string]interface{}{"type": "lead", "id": "au1"}},
 		}},
 	}
 	if out := intercomEventOutputs(conv, nil); out["contact_id"] != "au1" {
 		t.Errorf("conversation without contacts list should fall back to source author, got %#v", out["contact_id"])
+	}
+	// Admin-initiated conversations carry the teammate as the source author —
+	// their id must NOT be reported as the contact.
+	adminConv := map[string]interface{}{
+		"topic": "conversation.admin.single.created",
+		"data": map[string]interface{}{"item": map[string]interface{}{
+			"type": "conversation", "id": "c10",
+			"source": map[string]interface{}{"author": map[string]interface{}{"type": "admin", "id": "11037910"}},
+		}},
+	}
+	if out := intercomEventOutputs(adminConv, nil); out["contact_id"] != "" {
+		t.Errorf("admin source author must not populate contact_id, got %#v", out["contact_id"])
 	}
 	// A payload without data.item still yields every key.
 	out := intercomEventOutputs(map[string]interface{}{"topic": "ping"}, nil)

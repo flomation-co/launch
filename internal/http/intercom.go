@@ -207,7 +207,14 @@ func intercomConversationContactID(item map[string]interface{}) string {
 	}
 	if source, ok := item["source"].(map[string]interface{}); ok {
 		if author, ok := source["author"].(map[string]interface{}); ok {
-			return intercomEventStr(author["id"])
+			// Only trust the author when it is the customer side — on
+			// admin-initiated conversations (conversation.admin.single.created)
+			// the teammate is the source author, and an admin id must not land
+			// in contact_id.
+			switch intercomEventStr(author["type"]) {
+			case "user", "lead", "contact":
+				return intercomEventStr(author["id"])
+			}
 		}
 	}
 	return ""
