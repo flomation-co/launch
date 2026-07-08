@@ -36,6 +36,7 @@ const (
 	TriggerTypeTrelloWebhook      = "trello-webhook"      // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeAsanaWebhook       = "asana-webhook"       // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeMondayWebhook      = "monday-webhook"      // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeIntercomWebhook    = "intercom-webhook"    // #nosec G101 — trigger type identifier, not a credential
 )
 
 type Trigger struct {
