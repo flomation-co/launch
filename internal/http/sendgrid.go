@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,7 +21,18 @@ import (
 // sendgridHTTPClient is used for the outbound SendGrid API calls that
 // register/deregister event webhooks. The hosts are fixed (never
 // caller-supplied), so there is no SSRF surface.
-var sendgridHTTPClient = &http.Client{Timeout: 15 * time.Second}
+var sendgridHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("sendgrid: too many redirects")
+		}
+		if req.URL.Host != via[0].URL.Host {
+			return errors.New("sendgrid: refusing cross-host redirect")
+		}
+		return nil
+	},
+}
 
 // sendgridAPIBaseURL / sendgridEUAPIBaseURL are vars rather than consts so
 // tests can point the webhook-settings calls at an httptest server. EU
@@ -203,16 +215,34 @@ func (s *Service) loadSendGridState(triggerID string) *sendgridWebhookState {
 	return &st
 }
 
+// sendgridCleanupCtx derives a context for compensating deletes that survives
+// cancellation of the originating request — the compensation must run exactly
+// when the original call may have died with the request.
+func sendgridCleanupCtx(ctx context.Context) context.Context {
+	// sendgridHTTPClient's own 15s timeout bounds the request; the context
+	// only needs to shed the parent's cancellation.
+	return context.WithoutCancel(ctx)
+}
+
 // deleteSendGridWebhook removes a webhook by id on the given region's host
 // (best effort). Returns false when SendGrid refused the delete (non-404
 // failure), so callers can skip recreating against a still-live webhook.
 func deleteSendGridWebhook(ctx context.Context, apiKey, region, webhookID, triggerID string) bool {
 	url := sendgridHostFor(region) + sendgridSettingsPath + "/" + webhookID
-	if _, status, err := sendgridDo(ctx, apiKey, http.MethodDelete, url, nil); err != nil || (status >= 300 && status != http.StatusNotFound) {
-		log.WithFields(log.Fields{"trigger_id": triggerID, "webhook_id": webhookID, "status": status, "error": err}).Warn("sendgrid trigger: failed to delete webhook")
-		return false
+	_, status, err := sendgridDo(ctx, apiKey, http.MethodDelete, url, nil)
+	if err == nil && (status < 300 || status == http.StatusNotFound) {
+		return true
 	}
-	return true
+	// An auth failure means the current key cannot manage that webhook at all
+	// (key and region changed together, or the key moved accounts); retrying
+	// can never succeed, and any deliveries from the orphaned webhook are
+	// signed with its old key and fail verification — safe to proceed.
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		log.WithFields(log.Fields{"trigger_id": triggerID, "webhook_id": webhookID, "status": status}).Warn("sendgrid trigger: not authorised to delete outdated webhook; proceeding without it")
+		return true
+	}
+	log.WithFields(log.Fields{"trigger_id": triggerID, "webhook_id": webhookID, "status": status, "error": err}).Warn("sendgrid trigger: failed to delete webhook")
+	return false
 }
 
 // registerSendGridWebhook auto-registers a SendGrid event webhook pointing at
@@ -254,6 +284,12 @@ func (s *Service) registerSendGridWebhook(ctx context.Context, tr *launch.Trigge
 			log.WithField("trigger_id", tr.ID).Warn("sendgrid trigger: could not remove outdated webhook; skipping registration this pass")
 			return
 		}
+		// The old webhook is gone; drop the state describing it now so a
+		// failure below cannot leave stale state that reads as current and
+		// suppresses re-registration on the next save.
+		if err := s.db.DeleteTriggerState(tr.ID, sendgridStateKey); err != nil {
+			log.WithFields(log.Fields{"trigger_id": tr.ID, "error": err}).Warn("sendgrid trigger: unable to clear outdated webhook state")
+		}
 	}
 
 	body := map[string]interface{}{
@@ -283,7 +319,7 @@ func (s *Service) registerSendGridWebhook(ctx context.Context, tr *launch.Trigge
 	publicKey := asString(signed["public_key"])
 	if err != nil || status >= 300 || publicKey == "" {
 		log.WithFields(log.Fields{"trigger_id": tr.ID, "status": status, "error": err, "response": signed}).Warn("sendgrid trigger: could not enable signed delivery; removing webhook")
-		deleteSendGridWebhook(ctx, apiKey, region, webhookID, tr.ID)
+		deleteSendGridWebhook(sendgridCleanupCtx(ctx), apiKey, region, webhookID, tr.ID)
 		return
 	}
 
@@ -298,7 +334,7 @@ func (s *Service) registerSendGridWebhook(ctx context.Context, tr *launch.Trigge
 		// Without the stored public key every delivery would be rejected;
 		// remove the orphaned webhook so the next save retries cleanly.
 		log.WithFields(log.Fields{"trigger_id": tr.ID, "error": err}).Error("sendgrid trigger: unable to persist webhook state; removing webhook")
-		deleteSendGridWebhook(ctx, apiKey, region, webhookID, tr.ID)
+		deleteSendGridWebhook(sendgridCleanupCtx(ctx), apiKey, region, webhookID, tr.ID)
 	}
 }
 
