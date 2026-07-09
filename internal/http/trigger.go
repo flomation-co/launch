@@ -97,6 +97,10 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// Errors are logged, not fatal.
 	s.registerMondayWebhook(c.Request.Context(), &tr)
 
+	// SendGrid triggers: auto-register a signed event webhook pointing at
+	// /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
+	s.registerSendGridWebhook(c.Request.Context(), &tr)
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -208,6 +212,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the Monday.com webhook we created.
 	if t.Type == launch.TriggerTypeMondayWebhook {
 		s.deregisterMondayWebhook(c.Request.Context(), t)
+	}
+
+	// Deregister the SendGrid event webhook we created.
+	if t.Type == launch.TriggerTypeSendGridWebhook {
+		s.deregisterSendGridWebhook(c.Request.Context(), t)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {
