@@ -18,6 +18,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// sendgridMaxConcurrentFirings bounds how many flow firings a single webhook
+// batch dispatches at once — SendGrid can deliver hundreds of events per POST.
+const sendgridMaxConcurrentFirings = 16
+
 // sendgridHTTPClient is used for the outbound SendGrid API calls that
 // register/deregister event webhooks. The hosts are fixed (never
 // caller-supplied), so there is no SSRF surface.
@@ -412,6 +416,7 @@ func (s *Service) handleSendGridWebhook(c *gin.Context, tr *launch.Trigger) {
 	// deliveries from a webhook created before a config change, and the
 	// "blocked" selection (which has no toggle of its own). Empty = all. Zero
 	// matched events still 200 — a non-2xx would make SendGrid retry the batch.
+	var matched []map[string]interface{}
 	for _, event := range events {
 		if !sendgridwh.MatchesFilter(event, state.Events) {
 			continue
@@ -422,12 +427,25 @@ func (s *Service) handleSendGridWebhook(c *gin.Context, tr *launch.Trigger) {
 		if nodeID != "" {
 			out["__node_id"] = nodeID
 		}
-		go func() {
-			if err := s.trigger.Trigger(tr, out); err != nil {
-				log.WithFields(log.Fields{"error": err}).Error("unable to fire SendGrid webhook trigger")
-			}
-		}()
+		matched = append(matched, out)
 	}
+
+	// SendGrid batches deliveries (hundreds of events per POST) and each
+	// firing is a synchronous internal API call with no pool upstream, so
+	// dispatch the batch from one goroutine with bounded concurrency instead
+	// of a goroutine per event. The 200 ack is not held up by the firings.
+	go func() {
+		sem := make(chan struct{}, sendgridMaxConcurrentFirings)
+		for _, out := range matched {
+			sem <- struct{}{}
+			go func(out map[string]interface{}) {
+				defer func() { <-sem }()
+				if err := s.trigger.Trigger(tr, out); err != nil {
+					log.WithFields(log.Fields{"error": err}).Error("unable to fire SendGrid webhook trigger")
+				}
+			}(out)
+		}
+	}()
 
 	c.Status(http.StatusOK)
 }
