@@ -95,6 +95,51 @@ func TestResolveFormForRender_SubstitutesLabelPlaceholderDefault(t *testing.T) {
 	Expect(def.Title).To(Equal("Welcome ${user.first_name}"))
 }
 
+// Regression: resolveFormForRender must preserve page-level VisibleIf.
+// It previously rebuilt each page as formPage{Components: comps}, dropping
+// VisibleIf, so every page rendered as always-visible (page-skip
+// navigation never fired) even though component-level visibility worked.
+func TestResolveFormForRender_PreservesPageVisibleIf(t *testing.T) {
+	RegisterTestingT(t)
+
+	pageRule := &visibilityRule{
+		Match: "all",
+		Rules: []visibilityClause{{Field: "choice", Op: "equals", Value: "Yes"}},
+	}
+	compRule := &visibilityRule{
+		Match: "all",
+		Rules: []visibilityClause{{Field: "choice", Op: "equals", Value: "No"}},
+	}
+
+	def := formDefinition{
+		Pages: []formPage{
+			{Components: []formComponent{{Name: "choice", Label: "Yes or No?"}}},
+			{
+				VisibleIf: pageRule,
+				Components: []formComponent{
+					{Name: "detail", Label: "Detail", VisibleIf: compRule},
+				},
+			},
+		},
+	}
+
+	resolved := resolveFormForRender(def, substitutionContext{})
+
+	// The whole point: the page rule survives the render resolution.
+	Expect(resolved.Pages[1].VisibleIf).ToNot(BeNil(),
+		"page-level VisibleIf must be preserved through resolveFormForRender")
+	Expect(resolved.Pages[1].VisibleIf.Rules).To(HaveLen(1))
+	Expect(resolved.Pages[1].VisibleIf.Rules[0].Field).To(Equal("choice"))
+	Expect(resolved.Pages[1].VisibleIf.Rules[0].Value).To(Equal("Yes"))
+
+	// Component-level visibility (which always worked) still survives.
+	Expect(resolved.Pages[1].Components[0].VisibleIf).ToNot(BeNil())
+	Expect(resolved.Pages[1].Components[0].VisibleIf.Rules[0].Value).To(Equal("No"))
+
+	// A page with no rule stays nil (always visible).
+	Expect(resolved.Pages[0].VisibleIf).To(BeNil())
+}
+
 func TestStripReadOnlySubmissions_OverridesClientValues(t *testing.T) {
 	RegisterTestingT(t)
 

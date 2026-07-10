@@ -275,7 +275,14 @@ func resolveFormForRender(def formDefinition, ctx substitutionContext) formDefin
 			comp.DefaultValue = applySubstitutions(c.DefaultValue, ctx)
 			comps[ci] = comp
 		}
-		resolved.Pages[pi] = formPage{Components: comps}
+		// Copy-then-modify so page-level fields (notably VisibleIf, which
+		// drives page-skip navigation) survive the render resolution. A
+		// fresh formPage{Components: comps} literal silently dropped
+		// VisibleIf, leaving every page always-visible at render time
+		// while component-level visibility still worked.
+		resolvedPage := page
+		resolvedPage.Components = comps
+		resolved.Pages[pi] = resolvedPage
 	}
 	// Interpolate the post-submission thank-you message the same way as labels,
 	// so it can reference ${user.X}/${data.X}/${query.X}. Copy the struct so we

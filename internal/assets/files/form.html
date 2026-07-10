@@ -2803,6 +2803,36 @@
             const onLastPage = currentPage === lastVisiblePage(form);
             submit.disabled = !valid || !onLastPage;
         }
+
+        // An answer change can flip a page's visibility (e.g. a Yes/No that
+        // gates a later page). Resync the pills and nav buttons live so the
+        // progress row reflects the newly visible/hidden pages immediately,
+        // not only after the next navigation click. applyVisibility (run at
+        // the top of this function) has already refreshed hiddenPages.
+        refreshNavChrome(form);
+    }
+
+    // refreshNavChrome resyncs everything that depends on which pages are
+    // currently visible: the prev/next disabled state, the Submit button's
+    // visibility (only shown on the last visible page), and the progress
+    // pills. Called after navigation AND after any answer change, so that
+    // conditionally showing/hiding a page updates the pills live — not just
+    // on the next click. Assumes applyVisibility has already run so
+    // hiddenPages is current.
+    function refreshNavChrome(form) {
+        const prev = document.getElementById("previous");
+        if (prev) prev.disabled = firstVisiblePageFrom(form, currentPage - 1, -1) < 0;
+
+        const next = document.getElementById("next");
+        if (next) next.disabled = firstVisiblePageFrom(form, currentPage + 1, 1) < 0;
+
+        // Submit is only reachable on the last *visible* page — a user must
+        // page through the whole form before they can complete it. On
+        // single-page forms page 0 is the last page, so it always shows.
+        const submit = document.getElementById("submit");
+        if (submit) submit.classList.toggle("hidden", currentPage !== lastVisiblePage(form));
+
+        renderPageIndicator(form);
     }
 
     function setPage(form, page) {
@@ -2825,19 +2855,7 @@
             if (el) el.classList.toggle("hidden", p !== currentPage);
         }
 
-        const prev = document.getElementById("previous");
-        if (prev) prev.disabled = firstVisiblePageFrom(form, currentPage - 1, -1) < 0;
-
-        const next = document.getElementById("next");
-        if (next) next.disabled = firstVisiblePageFrom(form, currentPage + 1, 1) < 0;
-
-        // Submit is only reachable on the last *visible* page — a user must
-        // page through the whole form before they can complete it. On
-        // single-page forms page 0 is the last page, so it always shows.
-        const submit = document.getElementById("submit");
-        if (submit) submit.classList.toggle("hidden", currentPage !== lastVisiblePage(form));
-
-        renderPageIndicator(form);
+        refreshNavChrome(form);
         // Re-evaluate the Submit enabled state for the new page. Navigation
         // doesn't fire an input event, so without this a form that became
         // valid on an earlier page would land on the last page with Submit
