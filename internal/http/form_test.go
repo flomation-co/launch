@@ -386,6 +386,13 @@ func TestMetaText_StripsUnresolvedTokensAndCollapsesWhitespace(t *testing.T) {
 	// Newlines / tabs / runs of spaces collapse to a single space so the
 	// value sits cleanly on one line in a <title> or og:description.
 	Expect(metaText("Line one\nLine two\t\ttabbed   spaced")).To(Equal("Line one Line two tabbed spaced"))
+	// Lightweight formatting markers are stripped (keeping the wrapped
+	// text) so the preview shows clean prose, not raw *asterisks* / _under_.
+	Expect(metaText("*Free* to attend, _limited_ places")).To(Equal("Free to attend, limited places"))
+	// A lone/unpaired marker is left as-is (it wraps nothing).
+	Expect(metaText("5 * 3 = 15")).To(Equal("5 * 3 = 15"))
+	// Markers combine with newline collapsing and token stripping.
+	Expect(metaText("*Welcome* ${user.first_name}\n_see below_")).To(Equal("Welcome see below"))
 }
 
 func TestOptionsFromOutput_StringsObjectsAndJunk(t *testing.T) {
