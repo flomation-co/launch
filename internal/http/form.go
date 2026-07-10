@@ -199,6 +199,14 @@ type substitutionContext struct {
 
 var substitutionPattern = regexp.MustCompile(`\$\{([\w.-]+)\}`)
 
+// formattingMarkers matches the lightweight *bold* / _italic_ markers the
+// form description supports. metaText strips the markers (keeping the
+// wrapped text) so social-preview crawlers see clean prose rather than
+// literal asterisks and underscores. Mirrors the client-side
+// renderRichText in form.html — the two must stay in step.
+var boldMarker = regexp.MustCompile(`\*([^*\n]+)\*`)
+var italicMarker = regexp.MustCompile(`_([^_\n]+)_`)
+
 // applySubstitutions replaces ${user.X} / ${query.X} / ${data.X} references
 // in s with values from ctx (${data.X} being the outputs of the form's
 // data-source flow). Unknown references resolve to empty string (matching
@@ -254,6 +262,10 @@ func metaText(s string) string {
 		return s
 	}
 	s = substitutionPattern.ReplaceAllString(s, "")
+	// Drop the lightweight formatting markers so previews show clean prose
+	// (e.g. "*Free* to attend" → "Free to attend"), not raw markers.
+	s = boldMarker.ReplaceAllString(s, "$1")
+	s = italicMarker.ReplaceAllString(s, "$1")
 	return strings.Join(strings.Fields(s), " ")
 }
 

@@ -2863,13 +2863,34 @@
         validateForm(form);
     }
 
+    // renderRichText converts the limited formatting allowed in a form
+    // description — *bold*, _italic_ and line breaks — into safe HTML.
+    // The description is USER-authored, so we HTML-escape FIRST (which
+    // neutralises any tags the author typed), THEN introduce our own
+    // <strong>/<em>/<br>. Because escaping runs before any markup is
+    // added, an author can never inject an element — the only tags in the
+    // output are the three we produce. Markers must wrap non-empty text on
+    // a single line (no line spanning), matching the editor's hint.
+    function renderRichText(text) {
+        const escaped = String(text)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+        return escaped
+            .replace(/\*([^*\n]+)\*/g, "<strong>$1</strong>")
+            .replace(/_([^_\n]+)_/g, "<em>$1</em>")
+            .replace(/\r\n|\r|\n/g, "<br>");
+    }
+
     function renderForm() {
         const form = JSON.parse(formData);
         if (!form) return;
 
         document.getElementById("form-header").textContent = form.title || "Form";
         const desc = document.getElementById("form-description");
-        if (form.description) desc.textContent = form.description;
+        if (form.description) desc.innerHTML = renderRichText(form.description);
         else desc.style.display = "none";
 
         for (let p = 0; p < form.pages.length; p++) renderPage(form, p);
