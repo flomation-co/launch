@@ -449,6 +449,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeSendGridWebhook:
 		s.handleSendGridWebhook(c, tr)
 		return
+	case launch.TriggerTypeTypeformWebhook:
+		s.handleTypeformWebhook(c, tr)
+		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
 	default:
