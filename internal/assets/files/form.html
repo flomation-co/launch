@@ -836,11 +836,16 @@
     // definition doesn't carry one, which caused POST /form/undefined.
     const FORM_ID = "{{ .FormID }}";
     // Server-minted draft id for this render + any previously-saved answers to
-    // resume. RESUME_PAYLOAD is emitted as a raw JS object literal (defaults to
-    // {}). The server draft is the source of truth; sessionStorage below is a
+    // resume. RESUME_PAYLOAD arrives base64-encoded (like the form definition
+    // above) and is atob+JSON.parse'd here — never injected raw, since the draft
+    // holds client-authored answers and a raw interpolation would be a stored-XSS
+    // vector. The server draft is the source of truth; sessionStorage below is a
     // convenience cushion only.
     const SUBMISSION_ID = "{{ .SubmissionID }}";
-    const RESUME_PAYLOAD = {{ .ResumePayload }};
+    const RESUME_PAYLOAD = (function () {
+        const b64 = "{{ .ResumePayload }}";
+        try { return b64 ? JSON.parse(atob(b64)) : {}; } catch (e) { return {}; }
+    })();
     const AUTOSAVE_KEY = "flomation_form_" + FORM_ID;
     let formValues = {};
     let currentPage = 0;

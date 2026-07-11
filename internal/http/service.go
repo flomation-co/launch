@@ -1153,14 +1153,19 @@ func (s *Service) handleForm(c *gin.Context) {
 	// fresh draft. Draft persistence failure is non-fatal — the form still
 	// renders and submits, just without autosave/resume/fire-once.
 	submissionID := uuid.NewString()
-	resumePayload := template.JS("{}")
+	// The resume payload is base64-encoded (like the Form field below) and
+	// atob+JSON.parse'd on the client. It is NEVER injected raw into the page:
+	// the draft holds client-authored answers, so a template.JS() interpolation
+	// would be a stored-XSS vector (a "</script>" in an answer would break out).
+	// base64 has no HTML/JS metacharacters, so it is safe in a quoted string.
+	resumePayload := ""
 	resumed := false
 	if q := c.Query("submission_id"); q != "" && uuid.Validate(q) == nil {
 		if draft, derr := s.db.GetFormDraft(q); derr == nil && draft != nil && draft.TriggerID == id {
 			submissionID = q
 			resumed = true
 			if len(draft.Payload) > 0 {
-				resumePayload = template.JS(draft.Payload)
+				resumePayload = base64.StdEncoding.EncodeToString(draft.Payload)
 			}
 		}
 	}
