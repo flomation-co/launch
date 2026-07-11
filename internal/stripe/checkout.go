@@ -2,7 +2,7 @@ package stripe
 
 import (
 	stripe "github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/client"
+	"github.com/stripe/stripe-go/v82/client" //nolint:staticcheck // per-call client for multi-tenant key isolation; migration to stripe.Client is a cross-repo concern (billing/executor use the same pattern)
 )
 
 // CheckoutParams are the inputs to a hosted Checkout Session for a native
@@ -25,8 +25,8 @@ type CheckoutParams struct {
 // the executor / launch are multi-tenant and one form's key must never leak
 // into another's request.
 func CreateFormCheckoutSession(secretKey string, p CheckoutParams) (url string, sessionID string, err error) {
-	sc := &client.API{}
-	sc.Init(secretKey, nil)
+	sc := &client.API{}     //nolint:staticcheck // deprecated client.API — see import
+	sc.Init(secretKey, nil) //nolint:staticcheck // deprecated sc.Init — see import
 
 	params := &stripe.CheckoutSessionParams{
 		Mode: stripe.String(string(stripe.CheckoutSessionModePayment)),
@@ -44,7 +44,7 @@ func CreateFormCheckoutSession(secretKey string, p CheckoutParams) (url string, 
 		CancelURL:  stripe.String(p.CancelURL),
 	}
 
-	session, err := sc.CheckoutSessions.New(params)
+	session, err := sc.CheckoutSessions.New(params) //nolint:staticcheck // deprecated client method — see import
 	if err != nil {
 		return "", "", err
 	}
@@ -56,10 +56,10 @@ func CreateFormCheckoutSession(secretKey string, p CheckoutParams) (url string, 
 // require "paid" before firing the form's flow. Uses a per-call client keyed
 // by the caller's secret key (never the package-level stripe.Key).
 func RetrieveCheckoutPaymentStatus(secretKey, sessionID string) (string, error) {
-	sc := &client.API{}
-	sc.Init(secretKey, nil)
+	sc := &client.API{}     //nolint:staticcheck // deprecated client.API — see import
+	sc.Init(secretKey, nil) //nolint:staticcheck // deprecated sc.Init — see import
 
-	session, err := sc.CheckoutSessions.Get(sessionID, nil)
+	session, err := sc.CheckoutSessions.Get(sessionID, nil) //nolint:staticcheck // deprecated client method — see import
 	if err != nil {
 		return "", err
 	}
