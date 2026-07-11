@@ -29,7 +29,12 @@ type Event struct {
 // extracts the fields the trigger surfaces. JotForm posts `formID`,
 // `submissionID`, `rawRequest` (a JSON string) and `type`.
 func ParseMultipart(r *http.Request) (Event, error) {
-	if err := r.ParseMultipartForm(8 << 20); err != nil {
+	// Bound the body before parsing so a hostile client cannot exhaust memory
+	// with an oversized multipart upload. The body is already capped by
+	// MaxBytesReader, so ParseMultipartForm cannot over-read.
+	r.Body = http.MaxBytesReader(nil, r.Body, 8<<20)
+	if err := r.ParseMultipartForm(8 << 20); err != nil { // #nosec G120 -- body bounded by MaxBytesReader above
+
 		return Event{}, fmt.Errorf("unable to parse JotForm multipart body: %w", err)
 	}
 
