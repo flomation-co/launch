@@ -45,10 +45,12 @@ func (s *Service) CreateFormDraft(submissionID, triggerID, flowID string, ttl ti
 func (s *Service) GetFormDraft(submissionID string) (*FormDraft, error) {
 	var draft FormDraft
 	err := s.conn.Get(&draft, `
-		SELECT submission_id, trigger_id, flow_id, payload, status, payment_ref, expires_at
+		SELECT submission_id, trigger_id, flow_id,
+			COALESCE(PGP_SYM_DECRYPT(payload_enc, $2), '') AS payload,
+			status, payment_ref, expires_at
 		FROM form_submission_draft
 		WHERE submission_id = $1 AND status = 'draft' AND expires_at > NOW()
-	`, submissionID)
+	`, submissionID, s.config.Database.EncryptionKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -66,10 +68,12 @@ func (s *Service) GetFormDraft(submissionID string) (*FormDraft, error) {
 func (s *Service) GetFormDraftAny(submissionID string) (*FormDraft, error) {
 	var draft FormDraft
 	err := s.conn.Get(&draft, `
-		SELECT submission_id, trigger_id, flow_id, payload, status, payment_ref, expires_at
+		SELECT submission_id, trigger_id, flow_id,
+			COALESCE(PGP_SYM_DECRYPT(payload_enc, $2), '') AS payload,
+			status, payment_ref, expires_at
 		FROM form_submission_draft
 		WHERE submission_id = $1
-	`, submissionID)
+	`, submissionID, s.config.Database.EncryptionKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -82,11 +86,14 @@ func (s *Service) GetFormDraftAny(submissionID string) (*FormDraft, error) {
 // SaveFormDraftPayload overwrites the payload of a live draft. Returns false if
 // no live draft matched (expired, fired, or unknown) so the caller can 404.
 func (s *Service) SaveFormDraftPayload(submissionID string, payload json.RawMessage) (bool, error) {
+	// Encrypt the answers at rest (pgcrypto, keyed by the app's DB encryption
+	// key — same pattern as credentials/blobs/secrets). string(payload) binds
+	// as text so PGP_SYM_ENCRYPT(text, text) applies.
 	result, err := s.conn.Exec(`
 		UPDATE form_submission_draft
-		SET payload = $2, updated_at = NOW()
+		SET payload_enc = PGP_SYM_ENCRYPT($2, $3), updated_at = NOW()
 		WHERE submission_id = $1 AND status = 'draft' AND expires_at > NOW()
-	`, submissionID, payload)
+	`, submissionID, string(payload), s.config.Database.EncryptionKey)
 	if err != nil {
 		return false, err
 	}
@@ -131,8 +138,8 @@ func (s *Service) FireFormDraft(submissionID string, fromStatuses []string) (boo
 		UPDATE form_submission_draft
 		SET status = 'fired', updated_at = NOW()
 		WHERE submission_id = $1 AND status = ANY($2)
-		RETURNING payload
-	`, submissionID, pq.Array(fromStatuses)).Scan(&payload)
+		RETURNING COALESCE(PGP_SYM_DECRYPT(payload_enc, $3), '')
+	`, submissionID, pq.Array(fromStatuses), s.config.Database.EncryptionKey).Scan(&payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil, nil
 	}
