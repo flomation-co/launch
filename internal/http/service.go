@@ -40,6 +40,15 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// Form draft (autosave / fire-once submission) tuning.
+const (
+	// formDraftTTL is how long a server-side draft lives before it is purged.
+	formDraftTTL = 24 * time.Hour
+	// formDraftMaxBytes caps an autosave payload to keep a hostile client from
+	// filling the drafts table with an oversized blob.
+	formDraftMaxBytes = 256 * 1024
+)
+
 type Service struct {
 	config         *config.Config
 	engine         *gin.Engine
@@ -169,6 +178,7 @@ func (s *Service) configure() error {
 	s.engine.GET("/form/:id", s.handleForm)
 	s.engine.GET("/form/:id/data", s.handleFormData)
 	s.engine.POST("/form/:id", s.submitForm)
+	s.engine.PUT("/form/:id/submission/:sid", s.autosaveFormDraft)
 	s.engine.POST("/form/:id/upload", s.uploadFormBlob)
 	s.engine.GET("/image/:id", s.handleImageLoad)
 
@@ -264,7 +274,26 @@ func (s *Service) Listen() error {
 	if s.internalEngine != nil {
 		go s.listenInternal()
 	}
+	go s.purgeExpiredFormDrafts()
 	return s.engine.Run(fmt.Sprintf("%v:%v", s.config.HttpListenConfig.Address, s.config.HttpListenConfig.Port))
+}
+
+// purgeExpiredFormDrafts periodically deletes lapsed form drafts. Mirrors the
+// simple ticker loop used by the schedule/S3 poll services.
+func (s *Service) purgeExpiredFormDrafts() {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		deleted, err := s.db.PurgeExpiredFormDrafts()
+		if err != nil {
+			log.WithError(err).Warn("unable to purge expired form drafts")
+			continue
+		}
+		if deleted > 0 {
+			log.WithField("deleted", deleted).Info("purged expired form drafts")
+		}
+	}
 }
 
 // listenInternal starts the mTLS-protected internal listener on a
@@ -695,6 +724,27 @@ func (s *Service) submitForm(c *gin.Context) {
 		return
 	}
 
+	// Fire-once claim. The client threads its draft submission id back in the
+	// body; it must never reach the trigger data, so strip it first. When a
+	// valid id is present we atomically claim the draft — the first submit
+	// wins, a double-submit (or payment callback) sees an already-fired draft
+	// and no-ops. A submit without an id (e.g. an older client) proceeds
+	// unguarded, exactly as before.
+	sid := extractSubmissionID(body)
+	if sid != "" && uuid.Validate(sid) == nil {
+		claimed, _, err := s.db.FireFormDraft(sid, []string{"draft", "finalising"})
+		if err != nil {
+			log.WithError(err).Error("unable to claim form draft")
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
+		if !claimed {
+			// Already fired — idempotent no-op, do NOT re-trigger.
+			c.Status(http.StatusOK)
+			return
+		}
+	}
+
 	// Restore the baked-at-render values for read-only fields, ignoring
 	// any client-supplied values. This is the security check that
 	// matches the render-time guarantee — if the user saw "Name: Andy"
@@ -749,6 +799,77 @@ func (s *Service) submitForm(c *gin.Context) {
 	}()
 
 	c.Status(http.StatusOK)
+}
+
+// extractSubmissionID pops the client-supplied draft submission id out of a
+// form submission body. It is removed unconditionally so it can never be
+// forwarded into the trigger data as if it were a form answer.
+func extractSubmissionID(body map[string]interface{}) string {
+	sid, _ := body["__submission_id"].(string)
+	delete(body, "__submission_id")
+	return sid
+}
+
+// autosaveBodyStatus validates a raw autosave payload. It returns the HTTP
+// status to send on failure (413 if it exceeds the cap, 400 if it is not a
+// JSON object), or 0 when the body is acceptable. Pure so it can be unit
+// tested without a database.
+func autosaveBodyStatus(raw []byte) int {
+	if len(raw) > formDraftMaxBytes {
+		return http.StatusRequestEntityTooLarge
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return http.StatusBadRequest
+	}
+	return 0
+}
+
+// autosaveFormDraft persists an in-progress form's answers so the user can
+// close the tab and resume later. It is deliberately dumb: it stores the raw
+// JSON object verbatim (no sanitisation — that happens on submit) against a
+// live draft. The payload is capped and never logged.
+func (s *Service) autosaveFormDraft(c *gin.Context) {
+	id := c.Param("id")
+	if uuid.Validate(id) != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	tr, err := s.trigger.GetTriggerByID(id)
+	if err != nil || tr == nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	if tr.Type != launch.TriggerTypeForm {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	sid := c.Param("sid")
+	if uuid.Validate(sid) != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	// Read one byte past the cap so an over-limit body is detectable.
+	raw, _ := io.ReadAll(io.LimitReader(c.Request.Body, formDraftMaxBytes+1))
+	if status := autosaveBodyStatus(raw); status != 0 {
+		c.AbortWithStatus(status)
+		return
+	}
+
+	ok, err := s.db.SaveFormDraftPayload(sid, raw)
+	if err != nil {
+		log.WithError(err).Error("unable to save form draft payload")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // uploadFormBlob accepts a single file from an anonymous form
@@ -1027,10 +1148,34 @@ func (s *Service) handleForm(c *gin.Context) {
 	}
 	resolved := resolveFormForRender(def, ctx)
 
+	// Draft submission. Resume an existing live draft when the client presents
+	// a valid submission_id that belongs to this trigger; otherwise mint a
+	// fresh draft. Draft persistence failure is non-fatal — the form still
+	// renders and submits, just without autosave/resume/fire-once.
+	submissionID := uuid.NewString()
+	resumePayload := template.JS("{}")
+	resumed := false
+	if q := c.Query("submission_id"); q != "" && uuid.Validate(q) == nil {
+		if draft, derr := s.db.GetFormDraft(q); derr == nil && draft != nil && draft.TriggerID == id {
+			submissionID = q
+			resumed = true
+			if len(draft.Payload) > 0 {
+				resumePayload = template.JS(draft.Payload)
+			}
+		}
+	}
+	if !resumed {
+		if cerr := s.db.CreateFormDraft(submissionID, id, tr.FlowID, formDraftTTL); cerr != nil {
+			log.WithError(cerr).Warn("unable to create form draft")
+		}
+	}
+
 	resolvedBytes, _ := json.Marshal(resolved)
 	c.HTML(http.StatusOK, "form.html", gin.H{
 		"Form":            base64.StdEncoding.EncodeToString(resolvedBytes),
 		"FormID":          id,
+		"SubmissionID":    submissionID,
+		"ResumePayload":   resumePayload,
 		"MetaTitle":       metaText(resolved.Title),
 		"MetaDescription": metaText(resolved.Description),
 	})

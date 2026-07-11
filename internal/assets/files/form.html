@@ -835,6 +835,13 @@
     // submit fetch — relying on form.id failed because the form
     // definition doesn't carry one, which caused POST /form/undefined.
     const FORM_ID = "{{ .FormID }}";
+    // Server-minted draft id for this render + any previously-saved answers to
+    // resume. RESUME_PAYLOAD is emitted as a raw JS object literal (defaults to
+    // {}). The server draft is the source of truth; sessionStorage below is a
+    // convenience cushion only.
+    const SUBMISSION_ID = "{{ .SubmissionID }}";
+    const RESUME_PAYLOAD = {{ .ResumePayload }};
+    const AUTOSAVE_KEY = "flomation_form_" + FORM_ID;
     let formValues = {};
     let currentPage = 0;
     // Names of components / indices of pages currently hidden by a
@@ -2810,6 +2817,10 @@
         // not only after the next navigation click. applyVisibility (run at
         // the top of this function) has already refreshed hiddenPages.
         refreshNavChrome(form);
+
+        // Every answer change flows through validateForm, so this is the one
+        // place to hang draft autosave off. Debounced, best-effort.
+        scheduleAutosave();
     }
 
     // refreshNavChrome resyncs everything that depends on which pages are
@@ -2884,6 +2895,56 @@
             .replace(/\r\n|\r|\n/g, "<br>");
     }
 
+    // ---- Draft autosave ---------------------------------------------------
+    // Debounced PUT of the current answers to the server draft, plus a
+    // sessionStorage cushion. Fired from the central validateForm funnel and
+    // on pagehide so a closed tab still persists the latest state. Best-effort
+    // throughout — a failed save never blocks the form.
+    let _autosaveTimer = null;
+    function scheduleAutosave() {
+        clearTimeout(_autosaveTimer);
+        _autosaveTimer = setTimeout(flushAutosave, 800);
+    }
+    function flushAutosave() {
+        try { sessionStorage.setItem(AUTOSAVE_KEY, JSON.stringify(formValues)); } catch (e) { /* storage disabled/full */ }
+        try {
+            fetch("/form/" + FORM_ID + "/submission/" + SUBMISSION_ID, {
+                method: "PUT",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(formValues),
+                keepalive: true
+            });
+        } catch (e) { /* never block the form on a save */ }
+    }
+    window.addEventListener("pagehide", flushAutosave);
+
+    // hasOwnKeys reports whether a value is an object with at least one own key.
+    function hasOwnKeys(o) {
+        return o && typeof o === "object" && Object.keys(o).length > 0;
+    }
+
+    // applyResumePayload merges saved answers over the seeded defaults (draft
+    // wins) and repaints each affected field so the DOM reflects them. Reuses
+    // the in-place re-render path (as loadDynamicOptions does) with a temporary
+    // default_value so every field type resumes without bespoke handling.
+    function applyResumePayload(form, values) {
+        if (!hasOwnKeys(values)) return;
+        for (const k in values) if (Object.prototype.hasOwnProperty.call(values, k)) formValues[k] = values[k];
+        for (const page of form.pages) {
+            for (const comp of page.components) {
+                if (!Object.prototype.hasOwnProperty.call(values, comp.name)) continue;
+                const w = fieldWrapperFor(comp.name);
+                if (!w) continue;
+                const saved = comp.default_value;
+                comp.default_value = values[comp.name];
+                w.innerHTML = "";
+                renderComponentInto(form, w, comp);
+                comp.default_value = saved;
+            }
+        }
+        validateForm(form);
+    }
+
     function renderForm() {
         const form = JSON.parse(formData);
         if (!form) return;
@@ -2932,6 +2993,15 @@
         // Without this, Submit stays disabled even when every required
         // field already has a valid value.
         validateForm(form);
+        // Resume a saved draft: the server payload wins; fall back to the
+        // sessionStorage cushion ONLY when the server has nothing to offer.
+        if (hasOwnKeys(RESUME_PAYLOAD)) {
+            applyResumePayload(form, RESUME_PAYLOAD);
+        } else {
+            let cushion = null;
+            try { cushion = JSON.parse(sessionStorage.getItem(AUTOSAVE_KEY) || "null"); } catch (e) { cushion = null; }
+            if (hasOwnKeys(cushion)) applyResumePayload(form, cushion);
+        }
         // Populate any dynamic (flow-sourced) dropdown options after the
         // form is on screen, so a slow data flow never delays first paint.
         loadDynamicOptions(form);
@@ -2948,6 +3018,9 @@
         applyVisibility(form);
         const payload = {};
         for (const k in formValues) if (!hiddenFields.has(k)) payload[k] = formValues[k];
+        // Thread the draft id back so the server can make the submit fire-once.
+        // Stripped server-side before it reaches the trigger data.
+        payload.__submission_id = SUBMISSION_ID;
 
         fetch("/form/" + FORM_ID, {
             method: "POST",
@@ -2955,6 +3028,8 @@
             body: JSON.stringify(payload)
         })
         .then(() => {
+            // Submitted — drop the local cushion so a later visit starts clean.
+            try { sessionStorage.removeItem(AUTOSAVE_KEY); } catch (e) { /* ignore */ }
             handleSubmitSuccess(form);
         })
         .catch(() => {
