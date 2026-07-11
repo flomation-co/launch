@@ -964,6 +964,93 @@
             opacity: 0.25;
             cursor: not-allowed;
         }
+
+        /* ── Matrix / grid ── */
+        /* Wrap the table so a wide grid scrolls horizontally on narrow
+           screens rather than blowing out the card width. */
+        .matrix-scroll {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .matrix-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .matrix-table th,
+        .matrix-table td {
+            padding: 10px 12px;
+            text-align: center;
+            border-bottom: 1px solid var(--border);
+        }
+        .matrix-table thead th {
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 12px;
+            white-space: nowrap;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        }
+        /* Row headers sit on the left, left-aligned and readable. */
+        .matrix-table tbody th[scope="row"] {
+            text-align: left;
+            font-weight: 500;
+            color: var(--text);
+            white-space: nowrap;
+            padding-right: 18px;
+        }
+        .matrix-table .matrix-corner {
+            background: transparent;
+        }
+        /* Zebra striping for legibility on the dark theme. */
+        .matrix-table tbody tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        .matrix-table tbody tr:last-child th,
+        .matrix-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+        .matrix-table input[type="radio"],
+        .matrix-table input[type="checkbox"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px; height: 18px;
+            min-width: 18px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            background: transparent;
+            cursor: pointer;
+            position: relative;
+            margin: 0;
+            vertical-align: middle;
+        }
+        .matrix-table input[type="radio"] { border-radius: 50%; }
+        .matrix-table input[type="checkbox"] { border-radius: 4px; }
+        .matrix-table input[type="radio"]:checked,
+        .matrix-table input[type="checkbox"]:checked {
+            background: var(--primary);
+            border-color: var(--primary);
+        }
+        .matrix-table input[type="radio"]:checked::after {
+            content: '';
+            position: absolute;
+            top: 3px; left: 3px;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #fff;
+        }
+        .matrix-table input[type="checkbox"]:checked::after {
+            content: '';
+            position: absolute;
+            left: 4px; top: 1px;
+            width: 6px; height: 10px;
+            border: solid #fff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+        .matrix-table.readonly { opacity: 0.7; }
+        .matrix-table.readonly input { cursor: not-allowed; }
     </style>
 </head>
 <body>
@@ -1371,6 +1458,112 @@
         });
 
         group.appendChild(options);
+        container.appendChild(group);
+    }
+
+    // renderMatrix renders a grid (matrix) field: rows down the side, a
+    // shared set of columns across the top, each row answered by a radio
+    // (single column per row) or checkbox (multiple columns per row) pick.
+    // formValues[name] is an object keyed by row value → column value string
+    // (radio) or column-value array in column-definition order (checkbox).
+    // SELF_SEEDED in the outer loop, so we seed the whole object here.
+    //
+    // VISIBILITY LIMITATION: a conditional-visibility rule can reference the
+    // whole matrix field (its value is the object, stringified for comparison)
+    // but NOT an individual cell — the visibility evaluator is generic over
+    // field → value and has no notion of a matrix's rows/columns.
+    function renderMatrix(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const rows = Array.isArray(component.matrix_rows) ? component.matrix_rows : [];
+        const cols = Array.isArray(component.matrix_columns) ? component.matrix_columns : [];
+        const checkbox = component.cell_type === "checkbox";
+
+        // Seed the response object: each row → "" (radio) or [] (checkbox).
+        const state = {};
+        for (const r of rows) state[r.value] = checkbox ? [] : "";
+        formValues[component.name] = state;
+
+        // Guard against an empty grid — nothing to render meaningfully.
+        if (rows.length === 0 || cols.length === 0) {
+            const hint = document.createElement("div");
+            hint.classList.add("info-text");
+            hint.textContent = "This grid has no rows or columns configured.";
+            group.appendChild(hint);
+            container.appendChild(group);
+            return;
+        }
+
+        const scroll = document.createElement("div");
+        scroll.classList.add("matrix-scroll");
+
+        const table = document.createElement("table");
+        table.classList.add("matrix-table");
+
+        // Header row: an empty top-left corner then one heading per column.
+        const thead = document.createElement("thead");
+        const headRow = document.createElement("tr");
+        const corner = document.createElement("th");
+        corner.classList.add("matrix-corner");
+        headRow.appendChild(corner);
+        for (const col of cols) {
+            const th = document.createElement("th");
+            th.scope = "col";
+            th.textContent = col.label;
+            headRow.appendChild(th);
+        }
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+
+        // One body row per matrix row: a row-header cell then a cell per column.
+        const tbody = document.createElement("tbody");
+        rows.forEach((row, rowIdx) => {
+            const tr = document.createElement("tr");
+            const rowHead = document.createElement("th");
+            rowHead.scope = "row";
+            rowHead.textContent = row.label;
+            tr.appendChild(rowHead);
+
+            cols.forEach((col, colIdx) => {
+                const td = document.createElement("td");
+                const input = document.createElement("input");
+                input.type = checkbox ? "checkbox" : "radio";
+                // Radio inputs group per row so exactly one column is picked.
+                input.name = "input-" + component.name + "-" + row.value;
+                input.value = col.value;
+                input.id = "input-" + component.name + "-" + rowIdx + "-" + colIdx;
+                input.onchange = () => {
+                    if (checkbox) {
+                        // Rebuild the row's array in column-definition order so
+                        // the response order is deterministic regardless of the
+                        // order the user ticked boxes in.
+                        const boxes = tr.querySelectorAll("input[type=checkbox]");
+                        const chosen = new Set();
+                        boxes.forEach((b) => { if (b.checked) chosen.add(b.value); });
+                        state[row.value] = cols
+                            .map((cc) => cc.value)
+                            .filter((v) => chosen.has(v));
+                    } else {
+                        state[row.value] = col.value;
+                    }
+                    validateForm(form);
+                };
+                if (component.read_only) {
+                    input.disabled = true;
+                }
+                td.appendChild(input);
+                tr.appendChild(td);
+            });
+
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+
+        if (component.read_only) table.classList.add("readonly");
+        scroll.appendChild(table);
+        group.appendChild(scroll);
         container.appendChild(group);
     }
 
@@ -3036,7 +3229,7 @@
         // Types where the render function seeds formValues itself
         // (needs runtime access to the options list, numeric bounds, or
         // a structured object shape).
-        const SELF_SEEDED = new Set(["checkboxes", "picture_choice", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "license_plate", "ranking", "nps", "consent", "contact_name"]);
+        const SELF_SEEDED = new Set(["checkboxes", "matrix", "picture_choice", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "license_plate", "ranking", "nps", "consent", "contact_name"]);
 
         for (const component of components) {
             // Seed formValues with default_value when set, so unedited
@@ -3082,6 +3275,7 @@
             case "boolean": renderCheckbox(form, container, component); break;
             case "radio": renderRadio(form, container, component); break;
             case "checkboxes": renderCheckboxes(form, container, component); break;
+            case "matrix": renderMatrix(form, container, component); break;
             case "picture_choice": renderPictureChoice(form, container, component); break;
             case "dropdown": renderDropdown(form, container, component); break;
             case "email": renderEmail(form, container, component); break;
@@ -3199,6 +3393,24 @@
                 // Everything else: treat null / "" as empty.
                 if (comp.type === "checkboxes") {
                     if (!Array.isArray(v) || v.length === 0) valid = false;
+                } else if (comp.type === "matrix") {
+                    // A required matrix is answered only when EVERY row has a
+                    // pick — radio: each row value is a non-empty string;
+                    // checkbox: each row array is non-empty. A non-object
+                    // value (or missing row) is invalid.
+                    if (!v || typeof v !== "object" || Array.isArray(v)) {
+                        valid = false;
+                    } else {
+                        const rows = Array.isArray(comp.matrix_rows) ? comp.matrix_rows : [];
+                        for (const r of rows) {
+                            const cell = v[r.value];
+                            if (comp.cell_type === "checkbox") {
+                                if (!Array.isArray(cell) || cell.length === 0) { valid = false; break; }
+                            } else {
+                                if (typeof cell !== "string" || cell === "") { valid = false; break; }
+                            }
+                        }
+                    }
                 } else if (comp.type === "picture_choice") {
                     // Single-select: "" / null / undefined means unchosen.
                     // Multi-select: a non-array or empty array means none picked.

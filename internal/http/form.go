@@ -94,6 +94,17 @@ type formComponent struct {
 	// array of option values). Ignored by other field types.
 	Multiple bool `json:"multiple,omitempty"`
 
+	// Matrix (grid) field — rows down the side, a shared set of columns
+	// across the top, each row answered by picking from the columns. The
+	// response is an object keyed by row value; CellType decides whether
+	// each row holds a single column value (radio → string) or a set
+	// (checkbox → []string). Only used by the "matrix" field type.
+	MatrixRows    []formOption `json:"matrix_rows,omitempty"`
+	MatrixColumns []formOption `json:"matrix_columns,omitempty"`
+	// CellType is "radio" (default, single pick per row) or "checkbox"
+	// (multiple picks per row). Empty is treated as "radio".
+	CellType string `json:"cell_type,omitempty"`
+
 	// Numeric constraints — apply to number, slider, and rating types.
 	// Pointer types distinguish "unset" from "zero", which matters:
 	// Min=0 is a legitimate constraint (e.g. non-negative quantity)
@@ -544,6 +555,105 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 	return out
 }
 
+// sanitiseMatrixSubmissions enforces the row/column whitelists for matrix
+// (grid) fields. A matrix answer is an object keyed by row value; each row's
+// value is a single column value (cell_type "radio") or an array of column
+// values (cell_type "checkbox"). The generic option whitelist doesn't fit —
+// a matrix has two whitelists (rows and columns) and a nested-object shape —
+// so this is a dedicated pass, mirroring the trust-the-definition philosophy
+// of sanitiseOptionSubmissions:
+//
+//   - The submitted answer must be a map[string]interface{}; anything else
+//     (wrong type, missing) becomes an empty map.
+//   - Any key not in the row whitelist is dropped.
+//   - radio: the row's value must be a string in the column whitelist, else
+//     that row entry is dropped.
+//   - checkbox: the row's value must be an array; entries are filtered to
+//     whitelisted column values, de-duplicated, order preserved. An empty
+//     array is permitted (a row left unanswered).
+//
+// Returns a new map; does not mutate the input.
+func sanitiseMatrixSubmissions(submission map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	specs := map[string]formComponent{}
+	for _, page := range resolved.Pages {
+		for _, c := range page.Components {
+			if c.Type == "matrix" {
+				specs[c.Name] = c
+			}
+		}
+	}
+	if len(specs) == 0 {
+		return submission
+	}
+
+	out := make(map[string]interface{}, len(submission))
+	for k, v := range submission {
+		out[k] = v
+	}
+
+	for name, spec := range specs {
+		rowWhitelist := map[string]struct{}{}
+		for _, r := range spec.MatrixRows {
+			rowWhitelist[r.Value] = struct{}{}
+		}
+		colWhitelist := map[string]struct{}{}
+		for _, col := range spec.MatrixColumns {
+			colWhitelist[col.Value] = struct{}{}
+		}
+		checkbox := spec.CellType == "checkbox"
+
+		raw, ok := out[name].(map[string]interface{})
+		if !ok {
+			out[name] = map[string]interface{}{}
+			continue
+		}
+
+		clean := make(map[string]interface{}, len(raw))
+		for rowValue, answer := range raw {
+			if _, rowOK := rowWhitelist[rowValue]; !rowOK {
+				continue
+			}
+			if checkbox {
+				arr, arrOK := answer.([]interface{})
+				if !arrOK {
+					// A row present but not an array becomes an empty
+					// selection rather than being dropped, so the row key
+					// survives with a well-formed (empty) value.
+					clean[rowValue] = []interface{}{}
+					continue
+				}
+				seen := map[string]struct{}{}
+				filtered := make([]interface{}, 0, len(arr))
+				for _, entry := range arr {
+					s, sOK := entry.(string)
+					if !sOK {
+						continue
+					}
+					if _, dupe := seen[s]; dupe {
+						continue
+					}
+					if _, colOK := colWhitelist[s]; colOK {
+						seen[s] = struct{}{}
+						filtered = append(filtered, s)
+					}
+				}
+				clean[rowValue] = filtered
+			} else {
+				s, sOK := answer.(string)
+				if !sOK {
+					continue
+				}
+				if _, colOK := colWhitelist[s]; !colOK {
+					continue
+				}
+				clean[rowValue] = s
+			}
+		}
+		out[name] = clean
+	}
+	return out
+}
+
 // stripDisplayOnlySubmissions removes keys whose corresponding component
 // is a display-only type (section_header, divider, info_text). These
 // components exist to structure the form visually, not to collect input,
@@ -584,12 +694,12 @@ func stripReadOnlySubmissions(submission map[string]interface{}, resolved formDe
 	readOnly := map[string]string{}
 	for _, page := range resolved.Pages {
 		for _, c := range page.Components {
-			// Structured types (location, address, contact_name) produce a
-			// nested object response and have no meaningful string
+			// Structured types (location, address, contact_name, matrix)
+			// produce a nested object response and have no meaningful string
 			// DefaultValue — skipping them here means a hand-authored
 			// read_only: true is ignored rather than corrupting the
 			// response shape.
-			if c.Type == "location" || c.Type == "address" || c.Type == "contact_name" {
+			if c.Type == "location" || c.Type == "address" || c.Type == "contact_name" || c.Type == "matrix" {
 				continue
 			}
 			if c.ReadOnly {

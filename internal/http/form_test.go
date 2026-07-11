@@ -762,3 +762,114 @@ func TestStripReadOnlySubmissions_SkipsContactName(t *testing.T) {
 	Expect(contact["first_name"]).To(Equal("Ada"))
 	Expect(contact["email"]).To(Equal("ada@example.com"))
 }
+
+func matrixField(name, cellType string) formComponent {
+	return formComponent{
+		Name:     name,
+		Type:     "matrix",
+		CellType: cellType,
+		MatrixRows: []formOption{
+			{Label: "Speed", Value: "speed"},
+			{Label: "Support", Value: "support"},
+		},
+		MatrixColumns: []formOption{
+			{Label: "Poor", Value: "poor"},
+			{Label: "OK", Value: "ok"},
+			{Label: "Great", Value: "great"},
+		},
+	}
+}
+
+func TestSanitiseMatrixSubmissions_Radio_WhitelistEnforced(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{Components: []formComponent{matrixField("survey", "radio")}}},
+	}
+
+	// A valid answer passes through; an off-whitelist column value drops that
+	// row; an off-whitelist row key is dropped entirely.
+	sanitised := sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": map[string]interface{}{
+			"speed":   "great",   // valid → kept
+			"support": "amazing", // bad column value → row dropped
+			"unknown": "ok",      // bad row key → dropped
+		},
+	}, resolved)
+
+	got, ok := sanitised["survey"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	Expect(got["speed"]).To(Equal("great"))
+	_, hasSupport := got["support"]
+	Expect(hasSupport).To(BeFalse())
+	_, hasUnknown := got["unknown"]
+	Expect(hasUnknown).To(BeFalse())
+
+	// A non-string row value (wrong type) is dropped.
+	sanitised = sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": map[string]interface{}{"speed": 42},
+	}, resolved)
+	got, ok = sanitised["survey"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	_, hasSpeed := got["speed"]
+	Expect(hasSpeed).To(BeFalse())
+
+	// A non-object answer becomes an empty map.
+	sanitised = sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": "not an object",
+	}, resolved)
+	Expect(sanitised["survey"]).To(Equal(map[string]interface{}{}))
+
+	// Missing key defaults to empty map.
+	sanitised = sanitiseMatrixSubmissions(map[string]interface{}{}, resolved)
+	Expect(sanitised["survey"]).To(Equal(map[string]interface{}{}))
+}
+
+func TestSanitiseMatrixSubmissions_Checkbox_FiltersToWhitelist(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{Components: []formComponent{matrixField("survey", "checkbox")}}},
+	}
+
+	sanitised := sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": map[string]interface{}{
+			// Whitelisted survive, off-whitelist filtered, dupes dropped,
+			// column-definition order NOT required but preserved as submitted.
+			"speed":   []interface{}{"poor", "unknown", "great", "poor", 42},
+			"support": []interface{}{},     // empty array allowed
+			"unknown": []interface{}{"ok"}, // bad row key → dropped
+		},
+	}, resolved)
+
+	got, ok := sanitised["survey"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	Expect(got["speed"]).To(Equal([]interface{}{"poor", "great"}))
+	Expect(got["support"]).To(Equal([]interface{}{}))
+	_, hasUnknown := got["unknown"]
+	Expect(hasUnknown).To(BeFalse())
+
+	// A row present but not an array becomes an empty selection (key kept).
+	sanitised = sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": map[string]interface{}{"speed": "great"},
+	}, resolved)
+	got, ok = sanitised["survey"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	Expect(got["speed"]).To(Equal([]interface{}{}))
+
+	// A non-object answer becomes an empty map.
+	sanitised = sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": []interface{}{"nope"},
+	}, resolved)
+	Expect(sanitised["survey"]).To(Equal(map[string]interface{}{}))
+}
+
+func TestSanitiseMatrixSubmissions_NoMatrixFields_PassThrough(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{Components: []formComponent{{Name: "text", Type: "text"}}}},
+	}
+	in := map[string]interface{}{"text": "hello"}
+	Expect(sanitiseMatrixSubmissions(in, resolved)).To(Equal(in))
+}

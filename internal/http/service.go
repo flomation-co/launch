@@ -783,6 +783,7 @@ func (s *Service) submitForm(c *gin.Context) {
 	// field can act as a (baked) condition source; the hidden strip runs
 	// last so it sees every other field's final value.
 	sanitised := sanitiseOptionSubmissions(body, resolved)
+	sanitised = sanitiseMatrixSubmissions(sanitised, resolved)
 	sanitised = stripDisplayOnlySubmissions(sanitised, resolved)
 	sanitised = stripReadOnlySubmissions(sanitised, resolved)
 	final := stripHiddenSubmissions(sanitised, resolved)
