@@ -537,6 +537,27 @@
             margin: 0;
         }
 
+        /* ── Payment summary (read-only "you will pay X" line) ── */
+        .payment-summary {
+            padding: 14px 16px;
+            background: rgba(0, 170, 156, 0.06);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--teal, #00aa9c);
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        .payment-summary strong {
+            display: block;
+            color: var(--text);
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+        .payment-amount {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
         /* ── Location ── */
         .location-wrapper {
             display: flex;
@@ -3144,6 +3165,53 @@
         container.appendChild(wrapper);
     }
 
+    // renderPayment shows a read-only "you will pay X" summary line. It
+    // collects no input — the card is captured by Stripe's hosted Checkout
+    // page after the user clicks "Pay & Submit". The amount shown here is
+    // purely presentational; the authoritative charge is resolved SERVER-SIDE
+    // at checkout (so a tampered client value is irrelevant).
+    function renderPayment(form, container, component) {
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("payment-summary");
+        if (component.label) {
+            const strong = document.createElement("strong");
+            strong.textContent = component.label;
+            wrapper.appendChild(strong);
+        }
+        const line = document.createElement("div");
+        line.classList.add("payment-amount");
+        line.textContent = formatPaymentAmount(component.amount, component.currency);
+        wrapper.appendChild(line);
+        container.appendChild(wrapper);
+    }
+
+    // formatPaymentAmount renders a literal amount as a localised currency
+    // string (e.g. "Payment: £49.99"). A dynamic amount (a ${data.X} reference,
+    // only resolvable server-side) is shown as a neutral placeholder.
+    function formatPaymentAmount(amount, currency) {
+        const cur = String(currency || "gbp").toUpperCase();
+        if (typeof amount !== "string" || amount.indexOf("${") !== -1) {
+            return "Amount calculated at checkout";
+        }
+        const n = Number(amount);
+        if (!isFinite(n) || amount.trim() === "") return "Amount calculated at checkout";
+        try {
+            return "Payment: " + new Intl.NumberFormat(undefined, {style: "currency", currency: cur}).format(n);
+        } catch (_) {
+            return "Payment: " + n.toFixed(2) + " " + cur;
+        }
+    }
+
+    // formHasPayment reports whether the form carries a payment field, which
+    // switches the submit button to a Stripe Checkout redirect instead of a
+    // direct POST.
+    function formHasPayment(form) {
+        for (const page of form.pages)
+            for (const comp of page.components)
+                if (comp.type === "payment") return true;
+        return false;
+    }
+
     function renderDropdown(form, container, component) {
         const group = document.createElement("div");
         group.classList.add("field-group");
@@ -3242,7 +3310,9 @@
             //   functions (needs options list / numeric bounds)
             // - display-only: skipped entirely
             // - everything else: string default or null
-            if (!DISPLAY_ONLY.has(component.type) && !SELF_SEEDED.has(component.type)) {
+            // "payment" collects no input — it renders a read-only summary and
+            // the card is captured by Stripe, so it must never seed a value.
+            if (!DISPLAY_ONLY.has(component.type) && !SELF_SEEDED.has(component.type) && component.type !== "payment") {
                 if (component.type === "boolean") {
                     formValues[component.name] = component.default_value === "true" || component.default_value === true;
                 } else if (component.default_value !== undefined && component.default_value !== "") {
@@ -3293,6 +3363,7 @@
             case "section_header": renderSectionHeader(form, container, component); break;
             case "divider": renderDivider(form, container, component); break;
             case "info_text": renderInfoText(form, container, component); break;
+            case "payment": renderPayment(form, container, component); break;
             case "location": renderLocation(form, container, component); break;
             case "address": renderAddress(form, container, component); break;
             case "esignature": renderESignature(form, container, component); break;
@@ -3383,6 +3454,7 @@
             for (const comp of page.components) {
                 if (!comp.required) continue;
                 if (DISPLAY_ONLY.has(comp.type)) continue;
+                if (comp.type === "payment") continue; // collects no value
                 if (hiddenFields.has(comp.name)) continue; // conditionally hidden — not required
                 const v = formValues[comp.name];
                 // Radio + dropdown: empty string means "not chosen".
@@ -3655,7 +3727,7 @@
         }
 
         const submit = document.createElement("button");
-        submit.textContent = "Submit";
+        submit.textContent = formHasPayment(form) ? "Pay & Submit" : "Submit";
         submit.id = "submit";
         submit.disabled = true;
         submit.classList.add("btn", "btn-submit");
@@ -3684,6 +3756,10 @@
     }
 
     function submitForm(form) {
+        // Payment forms never POST answers directly — they hand off to Stripe
+        // Checkout and the server finalises the draft after payment.
+        if (formHasPayment(form)) { startFormPayment(form); return; }
+
         const submit = document.getElementById("submit");
         submit.disabled = true;
         submit.textContent = "Submitting...";
@@ -3711,6 +3787,42 @@
         .catch(() => {
             submit.disabled = false;
             submit.textContent = "Submit";
+        });
+    }
+
+    // startFormPayment flushes the latest answers to the server draft, then
+    // asks the server to create a Stripe hosted Checkout Session for this
+    // submission and redirects the browser to it. The amount and the Stripe
+    // secret key are resolved entirely server-side — the client sends only the
+    // draft submission id. After payment Stripe redirects to
+    // /form/:id/complete, which verifies the session is PAID and fires the flow
+    // from the stored draft. A cancelled payment returns to this form (the
+    // draft is still live) so the user can retry.
+    function startFormPayment(form) {
+        const submit = document.getElementById("submit");
+        submit.disabled = true;
+        submit.textContent = "Redirecting to payment…";
+
+        // Ensure the draft holds the latest answers before handing off — the
+        // server finalises from the draft, not from any client body.
+        flushAutosave();
+
+        fetch("/form/" + FORM_ID + "/payment-intent", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({submission_id: SUBMISSION_ID})
+        })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error("payment init failed"))))
+        .then((data) => {
+            if (data && data.url) {
+                window.location.href = data.url;
+                return;
+            }
+            throw new Error("no checkout url");
+        })
+        .catch(() => {
+            submit.disabled = false;
+            submit.textContent = "Pay & Submit";
         });
     }
 

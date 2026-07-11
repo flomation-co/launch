@@ -180,6 +180,12 @@ func (s *Service) configure() error {
 	s.engine.POST("/form/:id", s.submitForm)
 	s.engine.PUT("/form/:id/submission/:sid", s.autosaveFormDraft)
 	s.engine.POST("/form/:id/upload", s.uploadFormBlob)
+	// Native form payments (Stripe hosted Checkout). payment-intent creates a
+	// Checkout Session for a draft and returns its URL; complete is the
+	// success_url Stripe redirects back to, verifies the session is PAID, then
+	// finalises the draft (sanitise → fire-once → trigger).
+	s.engine.POST("/form/:id/payment-intent", s.createFormPaymentIntent)
+	s.engine.GET("/form/:id/complete", s.completeFormPayment)
 	s.engine.GET("/image/:id", s.handleImageLoad)
 
 	// Internal routes — service-to-service calls from the API.
@@ -772,21 +778,12 @@ func (s *Service) submitForm(c *gin.Context) {
 		def = bakeDynamicOptions(def, dataOutputs)
 	}
 	resolved := resolveFormForRender(def, ctx)
-	// Sanitisation pipeline, applied in this order:
-	//   1. Enforce option whitelist for radio/dropdown/checkboxes.
-	//   2. Drop any client-supplied values for display-only components
-	//      (section_header, divider, info_text) — they take no input.
-	//   3. Restore baked-at-render values for read-only components.
-	//   4. Strip answers for conditionally-hidden components — a hidden
-	//      branch must never smuggle values into the trigger data.
-	// Read-only stripping runs before the hidden strip so a read-only
-	// field can act as a (baked) condition source; the hidden strip runs
-	// last so it sees every other field's final value.
-	sanitised := sanitiseOptionSubmissions(body, resolved)
-	sanitised = sanitiseMatrixSubmissions(sanitised, resolved)
-	sanitised = stripDisplayOnlySubmissions(sanitised, resolved)
-	sanitised = stripReadOnlySubmissions(sanitised, resolved)
-	final := stripHiddenSubmissions(sanitised, resolved)
+	// Sanitisation pipeline (option whitelist → matrix whitelist → strip
+	// display-only → restore read-only defaults → strip hidden). Read-only
+	// stripping runs before the hidden strip so a read-only field can act as
+	// a (baked) condition source; the hidden strip runs last so it sees every
+	// other field's final value. Shared with the payment finalise path.
+	final := sanitiseFormSubmission(body, resolved)
 	if userID != "" {
 		final["user_id"] = userID
 	}

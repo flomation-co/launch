@@ -58,6 +58,27 @@ func (s *Service) GetFormDraft(submissionID string) (*FormDraft, error) {
 	return &draft, nil
 }
 
+// GetFormDraftAny returns a draft by submission id regardless of its status
+// (draft, finalising, or fired) and regardless of expiry, or (nil, nil) if
+// none exists. Used by the payment-completion callback, which must inspect a
+// 'finalising' draft's stored payment_ref and status to verify a Stripe
+// session before firing — GetFormDraft deliberately hides non-'draft' rows.
+func (s *Service) GetFormDraftAny(submissionID string) (*FormDraft, error) {
+	var draft FormDraft
+	err := s.conn.Get(&draft, `
+		SELECT submission_id, trigger_id, flow_id, payload, status, payment_ref, expires_at
+		FROM form_submission_draft
+		WHERE submission_id = $1
+	`, submissionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &draft, nil
+}
+
 // SaveFormDraftPayload overwrites the payload of a live draft. Returns false if
 // no live draft matched (expired, fired, or unknown) so the caller can 404.
 func (s *Service) SaveFormDraftPayload(submissionID string, payload json.RawMessage) (bool, error) {
@@ -78,13 +99,16 @@ func (s *Service) SaveFormDraftPayload(submissionID string, payload json.RawMess
 
 // MarkFormDraftFinalising transitions a draft to the 'finalising' state and
 // records an external payment reference. Used when a submission is handed off
-// to a payment provider before the flow fires. Returns false if the draft was
-// not in 'draft' state.
+// to a payment provider before the flow fires. Accepts a draft already in
+// 'finalising' too, so a retry (the user cancelled Stripe Checkout and
+// started a fresh session) can overwrite the stored payment_ref with the new
+// session id. A 'fired' draft is never re-opened. Returns false when no draft
+// matched (already fired, or unknown).
 func (s *Service) MarkFormDraftFinalising(submissionID, paymentRef string) (bool, error) {
 	result, err := s.conn.Exec(`
 		UPDATE form_submission_draft
 		SET status = 'finalising', payment_ref = $2, updated_at = NOW()
-		WHERE submission_id = $1 AND status = 'draft'
+		WHERE submission_id = $1 AND status IN ('draft', 'finalising')
 	`, submissionID, paymentRef)
 	if err != nil {
 		return false, err

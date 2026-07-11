@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -161,6 +162,17 @@ type formComponent struct {
 	ConfidenceThreshold *float64 `json:"confidence_threshold,omitempty"`
 	PrivacyNotice       string   `json:"privacy_notice,omitempty"`
 	ShowPrivacyNotice   *bool    `json:"show_privacy_notice,omitempty"`
+
+	// Payment-field settings (type == "payment"). Amount is a MAJOR-unit
+	// decimal string (e.g. "49.99") — it may be a literal or a ${data.X}
+	// reference resolved server-side at payment time (NEVER trusted from the
+	// client). Currency is an ISO-4217 code (e.g. "gbp"). PaymentSecret is a
+	// ${secrets.X} reference to the Stripe secret key; an empty value falls
+	// back to defaultPaymentSecretRef. The field collects no input — it is
+	// rendered as a read-only "you will pay X" summary.
+	Amount        string `json:"amount,omitempty"`
+	Currency      string `json:"currency,omitempty"`
+	PaymentSecret string `json:"payment_secret,omitempty"`
 
 	// VisibleIf, when set, makes this component conditionally visible based
 	// on the answers to earlier fields. Nil means "always visible" (the
@@ -942,6 +954,98 @@ func stripHiddenSubmissions(submission map[string]interface{}, resolved formDefi
 		}
 	}
 	return out
+}
+
+// sanitiseFormSubmission runs the full submit-time sanitisation pipeline on a
+// raw answer map against a resolved form definition, in the security-critical
+// order used by submitForm:
+//
+//  1. Enforce the option whitelist for radio/dropdown/checkboxes/etc.
+//  2. Enforce the matrix row/column whitelists.
+//  3. Drop client-supplied values for display-only components.
+//  4. Restore baked-at-render values for read-only components.
+//  5. Strip answers for conditionally-hidden components.
+//
+// It is shared by submitForm and the payment-completion finalise path so both
+// strip identically — the draft payload a payment form finalises is just as
+// client-authored (via autosave) as a direct POST body. Pure.
+func sanitiseFormSubmission(body map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	sanitised := sanitiseOptionSubmissions(body, resolved)
+	sanitised = sanitiseMatrixSubmissions(sanitised, resolved)
+	sanitised = stripDisplayOnlySubmissions(sanitised, resolved)
+	sanitised = stripReadOnlySubmissions(sanitised, resolved)
+	return stripHiddenSubmissions(sanitised, resolved)
+}
+
+// paymentComponent returns the first payment field in the form (a form is
+// expected to carry at most one). ok is false when there is none, letting the
+// payment endpoints 400 a form that has no payment field.
+func paymentComponent(def formDefinition) (formComponent, bool) {
+	for _, page := range def.Pages {
+		for _, c := range page.Components {
+			if c.Type == "payment" {
+				return c, true
+			}
+		}
+	}
+	return formComponent{}, false
+}
+
+// zeroDecimalCurrencies charge in whole units — the "minor unit" IS the major
+// unit, so no ×100 scaling. threeDecimalCurrencies use a thousandth as the
+// smallest unit. Everything else is the 2-decimal default. Mirrors Stripe's
+// zero/three-decimal currency lists (and stripe_common.MoneyToMinorUnits in
+// the executor).
+var zeroDecimalCurrencies = map[string]struct{}{
+	"bif": {}, "clp": {}, "djf": {}, "gnf": {}, "jpy": {}, "kmf": {},
+	"krw": {}, "mga": {}, "pyg": {}, "rwf": {}, "ugx": {}, "vnd": {},
+	"vuv": {}, "xaf": {}, "xof": {}, "xpf": {},
+}
+
+var threeDecimalCurrencies = map[string]struct{}{
+	"bhd": {}, "jod": {}, "kwd": {}, "omr": {}, "tnd": {},
+}
+
+// currencyDecimals returns the number of fractional digits in the currency's
+// smallest unit. Unknown currencies fall back to 2.
+func currencyDecimals(currency string) int {
+	c := strings.ToLower(strings.TrimSpace(currency))
+	if _, ok := zeroDecimalCurrencies[c]; ok {
+		return 0
+	}
+	if _, ok := threeDecimalCurrencies[c]; ok {
+		return 3
+	}
+	return 2
+}
+
+// amountPattern accepts a non-negative decimal string ("49.99", "1000",
+// "1.234"). It deliberately excludes signs, exponents, and thousands
+// separators so a hostile or malformed amount is rejected outright rather
+// than silently coerced.
+var amountPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+
+// amountToMinorUnits converts a MAJOR-unit decimal amount (e.g. "49.99") into
+// the currency's smallest integer unit (e.g. 4999 pence). It rejects a
+// non-numeric or negative amount. Rounding is to the nearest minor unit,
+// which absorbs binary-float artefacts (49.99×100 = 4998.9999… → 4999).
+func amountToMinorUnits(amount, currency string) (int64, error) {
+	a := strings.TrimSpace(amount)
+	if a == "" {
+		return 0, fmt.Errorf("empty amount")
+	}
+	if !amountPattern.MatchString(a) {
+		return 0, fmt.Errorf("invalid amount %q", a)
+	}
+	f, err := strconv.ParseFloat(a, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid amount %q: %w", a, err)
+	}
+	if f < 0 { // unreachable given the pattern, kept as belt-and-braces
+		return 0, fmt.Errorf("negative amount %q", a)
+	}
+	factor := math.Pow(10, float64(currencyDecimals(currency)))
+	return int64(math.Round(f * factor)), nil
 }
 
 // loadUserVariables fetches the user's ${user.X} variable map from the API.
