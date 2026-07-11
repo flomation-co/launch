@@ -551,6 +551,112 @@
             opacity: 1;
         }
 
+        /* ── NPS (0..N horizontal button row) ── */
+        .nps-wrapper {
+            padding: 12px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .nps-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .nps-button {
+            flex: 1 1 0;
+            min-width: 34px;
+            padding: 10px 0;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+        }
+        .nps-button:hover:not(:disabled) {
+            background: rgba(139, 92, 246, 0.12);
+            border-color: var(--primary);
+        }
+        .nps-button.selected {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: #fff;
+        }
+        .nps-button:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+        .nps-captions {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        /* ── Opinion scale (radio rendered as a horizontal row) ── */
+        .option-list.opinion-scale {
+            flex-direction: row;
+            flex-wrap: wrap;
+        }
+        .option-list.opinion-scale .option-row {
+            flex: 1 1 0;
+            min-width: 120px;
+        }
+
+        /* ── Consent (terms callout + a single required checkbox) ── */
+        .consent-terms {
+            padding: 12px 14px;
+            margin-bottom: 10px;
+            background: rgba(139, 92, 246, 0.05);
+            border-left: 3px solid var(--primary);
+            border-radius: 4px;
+            font-size: 13px;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+        .consent-terms strong { color: var(--text); }
+
+        /* ── Contact info (multi-field grid, mirrors address) ── */
+        .contact-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            padding: 12px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .contact-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .contact-cell input {
+            width: 100%;
+            padding: 10px 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 13px;
+            font-family: inherit;
+        }
+        .contact-cell input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+        .contact-cell input.readonly {
+            background-color: rgba(255, 255, 255, 0.02);
+            color: rgba(255, 255, 255, 0.7);
+            cursor: not-allowed;
+            border-style: dashed;
+            opacity: 1;
+        }
+
         /* Login-required landing card — uses the same form-card chrome but
            with an inline sign-in CTA in place of form fields. */
         .login-card { text-align: center; }
@@ -1342,6 +1448,174 @@
         paint();
 
         group.appendChild(stars);
+        container.appendChild(group);
+    }
+
+    // NPS — a horizontal row of (scale + 1) buttons labelled 0..scale.
+    // The response is a Number (0..scale); an untouched field is null, so a
+    // required NPS blocks Submit until the user picks a score. Optional end
+    // captions (scale_label_low / scale_label_high) sit under the two ends.
+    function renderNPS(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const scale = (component.scale !== undefined && component.scale !== null) ? Number(component.scale) : 10;
+
+        // Explicit null seed — nps is SELF_SEEDED so the outer loop skips its
+        // default. Null makes a required-but-unanswered field fail validation.
+        formValues[component.name] = null;
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("nps-wrapper");
+
+        const row = document.createElement("div");
+        row.classList.add("nps-buttons");
+
+        const buttons = [];
+        for (let i = 0; i <= scale; i++) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.classList.add("nps-button");
+            btn.textContent = String(i);
+            btn.setAttribute("aria-label", i + " of " + scale);
+            btn.onclick = () => {
+                if (component.read_only) return;
+                formValues[component.name] = i;
+                buttons.forEach((b, bi) => b.classList.toggle("selected", bi === i));
+                validateForm(form);
+            };
+            if (component.read_only) btn.disabled = true;
+            buttons.push(btn);
+            row.appendChild(btn);
+        }
+        wrapper.appendChild(row);
+
+        if (component.scale_label_low || component.scale_label_high) {
+            const captions = document.createElement("div");
+            captions.classList.add("nps-captions");
+            const low = document.createElement("span");
+            low.textContent = component.scale_label_low || "";
+            const high = document.createElement("span");
+            high.textContent = component.scale_label_high || "";
+            captions.appendChild(low);
+            captions.appendChild(high);
+            wrapper.appendChild(captions);
+        }
+
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
+    // Opinion scale — a single-select rendered as a HORIZONTAL labelled row.
+    // Schema-identical to radio (options list, string value), so it reuses
+    // renderRadio and just tags the option-list with .opinion-scale for the
+    // horizontal layout. Value is the chosen option's value; empty = "".
+    function renderOpinionScale(form, container, component) {
+        renderRadio(form, container, component);
+        const group = container.lastElementChild;
+        const list = group && group.querySelector(".option-list");
+        if (list) list.classList.add("opinion-scale");
+    }
+
+    // Consent — a single required checkbox plus author-supplied terms text
+    // (display_text) rendered via renderRichText. The response is a boolean;
+    // a required consent is satisfied only when it is true.
+    function renderConsent(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+
+        // Seed false (SELF_SEEDED) so an untouched required consent fails
+        // validation and the submitted value is always a real boolean.
+        formValues[component.name] = false;
+
+        if (component.display_text) {
+            const terms = document.createElement("div");
+            terms.classList.add("consent-terms");
+            terms.innerHTML = renderRichText(component.display_text);
+            group.appendChild(terms);
+        }
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("checkbox-group");
+
+        const el = document.createElement("input");
+        el.type = "checkbox";
+        el.id = "input-" + component.name;
+        el.onchange = (e) => { formValues[component.name] = e.target.checked; validateForm(form); };
+        if (component.read_only) {
+            el.disabled = true;
+            wrapper.classList.add("readonly");
+        }
+
+        const label = document.createElement("label");
+        label.htmlFor = "input-" + component.name;
+        label.textContent = component.label || "I agree";
+        if (component.required) {
+            const star = document.createElement("span");
+            star.classList.add("required");
+            star.textContent = " *";
+            label.appendChild(star);
+        }
+
+        wrapper.appendChild(el);
+        wrapper.appendChild(label);
+        group.appendChild(wrapper);
+        container.appendChild(group);
+    }
+
+    // Contact info — a set of text inputs for the keys named in
+    // contact_fields (defaulting to first_name/last_name/email). Response is
+    // an object keyed by those names, so downstream `${trigger.name.email}`
+    // path drilling works. A required contact_name needs every listed
+    // sub-field filled (mirrors renderAddress's all-fields logic, but strict).
+    function renderContactName(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const keys = (Array.isArray(component.contact_fields) && component.contact_fields.length)
+            ? component.contact_fields
+            : ["first_name", "last_name", "email"];
+
+        const FRIENDLY = {first_name: "First name", last_name: "Last name", email: "Email", phone: "Phone"};
+        const INPUT_TYPE = {email: "email", phone: "tel"};
+        const AUTOCOMPLETE = {first_name: "given-name", last_name: "family-name", email: "email", phone: "tel"};
+
+        // Seed the nested object (SELF_SEEDED) so the downstream shape is
+        // always the object, even if the user submits without typing.
+        const state = {};
+        for (const k of keys) state[k] = "";
+        formValues[component.name] = state;
+
+        const wrapper = document.createElement("div");
+        wrapper.classList.add("contact-grid");
+
+        for (const k of keys) {
+            const cell = document.createElement("div");
+            cell.classList.add("contact-cell");
+
+            const cellLabel = document.createElement("span");
+            cellLabel.classList.add("address-cell-label");
+            cellLabel.textContent = FRIENDLY[k] || k;
+
+            const input = document.createElement("input");
+            input.type = INPUT_TYPE[k] || "text";
+            input.autocomplete = AUTOCOMPLETE[k] || "off";
+            input.id = "input-" + component.name + "-" + k;
+            input.oninput = (e) => { state[k] = e.target.value; validateForm(form); };
+            if (component.read_only) {
+                input.disabled = true;
+                input.readOnly = true;
+                input.classList.add("readonly");
+            }
+
+            cell.appendChild(cellLabel);
+            cell.appendChild(input);
+            wrapper.appendChild(cell);
+        }
+
+        group.appendChild(wrapper);
         container.appendChild(group);
     }
 
@@ -2610,7 +2884,7 @@
         // Types where the render function seeds formValues itself
         // (needs runtime access to the options list, numeric bounds, or
         // a structured object shape).
-        const SELF_SEEDED = new Set(["checkboxes", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "license_plate", "ranking"]);
+        const SELF_SEEDED = new Set(["checkboxes", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "license_plate", "ranking", "nps", "consent", "contact_name"]);
 
         for (const component of components) {
             // Seed formValues with default_value when set, so unedited
@@ -2665,6 +2939,10 @@
             case "datetime": renderDateTime(form, container, component); break;
             case "slider": renderSlider(form, container, component); break;
             case "rating": renderRating(form, container, component); break;
+            case "nps": renderNPS(form, container, component); break;
+            case "opinion_scale": renderOpinionScale(form, container, component); break;
+            case "consent": renderConsent(form, container, component); break;
+            case "contact_name": renderContactName(form, container, component); break;
             case "section_header": renderSectionHeader(form, container, component); break;
             case "divider": renderDivider(form, container, component); break;
             case "info_text": renderInfoText(form, container, component); break;
@@ -2801,6 +3079,26 @@
                     // in definition order at render time); "required"
                     // just enforces at-least-one option.
                     if (!Array.isArray(v) || v.length === 0) valid = false;
+                } else if (comp.type === "nps") {
+                    // NPS is seeded null; a score of 0 is a valid answer,
+                    // so only null / undefined counts as unanswered.
+                    if (v === null || v === undefined) valid = false;
+                } else if (comp.type === "consent") {
+                    // Consent is a boolean; a required consent must be
+                    // affirmatively ticked (true), not merely present.
+                    if (v !== true) valid = false;
+                } else if (comp.type === "contact_name") {
+                    // A required contact needs every listed sub-field filled.
+                    if (!v || typeof v !== "object") {
+                        valid = false;
+                    } else {
+                        const keys = (Array.isArray(comp.contact_fields) && comp.contact_fields.length)
+                            ? comp.contact_fields
+                            : ["first_name", "last_name", "email"];
+                        for (const k of keys) {
+                            if (!v[k] || String(v[k]).trim() === "") { valid = false; break; }
+                        }
+                    }
                 } else {
                     if (v === "" || v === null || v === undefined) valid = false;
                 }

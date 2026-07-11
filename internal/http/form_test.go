@@ -653,3 +653,59 @@ func TestStripHiddenSubmissions_NoRules_ShortCircuits(t *testing.T) {
 	out := stripHiddenSubmissions(in, def)
 	Expect(out).To(Equal(in))
 }
+
+func TestSanitiseOptionSubmissions_OpinionScale_WhitelistEnforced(t *testing.T) {
+	RegisterTestingT(t)
+
+	// opinion_scale is a single-select whose string value must be one of the
+	// component's options — exactly like radio. Off-whitelist or wrong-typed
+	// values are wiped to "".
+	resolved := formDefinition{
+		Pages: []formPage{{
+			Components: []formComponent{
+				{Name: "agree", Type: "opinion_scale", Options: []formOption{
+					{Label: "Disagree", Value: "disagree"},
+					{Label: "Neutral", Value: "neutral"},
+					{Label: "Agree", Value: "agree"},
+				}},
+			},
+		}},
+	}
+
+	// Whitelisted value survives.
+	sanitised := sanitiseOptionSubmissions(map[string]interface{}{"agree": "neutral"}, resolved)
+	Expect(sanitised["agree"]).To(Equal("neutral"))
+
+	// Off-whitelist value is wiped.
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"agree": "smash"}, resolved)
+	Expect(sanitised["agree"]).To(Equal(""))
+
+	// Non-string type is wiped.
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"agree": 3}, resolved)
+	Expect(sanitised["agree"]).To(Equal(""))
+}
+
+func TestStripReadOnlySubmissions_SkipsContactName(t *testing.T) {
+	RegisterTestingT(t)
+
+	// contact_name produces a nested-object response; a hand-authored
+	// read_only: true must NOT overwrite it with the string DefaultValue.
+	resolved := formDefinition{
+		Pages: []formPage{{
+			Components: []formComponent{
+				{Name: "contact", Type: "contact_name", ReadOnly: true, DefaultValue: "IGNORED"},
+			},
+		}},
+	}
+
+	submission := map[string]interface{}{
+		"contact": map[string]interface{}{"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com"},
+	}
+
+	stripped := stripReadOnlySubmissions(submission, resolved)
+
+	contact, ok := stripped["contact"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	Expect(contact["first_name"]).To(Equal("Ada"))
+	Expect(contact["email"]).To(Equal("ada@example.com"))
+}

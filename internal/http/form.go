@@ -113,6 +113,16 @@ type formComponent struct {
 	// (raw lat/lng from navigator.geolocation). Empty means fine.
 	Precision string `json:"precision,omitempty"`
 
+	// NPS end-of-scale captions — shown under the 0 and scale buttons of an
+	// nps field (e.g. "Not likely" / "Very likely"). Purely presentational.
+	ScaleLabelLow  string `json:"scale_label_low,omitempty"`
+	ScaleLabelHigh string `json:"scale_label_high,omitempty"`
+
+	// ContactFields lists which sub-fields a contact_name component collects,
+	// in order. Empty defaults to ["first_name","last_name","email"]. The
+	// response is an object keyed by these names (plus optionally "phone").
+	ContactFields []string `json:"contact_fields,omitempty"`
+
 	// Upload-field constraints — apply to esignature, camera, and
 	// file_upload types. AcceptMime uses HTML5 accept-attribute syntax
 	// (comma-separated exact MIMEs or category/* wildcards).
@@ -417,7 +427,7 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 	specs := map[string]formComponent{}
 	for _, page := range resolved.Pages {
 		for _, c := range page.Components {
-			if len(c.Options) > 0 && (c.Type == "radio" || c.Type == "dropdown" || c.Type == "checkboxes" || c.Type == "ranking") {
+			if len(c.Options) > 0 && (c.Type == "radio" || c.Type == "dropdown" || c.Type == "checkboxes" || c.Type == "ranking" || c.Type == "opinion_scale") {
 				specs[c.Name] = c
 			}
 		}
@@ -438,7 +448,7 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 		}
 
 		switch spec.Type {
-		case "radio", "dropdown":
+		case "radio", "dropdown", "opinion_scale":
 			s, ok := out[name].(string)
 			if !ok {
 				out[name] = ""
@@ -535,11 +545,12 @@ func stripReadOnlySubmissions(submission map[string]interface{}, resolved formDe
 	readOnly := map[string]string{}
 	for _, page := range resolved.Pages {
 		for _, c := range page.Components {
-			// Structured types (location, address) produce a nested object
-			// response and have no meaningful string DefaultValue — skipping
-			// them here means a hand-authored read_only: true is ignored
-			// rather than corrupting the response shape.
-			if c.Type == "location" || c.Type == "address" {
+			// Structured types (location, address, contact_name) produce a
+			// nested object response and have no meaningful string
+			// DefaultValue — skipping them here means a hand-authored
+			// read_only: true is ignored rather than corrupting the
+			// response shape.
+			if c.Type == "location" || c.Type == "address" || c.Type == "contact_name" {
 				continue
 			}
 			if c.ReadOnly {
