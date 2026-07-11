@@ -89,6 +89,11 @@ type formComponent struct {
 	// applies. Empty means the static Options above are used.
 	OptionsSource string `json:"options_source,omitempty"`
 
+	// Multiple, on a picture_choice field, switches it from single-select
+	// (response is a string option value) to multi-select (response is an
+	// array of option values). Ignored by other field types.
+	Multiple bool `json:"multiple,omitempty"`
+
 	// Numeric constraints — apply to number, slider, and rating types.
 	// Pointer types distinguish "unset" from "zero", which matters:
 	// Min=0 is a legitimate constraint (e.g. non-negative quantity)
@@ -191,6 +196,9 @@ func isDisplayOnly(t string) bool {
 type formOption struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
+	// Image is an option-tile image URL used by the picture_choice field.
+	// Empty means the option renders as a text fallback tile.
+	Image string `json:"image,omitempty"`
 }
 
 // substitutionContext bundles the inputs to ${X} substitution at render time.
@@ -427,7 +435,7 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 	specs := map[string]formComponent{}
 	for _, page := range resolved.Pages {
 		for _, c := range page.Components {
-			if len(c.Options) > 0 && (c.Type == "radio" || c.Type == "dropdown" || c.Type == "checkboxes" || c.Type == "ranking" || c.Type == "opinion_scale") {
+			if len(c.Options) > 0 && (c.Type == "radio" || c.Type == "dropdown" || c.Type == "checkboxes" || c.Type == "ranking" || c.Type == "opinion_scale" || c.Type == "picture_choice") {
 				specs[c.Name] = c
 			}
 		}
@@ -456,6 +464,37 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 			}
 			if _, hit := whitelist[s]; !hit {
 				out[name] = ""
+			}
+		case "picture_choice":
+			// picture_choice mirrors radio (single) or checkboxes
+			// (multiple) depending on spec.Multiple, reusing the same
+			// option-value whitelist.
+			if spec.Multiple {
+				arr, ok := out[name].([]interface{})
+				if !ok {
+					out[name] = []interface{}{}
+					continue
+				}
+				filtered := make([]interface{}, 0, len(arr))
+				for _, entry := range arr {
+					s, ok := entry.(string)
+					if !ok {
+						continue
+					}
+					if _, hit := whitelist[s]; hit {
+						filtered = append(filtered, s)
+					}
+				}
+				out[name] = filtered
+			} else {
+				s, ok := out[name].(string)
+				if !ok {
+					out[name] = ""
+					continue
+				}
+				if _, hit := whitelist[s]; !hit {
+					out[name] = ""
+				}
 			}
 		case "checkboxes":
 			arr, ok := out[name].([]interface{})

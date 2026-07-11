@@ -277,6 +277,59 @@ func TestSanitiseOptionSubmissions_Ranking_FiltersDedupesPreservesOrder(t *testi
 	Expect(sanitised["priorities"]).To(Equal([]interface{}{}))
 }
 
+func TestSanitiseOptionSubmissions_PictureChoice_Single_WhitelistEnforced(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{
+			Components: []formComponent{
+				{Name: "avatar", Type: "picture_choice", Multiple: false, Options: []formOption{
+					{Label: "Cat", Value: "cat", Image: "https://example.com/cat.png"},
+					{Label: "Dog", Value: "dog", Image: "https://example.com/dog.png"},
+				}},
+			},
+		}},
+	}
+
+	// A whitelisted value survives.
+	sanitised := sanitiseOptionSubmissions(map[string]interface{}{"avatar": "dog"}, resolved)
+	Expect(sanitised["avatar"]).To(Equal("dog"))
+
+	// An off-whitelist value becomes "".
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"avatar": "hacked"}, resolved)
+	Expect(sanitised["avatar"]).To(Equal(""))
+
+	// A non-string (e.g. an array smuggled into a single-select) becomes "".
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"avatar": []interface{}{"cat"}}, resolved)
+	Expect(sanitised["avatar"]).To(Equal(""))
+}
+
+func TestSanitiseOptionSubmissions_PictureChoice_Multiple_FiltersToWhitelist(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{
+			Components: []formComponent{
+				{Name: "toppings", Type: "picture_choice", Multiple: true, Options: []formOption{
+					{Label: "Cheese", Value: "cheese", Image: "https://example.com/cheese.png"},
+					{Label: "Ham", Value: "ham", Image: "https://example.com/ham.png"},
+					{Label: "Olives", Value: "olives", Image: "https://example.com/olives.png"},
+				}},
+			},
+		}},
+	}
+
+	// Whitelisted entries survive in order; off-whitelist / wrong-type dropped.
+	sanitised := sanitiseOptionSubmissions(map[string]interface{}{
+		"toppings": []interface{}{"cheese", "pineapple", "olives", 42, "ham"},
+	}, resolved)
+	Expect(sanitised["toppings"]).To(Equal([]interface{}{"cheese", "olives", "ham"}))
+
+	// A non-array (e.g. a bare string) becomes an empty array.
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"toppings": "cheese"}, resolved)
+	Expect(sanitised["toppings"]).To(Equal([]interface{}{}))
+}
+
 func TestSanitiseOptionSubmissions_NonOptionFieldsUntouched(t *testing.T) {
 	RegisterTestingT(t)
 

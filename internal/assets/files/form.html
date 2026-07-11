@@ -324,6 +324,69 @@
             cursor: not-allowed;
         }
 
+        /* Picture Choice — a responsive grid of selectable image tiles.
+           Single-select behaves like radio; multi-select like checkboxes. */
+        .picture-choice-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 10px;
+        }
+
+        .picture-choice-tile {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 8px;
+            padding: 8px;
+            background: var(--input-bg);
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: border-color 0.12s ease, background 0.12s ease;
+            text-align: center;
+        }
+
+        .picture-choice-tile:hover {
+            border-color: var(--border-focus);
+        }
+
+        .picture-choice-tile img {
+            width: 100%;
+            height: 110px;
+            object-fit: cover;
+            border-radius: 6px;
+            display: block;
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .picture-choice-tile .picture-choice-fallback {
+            width: 100%;
+            height: 110px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.03);
+            color: var(--text-muted);
+            font-size: 13px;
+            padding: 8px;
+        }
+
+        .picture-choice-tile .picture-choice-caption {
+            font-size: 14px;
+            color: var(--text);
+        }
+
+        .picture-choice-tile.selected {
+            border-color: var(--primary);
+            background: rgba(70, 0, 112, 0.25);
+        }
+
+        .picture-choice-tile.readonly {
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
+
         /* Dropdown restyle — the browser default is ugly and clashes with
            the dark theme. Match the .field-group input chrome. */
         .field-group select {
@@ -1308,6 +1371,95 @@
         });
 
         group.appendChild(options);
+        container.appendChild(group);
+    }
+
+    // renderPictureChoice renders an image-tile chooser. Single-select
+    // (!component.multiple) mirrors renderRadio: exactly one tile is chosen
+    // and formValues[name] holds that option's value string (seeded "").
+    // Multi-select mirrors renderCheckboxes: formValues[name] is an array of
+    // selected values in option-definition order (seeded []). An option with
+    // an empty/broken image renders a text fallback tile.
+    function renderPictureChoice(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const grid = document.createElement("div");
+        grid.classList.add("picture-choice-grid");
+
+        const multiple = !!component.multiple;
+        const selected = new Set();
+        if (multiple) {
+            formValues[component.name] = [];
+        } else {
+            formValues[component.name] = "";
+        }
+
+        const tiles = [];
+        const syncMultiple = () => {
+            formValues[component.name] = optionsList(component)
+                .map(o => o.value)
+                .filter(v => selected.has(v));
+        };
+
+        optionsList(component).forEach((opt, idx) => {
+            const tile = document.createElement("div");
+            tile.classList.add("picture-choice-tile");
+
+            if (opt.image) {
+                const img = document.createElement("img");
+                img.src = opt.image;
+                img.alt = opt.label || "";
+                // On a broken image, swap in the text fallback tile.
+                img.onerror = () => {
+                    const fb = document.createElement("div");
+                    fb.classList.add("picture-choice-fallback");
+                    fb.textContent = opt.label || opt.value;
+                    img.replaceWith(fb);
+                };
+                tile.appendChild(img);
+            } else {
+                const fb = document.createElement("div");
+                fb.classList.add("picture-choice-fallback");
+                fb.textContent = opt.label || opt.value;
+                tile.appendChild(fb);
+            }
+
+            const caption = document.createElement("div");
+            caption.classList.add("picture-choice-caption");
+            caption.textContent = opt.label;
+            tile.appendChild(caption);
+
+            if (component.read_only) {
+                tile.classList.add("readonly");
+            } else {
+                tile.onclick = () => {
+                    if (multiple) {
+                        if (selected.has(opt.value)) {
+                            selected.delete(opt.value);
+                            tile.classList.remove("selected");
+                        } else {
+                            selected.add(opt.value);
+                            tile.classList.add("selected");
+                        }
+                        syncMultiple();
+                    } else {
+                        selected.clear();
+                        selected.add(opt.value);
+                        tiles.forEach(t => t.classList.remove("selected"));
+                        tile.classList.add("selected");
+                        formValues[component.name] = opt.value;
+                    }
+                    validateForm(form);
+                };
+            }
+
+            tiles.push(tile);
+            grid.appendChild(tile);
+        });
+
+        group.appendChild(grid);
         container.appendChild(group);
     }
 
@@ -2884,7 +3036,7 @@
         // Types where the render function seeds formValues itself
         // (needs runtime access to the options list, numeric bounds, or
         // a structured object shape).
-        const SELF_SEEDED = new Set(["checkboxes", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "license_plate", "ranking", "nps", "consent", "contact_name"]);
+        const SELF_SEEDED = new Set(["checkboxes", "picture_choice", "slider", "rating", "location", "address", "esignature", "camera", "file_upload", "qr_scanner", "license_plate", "ranking", "nps", "consent", "contact_name"]);
 
         for (const component of components) {
             // Seed formValues with default_value when set, so unedited
@@ -2930,6 +3082,7 @@
             case "boolean": renderCheckbox(form, container, component); break;
             case "radio": renderRadio(form, container, component); break;
             case "checkboxes": renderCheckboxes(form, container, component); break;
+            case "picture_choice": renderPictureChoice(form, container, component); break;
             case "dropdown": renderDropdown(form, container, component); break;
             case "email": renderEmail(form, container, component); break;
             case "phone": renderPhone(form, container, component); break;
@@ -3046,6 +3199,14 @@
                 // Everything else: treat null / "" as empty.
                 if (comp.type === "checkboxes") {
                     if (!Array.isArray(v) || v.length === 0) valid = false;
+                } else if (comp.type === "picture_choice") {
+                    // Single-select: "" / null / undefined means unchosen.
+                    // Multi-select: a non-array or empty array means none picked.
+                    if (comp.multiple) {
+                        if (!Array.isArray(v) || v.length === 0) valid = false;
+                    } else {
+                        if (v === "" || v === null || v === undefined) valid = false;
+                    }
                 } else if (comp.type === "boolean" || comp.type === "slider") {
                     // no-op — booleans are always definitive; sliders
                     // always carry a numeric value once rendered
