@@ -50,18 +50,19 @@ const (
 )
 
 type Service struct {
-	config         *config.Config
-	engine         *gin.Engine
-	internalEngine *gin.Engine  // mTLS-only listener for internal routes
-	apiClient      *http.Client // mTLS-capable client for internal API calls
-	trigger        *trigger.Service
-	agent          *agent.Service
-	google         *google.Service
-	telegram       *telegrampkg.Service
-	db             *persistence.Service
-	facebookIndex  *facebook.PageIndex
-	voiceCalls     *twilio.VoiceCallManager
-	formData       *formDataResolver // caches ${data.X} form autofill results
+	config             *config.Config
+	engine             *gin.Engine
+	internalEngine     *gin.Engine  // mTLS-only listener for internal routes
+	apiClient          *http.Client // mTLS-capable client for internal API calls
+	trigger            *trigger.Service
+	agent              *agent.Service
+	google             *google.Service
+	telegram           *telegrampkg.Service
+	db                 *persistence.Service
+	facebookIndex      *facebook.PageIndex
+	voiceCalls         *twilio.VoiceCallManager
+	formData           *formDataResolver   // caches ${data.X} form autofill results
+	formComputeLimiter *computeRateLimiter // bounds /form/:id/compute per form
 }
 
 func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, telegramSvc *telegrampkg.Service, db *persistence.Service) (*Service, error) {
@@ -84,6 +85,10 @@ func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent
 		facebookIndex: facebook.NewPageIndex(),
 		voiceCalls:    twilio.NewVoiceCallManager(),
 		formData:      newFormDataResolver(apiClient, config.InternalAPIURL()),
+		// ~5 compute requests/second per form with a small burst — enough for
+		// live debounced typing, tight enough to stop a client spinning the
+		// pricing flow.
+		formComputeLimiter: newComputeRateLimiter(5, 10),
 	}
 
 	templ := template.Must(template.ParseFS(assets.Templates, "files/form.html"))
@@ -177,6 +182,11 @@ func (s *Service) configure() error {
 	s.engine.GET("/qr/:id", s.handleQr)
 	s.engine.GET("/form/:id", s.handleForm)
 	s.engine.GET("/form/:id/data", s.handleFormData)
+	// Per-field flow compute for NON-payment display fields: runs the flow the
+	// author bound to a field with the current answers as input and returns
+	// its computed value. Payment amounts are computed server-side at checkout,
+	// never here.
+	s.engine.POST("/form/:id/compute", s.computeFormField)
 	s.engine.POST("/form/:id", s.submitForm)
 	s.engine.PUT("/form/:id/submission/:sid", s.autosaveFormDraft)
 	s.engine.POST("/form/:id/upload", s.uploadFormBlob)

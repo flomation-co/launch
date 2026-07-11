@@ -3165,6 +3165,42 @@
         container.appendChild(wrapper);
     }
 
+    // renderComputed shows a READ-ONLY field whose value is produced by a flow
+    // (value_source) rather than typed by the user. It renders as a disabled
+    // text input, seeded empty; the debounced /compute call fills it in as the
+    // input fields it depends on change. The authoritative value is always the
+    // server's — this display is best-effort. Payment fields never route here
+    // (their amount is computed server-side at checkout).
+    function renderComputed(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const el = document.createElement("input");
+        el.type = "text";
+        el.id = "input-" + component.name;
+        el.placeholder = component.placeholder || "Calculated automatically";
+        el.readOnly = true;
+        el.disabled = true;
+        el.classList.add("readonly", "computed-field");
+        // Seed the display from any current formValues (e.g. resumed draft),
+        // but keep formValues itself empty — the client value is never trusted
+        // (the server strips it on submit and recomputes at checkout).
+        const seed = formValues[component.name];
+        if (seed !== undefined && seed !== null) el.value = String(seed);
+        formValues[component.name] = "";
+
+        group.appendChild(el);
+        container.appendChild(group);
+    }
+
+    // isComputedField reports whether a component's value is produced by a flow
+    // (has a value_source). Payment fields are excluded — their amount is
+    // resolved server-side at checkout, so they need no client compute.
+    function isComputedField(component) {
+        return !!component.value_source && component.type !== "payment";
+    }
+
     // renderPayment shows a read-only "you will pay X" summary line. It
     // collects no input — the card is captured by Stripe's hosted Checkout
     // page after the user clicks "Pay & Submit". The amount shown here is
@@ -3338,6 +3374,12 @@
     // Split out of renderPage so a field can be re-rendered in place once its
     // options_source data loads.
     function renderComponentInto(form, container, component) {
+        // A flow-computed (value_source) field renders read-only regardless of
+        // its declared type — the value is produced by a flow, not typed.
+        if (isComputedField(component)) {
+            renderComputed(form, container, component);
+            return;
+        }
         switch (component.type) {
             case "text": renderTextbox(form, container, component); break;
             case "multiline": renderMultiline(form, container, component); break;
@@ -3569,6 +3611,11 @@
         // Every answer change flows through validateForm, so this is the one
         // place to hang draft autosave off. Debounced, best-effort.
         scheduleAutosave();
+
+        // Flow-computed fields refresh off the same funnel — a debounced call
+        // to /compute recalculates any value_source field from the current
+        // answers. Best-effort; only fires when the form has computed fields.
+        scheduleCompute(form);
     }
 
     // refreshNavChrome resyncs everything that depends on which pages are
@@ -3665,6 +3712,53 @@
         } catch (e) { /* never block the form on a save */ }
     }
     window.addEventListener("pagehide", flushAutosave);
+
+    // ---- Flow-computed fields ---------------------------------------------
+    // A field with value_source is filled by a flow that receives the CURRENT
+    // answers. We debounce a POST to /compute off the same validateForm funnel
+    // as autosave. Best-effort throughout — a failed/slow compute never blocks
+    // the form, and the displayed value is advisory: the authoritative value is
+    // recomputed server-side (stripped from the submission, recomputed at
+    // checkout for a payment amount). Payment fields are excluded here.
+    let _computeTimer = null;
+    function computedFields(form) {
+        const out = [];
+        for (const page of form.pages)
+            for (const comp of page.components)
+                if (isComputedField(comp)) out.push(comp);
+        return out;
+    }
+    function scheduleCompute(form) {
+        const fields = computedFields(form);
+        if (fields.length === 0) return;
+        clearTimeout(_computeTimer);
+        _computeTimer = setTimeout(() => runCompute(fields), 800);
+    }
+    function runCompute(fields) {
+        // Snapshot the answers once so every field computes against the same
+        // state. The computed fields themselves read as empty in the snapshot
+        // (seeded ""), so a compute flow only ever sees the user's real inputs.
+        const answers = {};
+        for (const k in formValues) {
+            if (Object.prototype.hasOwnProperty.call(formValues, k)) answers[k] = formValues[k];
+        }
+        for (const comp of fields) {
+            fetch("/form/" + FORM_ID + "/compute", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({field: comp.name, answers: answers})
+            })
+                .then((r) => (r.ok ? r.json() : null))
+                .then((data) => {
+                    if (!data || data.value === undefined || data.value === null) return;
+                    const text = String(data.value);
+                    formValues[comp.name] = text;
+                    const el = document.getElementById("input-" + comp.name);
+                    if (el) el.value = text;
+                })
+                .catch(() => { /* best-effort — never block the form */ });
+        }
+    }
 
     // hasOwnKeys reports whether a value is an object with at least one own key.
     function hasOwnKeys(o) {

@@ -174,6 +174,18 @@ type formComponent struct {
 	Currency      string `json:"currency,omitempty"`
 	PaymentSecret string `json:"payment_secret,omitempty"`
 
+	// ValueSource, when set, names a flow whose output computes this field's
+	// value from the CURRENT form answers (posted as ${input.X}). It is the
+	// server-authoritative source of the field's value — a client-supplied
+	// value for a computed field is never trusted and is stripped on submit.
+	// The canonical use is a payment field whose Amount is derived by a
+	// pricing flow (e.g. a reg-plate → car-park price). A non-payment
+	// computed field renders read-only and is refreshed via /form/:id/compute.
+	ValueSource string `json:"value_source,omitempty"`
+	// ValueOutput selects which key of the compute flow's outputs holds the
+	// value. Empty defaults to the field's own Name (see computeOutputKey).
+	ValueOutput string `json:"value_output,omitempty"`
+
 	// VisibleIf, when set, makes this component conditionally visible based
 	// on the answers to earlier fields. Nil means "always visible" (the
 	// default for every existing form). The client evaluates the same rule
@@ -963,8 +975,9 @@ func stripHiddenSubmissions(submission map[string]interface{}, resolved formDefi
 //  1. Enforce the option whitelist for radio/dropdown/checkboxes/etc.
 //  2. Enforce the matrix row/column whitelists.
 //  3. Drop client-supplied values for display-only components.
-//  4. Restore baked-at-render values for read-only components.
-//  5. Strip answers for conditionally-hidden components.
+//  4. Drop client-supplied values for flow-computed components (value_source).
+//  5. Restore baked-at-render values for read-only components.
+//  6. Strip answers for conditionally-hidden components.
 //
 // It is shared by submitForm and the payment-completion finalise path so both
 // strip identically — the draft payload a payment form finalises is just as
@@ -973,8 +986,48 @@ func sanitiseFormSubmission(body map[string]interface{}, resolved formDefinition
 	sanitised := sanitiseOptionSubmissions(body, resolved)
 	sanitised = sanitiseMatrixSubmissions(sanitised, resolved)
 	sanitised = stripDisplayOnlySubmissions(sanitised, resolved)
+	sanitised = stripComputedSubmissions(sanitised, resolved)
 	sanitised = stripReadOnlySubmissions(sanitised, resolved)
 	return stripHiddenSubmissions(sanitised, resolved)
+}
+
+// computeOutputKey returns the compute flow output key that holds a field's
+// value: the author-chosen ValueOutput, or the field's own Name when unset.
+func computeOutputKey(c formComponent) string {
+	if k := strings.TrimSpace(c.ValueOutput); k != "" {
+		return k
+	}
+	return c.Name
+}
+
+// stripComputedSubmissions removes any client-supplied value for a field with
+// a ValueSource. A computed field's value is authoritatively produced by its
+// flow (server-side, from the sanitised answers) — for a payment field at
+// checkout, for a display field via /form/:id/compute — so a value posted by
+// the client must NEVER reach the trigger data. Mirrors the trust-the-
+// definition philosophy of stripDisplayOnlySubmissions.
+//
+// Returns a new map; does not mutate the input.
+func stripComputedSubmissions(submission map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	computed := map[string]struct{}{}
+	for _, page := range resolved.Pages {
+		for _, c := range page.Components {
+			if strings.TrimSpace(c.ValueSource) != "" {
+				computed[c.Name] = struct{}{}
+			}
+		}
+	}
+	if len(computed) == 0 {
+		return submission
+	}
+	out := make(map[string]interface{}, len(submission))
+	for k, v := range submission {
+		if _, isComputed := computed[k]; isComputed {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // paymentComponent returns the first payment field in the form (a form is

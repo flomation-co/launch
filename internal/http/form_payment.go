@@ -107,8 +107,21 @@ func (s *Service) createFormPaymentIntent(c *gin.Context) {
 		return
 	}
 
+	// The draft's autosaved answers feed a value_source pricing flow (the
+	// amount is derived from what the visitor entered). They are client-
+	// authored, but the flow — not the client — decides the price, and the
+	// resulting amount is validated by amountToMinorUnits. An unparseable or
+	// absent payload is treated as "no answers" (empty map), never an error.
+	answers := map[string]interface{}{}
+	if len(draft.Payload) > 0 {
+		if uerr := json.Unmarshal(draft.Payload, &answers); uerr != nil {
+			answers = map[string]interface{}{}
+		}
+	}
+	delete(answers, "__submission_id")
+
 	// Resolve the amount server-side. NEVER trust a client-supplied amount.
-	amountMinor, err := s.resolveFormAmountMinor(c, def, comp)
+	amountMinor, err := s.resolveFormAmountMinor(c, def, comp, answers)
 	if err != nil {
 		log.WithError(err).Warn("form payment: invalid amount")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payment amount"})
@@ -300,11 +313,26 @@ func (s *Service) completeFormPayment(c *gin.Context) {
 }
 
 // resolveFormAmountMinor resolves the payment field's amount to minor units.
-// A literal amount is converted directly; an amount that references a variable
-// (contains "${") is resolved against the form's data source (${data.X}) and
-// URL query params, exactly as labels/read-only defaults resolve at render.
 // The amount is ALWAYS resolved server-side — the client never supplies it.
-func (s *Service) resolveFormAmountMinor(c *gin.Context, def formDefinition, comp formComponent) (int64, error) {
+// Resolution order:
+//
+//   - value_source set: the amount is COMPUTED by running the named flow with
+//     the draft answers as input (${input.X}) and reading computeOutputKey from
+//     its outputs. This is the car-park case — a pricing flow whose output is
+//     the charge. It takes precedence over any literal/${data.X} amount.
+//   - otherwise: a literal amount is used directly; an amount referencing a
+//     variable (contains "${") is resolved against the form's data source
+//     (${data.X}) and URL query params, as labels/read-only defaults do.
+//
+// The answers are the draft's autosaved submission — the same client-authored
+// map submitForm sanitises. The flow, not the client, decides the price.
+func (s *Service) resolveFormAmountMinor(c *gin.Context, def formDefinition, comp formComponent, answers map[string]interface{}) (int64, error) {
+	if strings.TrimSpace(comp.ValueSource) != "" {
+		out := s.formData.ResolveComputed(comp.ValueSource, answers, 0)
+		amount := answerString(out[computeOutputKey(comp)])
+		return amountToMinorUnits(amount, comp.Currency)
+	}
+
 	amount := comp.Amount
 	if strings.Contains(amount, "${") {
 		ctx := substitutionContext{QueryParams: queryParamsMap(c)}
