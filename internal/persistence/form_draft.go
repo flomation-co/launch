@@ -46,7 +46,7 @@ func (s *Service) GetFormDraft(submissionID string) (*FormDraft, error) {
 	var draft FormDraft
 	err := s.conn.Get(&draft, `
 		SELECT submission_id, trigger_id, flow_id,
-			COALESCE(PGP_SYM_DECRYPT(payload_enc, $2), '') AS payload,
+			COALESCE(PGP_SYM_DECRYPT(payload_enc, $2), '')::bytea AS payload,
 			status, payment_ref, expires_at
 		FROM form_submission_draft
 		WHERE submission_id = $1 AND status = 'draft' AND expires_at > NOW()
@@ -69,7 +69,7 @@ func (s *Service) GetFormDraftAny(submissionID string) (*FormDraft, error) {
 	var draft FormDraft
 	err := s.conn.Get(&draft, `
 		SELECT submission_id, trigger_id, flow_id,
-			COALESCE(PGP_SYM_DECRYPT(payload_enc, $2), '') AS payload,
+			COALESCE(PGP_SYM_DECRYPT(payload_enc, $2), '')::bytea AS payload,
 			status, payment_ref, expires_at
 		FROM form_submission_draft
 		WHERE submission_id = $1
@@ -138,7 +138,7 @@ func (s *Service) FireFormDraft(submissionID string, fromStatuses []string) (boo
 		UPDATE form_submission_draft
 		SET status = 'fired', updated_at = NOW()
 		WHERE submission_id = $1 AND status = ANY($2)
-		RETURNING COALESCE(PGP_SYM_DECRYPT(payload_enc, $3), '')
+		RETURNING COALESCE(PGP_SYM_DECRYPT(payload_enc, $3), '')::bytea
 	`, submissionID, pq.Array(fromStatuses), s.config.Database.EncryptionKey).Scan(&payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil, nil
