@@ -212,7 +212,7 @@ func (s *Service) configure() error {
 	// iframe): the gate validates key + Origin + resource opt-in and reflects the
 	// Origin, while the handlers still re-validate every write. The definition
 	// endpoint returns a secret-stripped public projection.
-	embedForm := s.engine.Group("/v1/embed/form/:id", s.embedGate(embedResourceForm))
+	embedForm := s.engine.Group("/v1/embed/form/:id", s.embedFormGate())
 	embedForm.GET("/definition", s.handleEmbedFormDefinition)
 	embedForm.GET("/data", s.handleFormData)
 	embedForm.POST("", s.submitForm)

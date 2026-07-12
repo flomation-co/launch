@@ -22,13 +22,11 @@ const embedSchemaVersion = 1
 // + server-side re-validation are what actually gate access.
 const publishableKeyHeader = "X-Flomation-Publishable-Key"
 
-// Embeddable resource types (mirrors api.EmbedResource* — Launch keeps its own
-// copy to avoid importing the API's types).
-const (
-	embedResourceForm  = "form"
-	embedResourceFlow  = "flow"
-	embedResourceAgent = "agent"
-)
+// Embeddable resource types (mirrors api.EmbedResource*). Forms are gated by
+// their owning FLOW (see embedFormGate), so "flow" is the type checked today;
+// direct flow-invocation and agent-chat routes (which add "agent") arrive in a
+// later phase.
+const embedResourceFlow = "flow"
 
 // embedPreflight answers a CORS preflight (OPTIONS) for an embed route: it
 // reflects the Origin and advertises the allowed methods/headers so the browser
@@ -83,50 +81,61 @@ func (s *Service) resolveEmbed(pk, origin, resourceType, resourceID string) (*em
 	return &res, nil
 }
 
-// embedGate returns middleware guarding an embed route for a given resource type
-// (the resource id is the route's :id). It handles the CORS preflight, validates
-// the publishable key + origin + resource opt-in via the API, and — only on
-// success — reflects the caller's Origin so the browser accepts the response.
-// A cross-origin write is thus accepted only for a valid key, an allowed origin,
-// and an embed-enabled resource; the underlying handler still re-validates the
-// payload, so this gate controls access, not trust.
-func (s *Service) embedGate(resourceType string) gin.HandlerFunc {
+// applyEmbedGate runs the shared gate: validate the publishable key, resolve the
+// (key, origin, resource) tuple via the API, enforce the origin allowlist and the
+// per-resource opt-in, and — only on success — reflect the caller's Origin so the
+// browser accepts the response and stash the org for downstream handlers. Returns
+// false (and writes the appropriate status) when the request is denied. The
+// underlying handler still re-validates the payload, so this controls access, not
+// trust.
+func (s *Service) applyEmbedGate(c *gin.Context, resourceType, resourceID string) bool {
+	origin := c.GetHeader("Origin")
+	pk := c.GetHeader(publishableKeyHeader)
+	if pk == "" {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return false
+	}
+	res, err := s.resolveEmbed(pk, origin, resourceType, resourceID)
+	if err != nil {
+		log.WithError(err).Error("embed gate: unable to resolve publishable key")
+		c.AbortWithStatus(http.StatusBadGateway)
+		return false
+	}
+	if res == nil {
+		c.AbortWithStatus(http.StatusUnauthorized) // unknown key
+		return false
+	}
+	if !res.OriginAllowed || !res.ResourceAllowed {
+		c.AbortWithStatus(http.StatusForbidden)
+		return false
+	}
+	s.setEmbedCORS(c, origin)
+	if res.OrganisationID != nil {
+		c.Set("embed_organisation_id", *res.OrganisationID)
+	}
+	c.Set("embed_app_id", res.EmbedAppID)
+	return true
+}
+
+// embedFormGate guards a form embed by its owning FLOW. A form is embeddable when
+// its flow is opted in for the app — matching the editor, where a developer opts
+// flows (and agents) in, not individual form triggers. It resolves the form
+// trigger's flow id and checks the "flow" resource.
+func (s *Service) embedFormGate() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		origin := c.GetHeader("Origin")
-		pk := c.GetHeader(publishableKeyHeader)
-		resourceID := c.Param("id")
-		if pk == "" || uuid.Validate(resourceID) != nil {
+		id := c.Param("id")
+		if uuid.Validate(id) != nil {
 			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
-
-		res, err := s.resolveEmbed(pk, origin, resourceType, resourceID)
-		if err != nil {
-			log.WithError(err).Error("embed gate: unable to resolve publishable key")
-			c.AbortWithStatus(http.StatusBadGateway)
+		tr, err := s.trigger.GetTriggerByID(id)
+		if err != nil || tr == nil || tr.Type != launch.TriggerTypeForm || tr.FlowID == "" {
+			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
-		if res == nil {
-			c.AbortWithStatus(http.StatusUnauthorized) // unknown key
-			return
+		if s.applyEmbedGate(c, embedResourceFlow, tr.FlowID) {
+			c.Next()
 		}
-		if !res.OriginAllowed {
-			c.AbortWithStatus(http.StatusForbidden)
-			return
-		}
-		if !res.ResourceAllowed {
-			c.AbortWithStatus(http.StatusForbidden)
-			return
-		}
-
-		// Access granted — reflect the (validated) Origin so the browser accepts
-		// the response, and stash the org for downstream handlers.
-		s.setEmbedCORS(c, origin)
-		if res.OrganisationID != nil {
-			c.Set("embed_organisation_id", *res.OrganisationID)
-		}
-		c.Set("embed_app_id", res.EmbedAppID)
-		c.Next()
 	}
 }
 
