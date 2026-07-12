@@ -3620,10 +3620,9 @@
         // place to hang draft autosave off. Debounced, best-effort.
         scheduleAutosave();
 
-        // Flow-computed fields refresh off the same funnel — a debounced call
-        // to /compute recalculates any value_source field from the current
-        // answers. Best-effort; only fires when the form has computed fields.
-        scheduleCompute(form);
+        // NB: flow-computed fields are NOT recalculated here (that would run the
+        // dependent flow on every keystroke). Compute is triggered on focusout
+        // (a field losing focus) + once on load — see renderForm.
     }
 
     // refreshNavChrome resyncs everything that depends on which pages are
@@ -3882,6 +3881,14 @@
         // Populate any dynamic (flow-sourced) dropdown options after the
         // form is on screen, so a slow data flow never delays first paint.
         loadDynamicOptions(form);
+
+        // Flow-computed fields (incl. a payment amount) recompute when a field
+        // LOSES FOCUS — not on every keystroke — so the dependent flow runs
+        // once per edit, not per character. focusout bubbles, so one delegated
+        // listener on the form body covers every input. Also compute once now
+        // so the initial values (from defaults / a resumed draft) are shown.
+        container.addEventListener("focusout", () => scheduleCompute(form));
+        scheduleCompute(form);
     }
 
     function submitForm(form) {
