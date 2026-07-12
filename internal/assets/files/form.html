@@ -3763,22 +3763,35 @@
             })
                 .then((r) => (r.ok ? r.json() : null))
                 .then((data) => {
-                    if (!data || data.value === undefined || data.value === null) return;
-                    const text = String(data.value);
+                    const hasVal = data && data.value !== undefined && data.value !== null;
+                    const text = hasVal ? String(data.value) : null;
                     if (comp.type === "payment") {
                         // Payment amount: display only — the authoritative charge
-                        // is recomputed server-side at checkout, and the field
-                        // collects no value, so we update the widget rather than
-                        // formValues.
+                        // is recomputed + collected server-side at checkout. Show
+                        // the computed charge, or a fallback if the flow produced
+                        // nothing, so the widget never hangs on "Calculating…".
                         const pel = document.getElementById("payment-amount-" + comp.name);
-                        if (pel) pel.textContent = formatPaymentAmount(text, comp.currency);
+                        if (pel) {
+                            pel.textContent = text !== null
+                                ? formatPaymentAmount(text, comp.currency)
+                                : "Amount calculated at checkout";
+                        }
                         return;
                     }
+                    if (text === null) return;
                     formValues[comp.name] = text;
                     const el = document.getElementById("input-" + comp.name);
                     if (el) el.value = text;
                 })
-                .catch(() => { /* best-effort — never block the form */ });
+                .catch(() => {
+                    // Network/other failure: don't leave a payment widget stuck
+                    // on "Calculating…" — fall back to the checkout message.
+                    if (comp.type === "payment") {
+                        const pel = document.getElementById("payment-amount-" + comp.name);
+                        if (pel && pel.textContent === "Calculating…") pel.textContent = "Amount calculated at checkout";
+                    }
+                    /* best-effort — never block the form */
+                });
         }
     }
 

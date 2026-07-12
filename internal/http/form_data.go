@@ -261,6 +261,15 @@ func (r *formDataResolver) pollResult(pollURL string) (map[string]interface{}, b
 		return nil, false
 	}
 	if data.ExecutionStatus == "executed" {
+		// The execution's result blob nests the flow's Set Output values under
+		// "outputs" (alongside logs / node_results / duration). Surface that
+		// map so ${data.X} and computed field/amount values read the ACTUAL
+		// flow outputs (e.g. out["parking_charge"]) rather than the wrapper —
+		// reading the wrapper made every computed value resolve to nil. Fall
+		// back to the whole result if a flat shape is ever returned.
+		if outputs, ok := data.Result["outputs"].(map[string]interface{}); ok {
+			return outputs, true
+		}
 		return data.Result, true
 	}
 	return nil, false
