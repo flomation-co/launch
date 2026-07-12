@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"sort"
 	"strings"
 
 	launch "flomation.app/automate/launch"
@@ -329,8 +330,23 @@ func (s *Service) completeFormPayment(c *gin.Context) {
 func (s *Service) resolveFormAmountMinor(c *gin.Context, def formDefinition, comp formComponent, answers map[string]interface{}) (int64, error) {
 	if strings.TrimSpace(comp.ValueSource) != "" {
 		out := s.formData.ResolveComputed(comp.ValueSource, answers, 0)
-		amount := answerString(out[computeOutputKey(comp)])
-		return amountToMinorUnits(amount, comp.Currency)
+		key := computeOutputKey(comp)
+		raw, ok := out[key]
+		if !ok || answerString(raw) == "" {
+			// The compute flow ran but produced nothing under the configured
+			// output key. This is the common misconfiguration: value_output is
+			// unset (so it defaults to the field name, which rarely matches the
+			// flow's Set Output key). Fail loudly with the specifics — the
+			// caller logs this — instead of a generic "invalid amount".
+			available := make([]string, 0, len(out))
+			for k := range out {
+				available = append(available, k)
+			}
+			sort.Strings(available)
+			return 0, fmt.Errorf("payment flow %s produced no value for output %q (field %q); available outputs: %v",
+				comp.ValueSource, key, comp.Name, available)
+		}
+		return amountToMinorUnits(answerString(raw), comp.Currency)
 	}
 
 	amount := comp.Amount
