@@ -125,7 +125,15 @@ func TestFingerprintChangesWithEveryField(t *testing.T) {
 		}
 	}
 
-	if base.fingerprint() != base.fingerprint() {
+	// Determinism matters as much as sensitivity: an unchanged config has to produce
+	// the same fingerprint every time, or the reconcile loop would tear the
+	// connection down and re-dial it on every single tick.
+	//
+	// Compared via a copy rather than calling base.fingerprint() twice inline —
+	// staticcheck (SA4000) rightly objects to identical expressions either side of a
+	// comparison, and this states what is actually being asserted anyway.
+	unchanged := base
+	if base.fingerprint() != unchanged.fingerprint() {
 		t.Error("fingerprint is not stable for an unchanged config — the connection would be rebuilt every tick")
 	}
 }
