@@ -261,9 +261,16 @@ func (r *formDataResolver) pollResult(pollURL string) (map[string]interface{}, b
 		return nil, false
 	}
 	if data.ExecutionStatus == "executed" {
-		// The internal execution endpoint already returns `result` as the flow's
-		// flat output map (e.g. {"parking_charge": "12.34"}), so it is used
-		// directly for ${data.X} and computed field/amount values.
+		// The execution result nests the flow's Set Output values under an
+		// "outputs" key (alongside id / logs / status / node_results). Surface
+		// that inner map so ${data.X} and computed field/amount values read the
+		// actual outputs (e.g. out["parking_charge"]) — reading the wrapper made
+		// every computed value resolve to nil. Confirmed against the execution
+		// result shape. Fall back to the whole result only if "outputs" is
+		// absent (defensive).
+		if outputs, ok := data.Result["outputs"].(map[string]interface{}); ok {
+			return outputs, true
+		}
 		return data.Result, true
 	}
 	return nil, false
