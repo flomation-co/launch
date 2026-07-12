@@ -105,6 +105,15 @@ func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent
 }
 
 func corsMiddleware(c *gin.Context) {
+	// Embed SDK routes manage their own per-origin CORS (see embedGate /
+	// embedPreflight): they reflect a specific allowed Origin and permit writes.
+	// The wildcard GET-only policy below would otherwise override them and block
+	// cross-origin POST/PUT preflight.
+	if strings.HasPrefix(c.Request.URL.Path, "/v1/embed/") {
+		c.Next()
+		return
+	}
+
 	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 	c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 	c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -197,6 +206,27 @@ func (s *Service) configure() error {
 	s.engine.POST("/form/:id/payment-intent", s.createFormPaymentIntent)
 	s.engine.GET("/form/:id/complete", s.completeFormPayment)
 	s.engine.GET("/image/:id", s.handleImageLoad)
+
+	// Embed SDK edge — publishable-key gated, per-origin CORS. Wraps the existing
+	// form handlers so a third-party app can render/submit a form natively (no
+	// iframe): the gate validates key + Origin + resource opt-in and reflects the
+	// Origin, while the handlers still re-validate every write. The definition
+	// endpoint returns a secret-stripped public projection.
+	embedForm := s.engine.Group("/v1/embed/form/:id", s.embedGate(embedResourceForm))
+	embedForm.GET("/definition", s.handleEmbedFormDefinition)
+	embedForm.GET("/data", s.handleFormData)
+	embedForm.POST("", s.submitForm)
+	embedForm.POST("/compute", s.computeFormField)
+	embedForm.PUT("/submission/:sid", s.autosaveFormDraft)
+	embedForm.POST("/upload", s.uploadFormBlob)
+	// CORS preflight for the embed form routes (no key required — reflects the
+	// Origin and advertises the allowed methods/headers).
+	s.engine.OPTIONS("/v1/embed/form/:id/definition", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/data", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/compute", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/submission/:sid", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/upload", s.embedPreflight)
 
 	// Internal routes — service-to-service calls from the API.
 	// When mTLS is enabled, these register on a separate Gin engine
