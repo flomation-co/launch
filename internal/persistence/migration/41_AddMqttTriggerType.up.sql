@@ -8,6 +8,10 @@
 -- "-webhook" suffix. It matches the executor node directory actions/trigger/mqtt
 -- (the api derives the type from the node label: trigger/mqtt -> mqtt).
 --
--- NUMBERING: merge AFTER 40; golang-migrate silently skips a lower version
--- applied after a higher one.
+-- NUMBERING: golang-migrate silently skips a version once a HIGHER one has been
+-- applied, so the number has to be right against the whole live sequence, not
+-- just against the previous file on this branch. 41 was chosen against the
+-- highest number across main AND every open branch (40 at the time of writing) —
+-- checking only main, which was at 38, would have collided. If a branch targeting
+-- 41+ merges before this one, renumber rather than assuming the gap is free.
 ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'mqtt';

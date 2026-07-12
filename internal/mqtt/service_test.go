@@ -3,6 +3,7 @@ package mqtt
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseTopicList(t *testing.T) {
@@ -320,5 +321,49 @@ func TestFormatPEMRepairsAFlattenedCertificate(t *testing.T) {
 	}
 	if formatPEM("") != "" {
 		t.Error("empty input was not left alone")
+	}
+}
+
+// The handover between instances must be strictly ordered: we have to be GONE
+// before another instance can arrive, or the broker fans each message out to both
+// of us and every message runs the flow twice. That means releasing on a safety
+// margin, not on the true expiry.
+func TestLeaseSafetyMarginCoversAReconcileInterval(t *testing.T) {
+	if leaseSafetyMargin <= reconcileInterval {
+		t.Errorf("leaseSafetyMargin (%s) must exceed one reconcile interval (%s), or a single missed tick could leave us subscribed past the point another instance can claim the lease",
+			leaseSafetyMargin, reconcileInterval)
+	}
+	if leaseSafetyMargin >= leaseDuration {
+		t.Errorf("leaseSafetyMargin (%s) must be well under leaseDuration (%s), or a healthy subscription would release itself immediately",
+			leaseSafetyMargin, leaseDuration)
+	}
+}
+
+func TestReleaseExpiringLeasesDropsOnlyTheAtRiskSubscriptions(t *testing.T) {
+	s := &Service{subs: make(map[string]*subscription)}
+
+	// Renewed a moment ago — safe.
+	healthy := &subscription{triggerID: "healthy", leaseExpiry: time.Now().Add(leaseDuration)}
+	// Renewal has been failing; the lease lapses inside the safety margin. Another
+	// instance could take it imminently, so we must let go NOW rather than wait for
+	// the row to actually expire.
+	atRisk := &subscription{triggerID: "at-risk", leaseExpiry: time.Now().Add(leaseSafetyMargin / 2)}
+	// Already lapsed.
+	lapsed := &subscription{triggerID: "lapsed", leaseExpiry: time.Now().Add(-time.Minute)}
+
+	s.subs["healthy"] = healthy
+	s.subs["at-risk"] = atRisk
+	s.subs["lapsed"] = lapsed
+
+	s.releaseExpiringLeases()
+
+	if _, held := s.subs["healthy"]; !held {
+		t.Error("a freshly renewed lease was released")
+	}
+	if _, held := s.subs["at-risk"]; held {
+		t.Error("a lease expiring inside the safety margin was kept — another instance could take it while we are still subscribed, double-firing the flow")
+	}
+	if _, held := s.subs["lapsed"]; held {
+		t.Error("an already-lapsed lease was kept")
 	}
 }

@@ -64,6 +64,19 @@ const (
 	// lapsing. Matches the schedule trigger.
 	leaseDuration = 2 * time.Minute
 
+	// leaseSafetyMargin is how long BEFORE the lease actually lapses in the
+	// database that we give the subscription up.
+	//
+	// The margin is the whole point. Another instance may claim the trigger the
+	// instant the row expires, and it will connect and subscribe immediately. If
+	// we only disconnected once our own clock said the lease had expired, we would
+	// still be holding the subscription while that instance arrived — and a broker
+	// fans every message out to both subscribers, so the flow would run twice per
+	// message. Releasing early makes the handover strictly ordered: we are always
+	// gone before anyone else can arrive. The margin covers a full reconcile
+	// interval plus slack, so a single missed tick can't strand us.
+	leaseSafetyMargin = 45 * time.Second
+
 	// startupDelay lets the process finish booting before the first reconcile.
 	startupDelay = 5 * time.Second
 
@@ -192,6 +205,16 @@ func NewService(cfg *config.Config, db *persistence.Service, triggerSvc *trigger
 
 	go s.watch()
 
+	// Log the pool sizing at startup: a saturated pool shows up as flow-start
+	// latency, and an operator debugging that needs to know what the ceiling is
+	// without going to the source.
+	log.WithFields(log.Fields{
+		"dispatch_workers": dispatchWorkers,
+		"queue_size":       dispatchQueueSize,
+		"reconcile_every":  reconcileInterval.String(),
+		"lease_duration":   leaseDuration.String(),
+	}).Info("mqtt trigger service started")
+
 	return s
 }
 
@@ -232,8 +255,8 @@ func (s *Service) reconcile() {
 		// Dropping anything whose lease we can no longer prove we hold keeps the
 		// guarantee the lease exists to provide.
 		log.WithError(err).
-			Warn("mqtt trigger: unable to load triggers; dropping any subscription whose lease has lapsed")
-		s.dropLapsedLeases()
+			Warn("mqtt trigger: unable to load triggers; releasing any subscription whose lease is lapsing")
+		s.releaseExpiringLeases()
 		return
 	}
 
@@ -250,8 +273,15 @@ func (s *Service) reconcile() {
 		// flow twice for every message.
 		acquired, err := s.db.TryAcquireLease(tr.ID, s.instanceID, leaseDuration)
 		if err != nil {
+			// Deliberately NOT disconnecting here, and deliberately not marking the
+			// trigger wanted either. The lease is simply not renewed this tick, and
+			// releaseExpiringLeases below is what decides whether we have now gone
+			// too long without renewing to still be sure we own it. A single failed
+			// renewal is survivable; a sustained one must hand the subscription back
+			// before the row lapses.
 			log.WithFields(log.Fields{"trigger_id": tr.ID, "error": err}).
-				Warn("mqtt trigger: unable to acquire lease, skipping this tick")
+				Warn("mqtt trigger: unable to renew the lease this tick")
+			wanted[tr.ID] = true
 			continue
 		}
 		if !acquired {
@@ -278,6 +308,10 @@ func (s *Service) reconcile() {
 	for _, id := range stale {
 		s.disconnect(id, "trigger removed or disabled")
 	}
+
+	// Finally, give up anything whose lease we can no longer prove we hold —
+	// including the triggers above whose renewal failed.
+	s.releaseExpiringLeases()
 }
 
 // ensure brings up the subscription for one trigger, or leaves the existing one
@@ -376,8 +410,24 @@ func (s *Service) dial(tr *launch.Trigger, cfg Config, sub *subscription) error 
 		}
 
 		token := client.SubscribeMultiple(filters, func(_ paho.Client, m paho.Message) {
-			// Blocking when the queue is full is deliberate — see Service.dispatch.
-			s.dispatch <- dispatchJob{triggerID: tr.ID, cfg: cfg, msg: m}
+			job := dispatchJob{triggerID: tr.ID, cfg: cfg, msg: m}
+
+			// Blocking when the queue is full is deliberate — it is what pushes back
+			// on the broker instead of piling up goroutines. But a full queue means
+			// flows are now starting later than their messages arrived, and that must
+			// not be invisible: without this the only symptom is unexplained latency.
+			select {
+			case s.dispatch <- job:
+			default:
+				log.WithFields(log.Fields{
+					"trigger_id": tr.ID,
+					"topic":      m.Topic(),
+					"queue_size": dispatchQueueSize,
+					"workers":    dispatchWorkers,
+				}).Warn("mqtt trigger: dispatch queue is full — flow starts are being delayed by a faster broker than the workers can drain")
+
+				s.dispatch <- job
+			}
 		})
 
 		if !token.WaitTimeout(subscribeTimeout) {
@@ -549,22 +599,30 @@ func (s *Service) disconnect(triggerID, reason string) {
 	closeClient(sub, reason)
 }
 
-// dropLapsedLeases releases any subscription this instance can no longer prove it
-// owns. Called when the trigger table is unreadable — see reconcile.
-func (s *Service) dropLapsedLeases() {
-	now := time.Now()
+// releaseExpiringLeases gives up any subscription whose lease is close enough to
+// lapsing that we can no longer be sure we still own it.
+//
+// It releases on a safety margin rather than on the true expiry, and the
+// difference is the whole correctness argument: the moment the row lapses,
+// another instance may claim the trigger and subscribe. Waiting for our own clock
+// to agree the lease had expired would leave both of us subscribed at once, and
+// the broker would deliver every message to both — running the flow twice. By
+// letting go early we guarantee we are gone before anyone else can arrive.
+func (s *Service) releaseExpiringLeases() {
+	// Anything whose lease expires within the margin is treated as already lost.
+	cutoff := time.Now().Add(leaseSafetyMargin)
 
 	s.mu.Lock()
-	lapsed := make([]string, 0)
+	expiring := make([]string, 0)
 	for id, sub := range s.subs {
-		if now.After(sub.leaseExpiry) {
-			lapsed = append(lapsed, id)
+		if cutoff.After(sub.leaseExpiry) {
+			expiring = append(expiring, id)
 		}
 	}
 	s.mu.Unlock()
 
-	for _, id := range lapsed {
-		s.disconnect(id, "the lease lapsed during a database outage — another instance may have taken it")
+	for _, id := range expiring {
+		s.disconnect(id, "the lease is about to lapse and could not be renewed — releasing it before another instance can take it")
 	}
 }
 

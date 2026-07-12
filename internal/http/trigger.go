@@ -102,16 +102,24 @@ func (s *Service) createTrigger(c *gin.Context) {
 	s.registerSendGridWebhook(c.Request.Context(), &tr)
 
 	// MQTT triggers: open the broker subscription now, rather than waiting for the
-	// mqtt service's next reconcile tick. Not fatal — the loop would pick it up
-	// within 30s anyway, so a broker that is briefly unreachable must not fail the
-	// flow save.
+	// mqtt service's next reconcile tick.
+	//
+	// Off the request goroutine deliberately. Register reads the trigger and takes
+	// its lease, and the flow save has no reason to wait on either — the reconcile
+	// loop is the safety net if this fails, so the only thing blocking here could
+	// do is make saving a flow feel slow when the database or broker is having a
+	// bad day. Only tr.ID is captured, and Register is safe to call concurrently
+	// with the reconcile loop.
 	if tr.Type == launch.TriggerTypeMQTT && s.mqtt != nil {
-		if err := s.mqtt.Register(tr.ID); err != nil {
-			log.WithFields(log.Fields{
-				"trigger_id": tr.ID,
-				"error":      err,
-			}).Warn("unable to subscribe to the MQTT broker now; the reconcile loop will retry")
-		}
+		triggerID := tr.ID
+		go func() {
+			if err := s.mqtt.Register(triggerID); err != nil {
+				log.WithFields(log.Fields{
+					"trigger_id": triggerID,
+					"error":      err,
+				}).Warn("unable to subscribe to the MQTT broker now; the reconcile loop will retry")
+			}
+		}()
 	}
 
 	if t == nil {
