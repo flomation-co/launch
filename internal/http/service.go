@@ -24,6 +24,7 @@ import (
 	githubwh "flomation.app/automate/launch/internal/github"
 	gitlabwh "flomation.app/automate/launch/internal/gitlab"
 	"flomation.app/automate/launch/internal/google"
+	mqttpkg "flomation.app/automate/launch/internal/mqtt"
 	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
 	telegrampkg "flomation.app/automate/launch/internal/telegram"
@@ -53,9 +54,10 @@ type Service struct {
 	facebookIndex  *facebook.PageIndex
 	voiceCalls     *twilio.VoiceCallManager
 	formData       *formDataResolver // caches ${data.X} form autofill results
+	mqtt           *mqttpkg.Service  // holds the broker subscriptions for MQTT triggers
 }
 
-func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, telegramSvc *telegrampkg.Service, db *persistence.Service) (*Service, error) {
+func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, telegramSvc *telegrampkg.Service, db *persistence.Service, mqttSvc *mqttpkg.Service) (*Service, error) {
 	gin.SetMode(gin.ReleaseMode)
 
 	apiClient, err := mtls.ClientOrDefault(config.TLS, 15*time.Second)
@@ -75,6 +77,7 @@ func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent
 		facebookIndex: facebook.NewPageIndex(),
 		voiceCalls:    twilio.NewVoiceCallManager(),
 		formData:      newFormDataResolver(apiClient, config.InternalAPIURL()),
+		mqtt:          mqttSvc,
 	}
 
 	templ := template.Must(template.ParseFS(assets.Templates, "files/form.html"))
