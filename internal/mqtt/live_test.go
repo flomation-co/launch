@@ -272,3 +272,112 @@ func waitFor(t *testing.T, c *collector, n int, timeout time.Duration) {
 	}
 	t.Fatalf("timed out waiting for %d message(s); got %v", n, c.seen())
 }
+
+// TLS coverage for the subscriber. The trigger holds a long-lived connection, so
+// the TLS config it builds has to be right for the reconnect path too, not just
+// the first dial.
+//
+//	MQTT_LIVE_HOST=192.168.80.28 MQTT_LIVE_USER=flomation MQTT_LIVE_PASS=... \
+//	  MQTT_LIVE_CA=/path/to/ca.pem go test ./internal/mqtt/ -run LiveTLS -v
+func liveTLSConfig(t *testing.T, topics string) Config {
+	t.Helper()
+
+	cfg := liveConfig(t, topics)
+	caPath := os.Getenv("MQTT_LIVE_CA")
+	if caPath == "" {
+		t.Skip("MQTT_LIVE_CA not set — skipping the TLS broker tests")
+	}
+	ca, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatalf("reading the CA: %v", err)
+	}
+
+	cfg.Protocol = "mqtts"
+	cfg.Port = 8883
+	cfg.CACert = string(ca)
+	return cfg
+}
+
+func TestLiveTLSSubscribeAndReceive(t *testing.T) {
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 10)
+	topic := "flomation/launchtls/" + stamp
+	cfg := liveTLSConfig(t, topic+"/#:1")
+
+	c := &collector{}
+	sub := subscribeLike(t, cfg, "77777777-8888-9999-aaaa-"+stamp[:12], topic+"/#", c)
+	defer sub.Disconnect(250)
+
+	// Publish over plain TCP — a subscriber on TLS must still receive it. The
+	// transport is a property of the connection, not of the message.
+	plain := cfg
+	plain.Protocol = "mqtt"
+	plain.Port = 1883
+	plain.CACert = ""
+	pub := publisher(t, plain, "flo-tlspub-"+stamp[:12])
+	defer pub.Disconnect(250)
+
+	pub.Publish(topic+"/sensor", 1, false, `{"temp":21.5}`).WaitTimeout(10 * time.Second)
+
+	waitFor(t, c, 1, 10*time.Second)
+	if got := c.seen(); got[0] != `{"temp":21.5}` {
+		t.Errorf("payload = %q", got[0])
+	}
+}
+
+// The durable session must survive a reconnect over TLS as well — this is the
+// "a Launch restart loses nothing" claim, on the secure transport.
+func TestLiveTLSDurableSessionSurvivesRestart(t *testing.T) {
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 10)
+	topic := "flomation/launchtls/" + stamp
+	cfg := liveTLSConfig(t, topic+"/#:1")
+	triggerID := "88888888-9999-aaaa-bbbb-" + stamp[:12]
+
+	sub := subscribeLike(t, cfg, triggerID, topic+"/#", &collector{})
+	sub.Disconnect(250)
+	time.Sleep(time.Second)
+
+	plain := cfg
+	plain.Protocol = "mqtt"
+	plain.Port = 1883
+	plain.CACert = ""
+	pub := publisher(t, plain, "flo-tlspub2-"+stamp[:12])
+	defer pub.Disconnect(250)
+	for i := 1; i <= 3; i++ {
+		pub.Publish(topic+"/offline", 1, false, fmt.Sprintf("tls-while-away-%d", i)).WaitTimeout(10 * time.Second)
+	}
+
+	second := &collector{}
+	sub2 := subscribeLike(t, cfg, triggerID, topic+"/#", second)
+	defer sub2.Disconnect(250)
+
+	waitFor(t, second, 3, 10*time.Second)
+	if got := second.seen(); len(got) != 3 {
+		t.Fatalf("the broker replayed %d of 3 over TLS (%v)", len(got), got)
+	}
+}
+
+// TLS verification must be REAL: without the CA, the broker's privately-signed
+// certificate has to be refused.
+func TestLiveTLSRejectsUntrustedCertificate(t *testing.T) {
+	cfg := liveTLSConfig(t, "x/#:1")
+	cfg.CACert = "" // verification on, but no CA for this private issuer
+
+	opts, err := cfg.clientOptions("99999999-aaaa-bbbb-cccc-dddddddddddd")
+	if err != nil {
+		t.Fatalf("clientOptions: %v", err)
+	}
+	opts.SetConnectRetry(false)
+	opts.SetAutoReconnect(false)
+
+	client := paho.NewClient(opts)
+	tok := client.Connect()
+	defer client.Disconnect(0)
+
+	if !tok.WaitTimeout(15 * time.Second) {
+		t.Fatal("the broker never answered")
+	}
+	if tok.Error() == nil {
+		t.Fatal("an untrusted certificate was ACCEPTED — TLS verification is not enforced")
+	}
+	t.Logf("untrusted certificate rejected: %v", tok.Error())
+}
