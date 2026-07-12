@@ -3194,9 +3194,11 @@
         container.appendChild(group);
     }
 
-    // isComputedField reports whether a component's value is produced by a flow
-    // (has a value_source). Payment fields are excluded — their amount is
-    // resolved server-side at checkout, so they need no client compute.
+    // isComputedField reports whether a component RENDERS as a read-only,
+    // flow-filled input (has a value_source). Payment is excluded here because
+    // it renders via renderPayment, not a read-only input — but it still
+    // computes reactively (see computedFields/runCompute) to show its live
+    // amount, and is re-verified server-side at checkout.
     function isComputedField(component) {
         return !!component.value_source && component.type !== "payment";
     }
@@ -3216,7 +3218,13 @@
         }
         const line = document.createElement("div");
         line.classList.add("payment-amount");
-        line.textContent = formatPaymentAmount(component.amount, component.currency);
+        line.id = "payment-amount-" + component.name;
+        // A value_source amount is computed from the current answers (reactively,
+        // via /compute — see runCompute) and shown here once the flow returns.
+        // A literal / ${data.X} amount is formatted or deferred to checkout.
+        line.textContent = component.value_source
+            ? "Calculating…"
+            : formatPaymentAmount(component.amount, component.currency);
         wrapper.appendChild(line);
         container.appendChild(wrapper);
     }
@@ -3719,13 +3727,18 @@
     // as autosave. Best-effort throughout — a failed/slow compute never blocks
     // the form, and the displayed value is advisory: the authoritative value is
     // recomputed server-side (stripped from the submission, recomputed at
-    // checkout for a payment amount). Payment fields are excluded here.
+    // checkout for a payment amount). A payment field computes here too — its
+    // live amount is shown on the widget (display only), and re-verified at
+    // checkout.
     let _computeTimer = null;
     function computedFields(form) {
         const out = [];
         for (const page of form.pages)
             for (const comp of page.components)
-                if (isComputedField(comp)) out.push(comp);
+                // Any value_source field is computed reactively — including a
+                // payment field, whose amount is shown live on the widget (and
+                // still re-verified server-side at checkout).
+                if (comp.value_source) out.push(comp);
         return out;
     }
     function scheduleCompute(form) {
@@ -3752,6 +3765,15 @@
                 .then((data) => {
                     if (!data || data.value === undefined || data.value === null) return;
                     const text = String(data.value);
+                    if (comp.type === "payment") {
+                        // Payment amount: display only — the authoritative charge
+                        // is recomputed server-side at checkout, and the field
+                        // collects no value, so we update the widget rather than
+                        // formValues.
+                        const pel = document.getElementById("payment-amount-" + comp.name);
+                        if (pel) pel.textContent = formatPaymentAmount(text, comp.currency);
+                        return;
+                    }
                     formValues[comp.name] = text;
                     const el = document.getElementById("input-" + comp.name);
                     if (el) el.value = text;
