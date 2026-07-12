@@ -171,6 +171,9 @@ func (s *Service) configure() error {
 	s.engine.POST("/form/:id", s.submitForm)
 	s.engine.POST("/form/:id/upload", s.uploadFormBlob)
 	s.engine.GET("/image/:id", s.handleImageLoad)
+	// Programmatic manual-trigger run (edge-facing, authenticated by the
+	// trigger's optional run token — see handleManualRun).
+	s.engine.POST("/trigger/:id/run", s.handleManualRun)
 
 	// Internal routes — service-to-service calls from the API.
 	// When mTLS is enabled, these register on a separate Gin engine
