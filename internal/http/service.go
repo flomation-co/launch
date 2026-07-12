@@ -747,6 +747,31 @@ func (s *Service) submitForm(c *gin.Context) {
 	// and no-ops. A submit without an id (e.g. an older client) proceeds
 	// unguarded, exactly as before.
 	sid := extractSubmissionID(body)
+
+	// Stateful-field submit gate. A required stateful field (payment, and future
+	// out-of-band types) must be satisfied — its state recorded server-side —
+	// before the flow can fire. Read the draft's field_states and reject with 402
+	// (naming the offending fields) when any visible required stateful field is
+	// unsatisfied. Run BEFORE the fire-once claim so a rejected submit does not
+	// consume the draft. states is reused below to surface __field_states.
+	var fieldStates map[string]json.RawMessage
+	if sid != "" && uuid.Validate(sid) == nil {
+		var serr error
+		fieldStates, serr = s.db.GetFieldStates(sid)
+		if serr != nil {
+			log.WithError(serr).Error("unable to load field states for submit gate")
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
+		if missing := unsatisfiedRequiredStatefulFields(def, body, fieldStates); len(missing) > 0 {
+			c.JSON(http.StatusPaymentRequired, gin.H{
+				"error":  "required field not completed",
+				"fields": missing,
+			})
+			return
+		}
+	}
+
 	if sid != "" && uuid.Validate(sid) == nil {
 		claimed, _, err := s.db.FireFormDraft(sid, []string{"draft", "finalising"})
 		if err != nil {
@@ -796,6 +821,12 @@ func (s *Service) submitForm(c *gin.Context) {
 	final := sanitiseFormSubmission(body, resolved)
 	if userID != "" {
 		final["user_id"] = userID
+	}
+	// Surface the per-field mid-state (what was paid/verified out-of-band) to
+	// the flow so downstream steps can act on it. Prefixed like the fire-once
+	// marker so it can never collide with a real answer key.
+	if len(fieldStates) > 0 {
+		final["__field_states"] = fieldStates
 	}
 
 	go func() {
@@ -1167,6 +1198,12 @@ func (s *Service) handleForm(c *gin.Context) {
 	// would be a stored-XSS vector (a "</script>" in an answer would break out).
 	// base64 has no HTML/JS metacharacters, so it is safe in a quoted string.
 	resumePayload := ""
+	// fieldStatesPayload carries the draft's per-field mid-state map (payment
+	// paid/pending, …) to the client so each stateful field renders its current
+	// state on load/resume — e.g. a paid field shows "Paid ✓" after the Stripe
+	// round-trip. base64 for the same XSS-safety reason as the resume payload
+	// (the map holds no HTML/JS metacharacters once encoded).
+	fieldStatesPayload := ""
 	resumed := false
 	if q := c.Query("submission_id"); q != "" && uuid.Validate(q) == nil {
 		if draft, derr := s.db.GetFormDraft(q); derr == nil && draft != nil && draft.TriggerID == id {
@@ -1174,6 +1211,9 @@ func (s *Service) handleForm(c *gin.Context) {
 			resumed = true
 			if len(draft.Payload) > 0 {
 				resumePayload = base64.StdEncoding.EncodeToString(draft.Payload)
+			}
+			if len(draft.FieldStates) > 0 {
+				fieldStatesPayload = base64.StdEncoding.EncodeToString(draft.FieldStates)
 			}
 		}
 	}
@@ -1189,6 +1229,7 @@ func (s *Service) handleForm(c *gin.Context) {
 		"FormID":          id,
 		"SubmissionID":    submissionID,
 		"ResumePayload":   resumePayload,
+		"FieldStates":     fieldStatesPayload,
 		"MetaTitle":       metaText(resolved.Title),
 		"MetaDescription": metaText(resolved.Description),
 	})
