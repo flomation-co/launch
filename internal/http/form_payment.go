@@ -3,10 +3,11 @@ package http
 import (
 	"encoding/json"
 	"fmt"
-	"html"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	launch "flomation.app/automate/launch"
 	stripewh "flomation.app/automate/launch/internal/stripe"
@@ -19,29 +20,131 @@ import (
 // Stripe secret key when a payment field leaves PaymentSecret blank.
 const defaultPaymentSecretRef = "${secrets.stripe_secret_key}"
 
-// createFormPaymentIntentBody is the (minimal) request body: only the draft
-// submission id. The amount is NEVER accepted from the client — it is resolved
-// server-side from the form definition so a hostile client cannot pay less.
-type createFormPaymentIntentBody struct {
-	SubmissionID string `json:"submission_id"`
+// statefulFieldTypes are field types whose value is resolved out-of-band (the
+// user acts on the field, is redirected to an external service, and returns
+// with THAT field's state updated) rather than typed in. Their satisfaction is
+// tracked in the draft's field_states map, verified server-side. Payment is the
+// first; future e-signature / ID-verify / OAuth-connect fields join here.
+var statefulFieldTypes = map[string]struct{}{
+	"payment": {},
 }
 
-// createFormPaymentIntent creates a Stripe hosted Checkout Session for a form
-// that carries a payment field and returns its redirect URL. Validation and
-// verification order:
+// isStatefulFieldType reports whether a field type carries out-of-band state.
+func isStatefulFieldType(t string) bool {
+	_, ok := statefulFieldTypes[t]
+	return ok
+}
+
+// paymentFieldState is the shape written into field_states for a payment field.
+// It is opaque to the generic state machinery — only the payment handlers and
+// isFieldStateSatisfied interpret it. "pending" means a Checkout Session was
+// created and handed off; "complete" means Stripe confirmed the session paid
+// and it was bound to this exact draft. AmountMinor/Currency are carried from
+// intent → complete so the client can render "Paid ✓ · £X" without recomputing.
+type paymentFieldState struct {
+	Type        string `json:"type"`
+	Status      string `json:"status"`
+	SessionID   string `json:"session_id,omitempty"`
+	AmountMinor int64  `json:"amount_minor,omitempty"`
+	Currency    string `json:"currency,omitempty"`
+	PaidAt      string `json:"paid_at,omitempty"`
+}
+
+// isFieldStateSatisfied reports whether a stateful field's recorded state means
+// it is "done" for the purpose of the submit gate. Dispatch is per-type; the
+// state object is opaque to the generic gate. A future stateful type adds its
+// own case here (and mirrors the check client-side). Payment is satisfied only
+// once its state is "complete" — set exclusively by completeFormPayment after
+// the Stripe paid + session-binding checks, so the client can never fake it.
+func isFieldStateSatisfied(fieldType string, state json.RawMessage) bool {
+	switch fieldType {
+	case "payment":
+		var st paymentFieldState
+		if len(state) == 0 || json.Unmarshal(state, &st) != nil {
+			return false
+		}
+		return st.Status == "complete"
+	default:
+		// Unknown stateful type — treat as not-satisfiable so a required field
+		// of a type we don't understand blocks submit rather than passing.
+		return false
+	}
+}
+
+// unsatisfiedRequiredStatefulFields returns the names of required stateful
+// fields (payment, …) that are VISIBLE for the given answers but whose recorded
+// state is not yet satisfied. It is the server-authoritative submit gate: a
+// crafted POST cannot bypass an unpaid required payment because satisfaction is
+// read from the server-side field_states, never the body. Visibility is
+// evaluated (mirroring the client) so a conditionally-hidden required stateful
+// field never blocks submit. An empty result means submit may proceed.
+func unsatisfiedRequiredStatefulFields(def formDefinition, answers map[string]interface{}, states map[string]json.RawMessage) []string {
+	var missing []string
+	for _, page := range def.Pages {
+		if page.VisibleIf != nil && len(page.VisibleIf.Rules) > 0 && !evalVisibility(page.VisibleIf, answers) {
+			continue
+		}
+		for _, comp := range page.Components {
+			if !comp.Required || !isStatefulFieldType(comp.Type) {
+				continue
+			}
+			if comp.VisibleIf != nil && len(comp.VisibleIf.Rules) > 0 && !evalVisibility(comp.VisibleIf, answers) {
+				continue
+			}
+			if !isFieldStateSatisfied(comp.Type, states[comp.Name]) {
+				missing = append(missing, comp.Name)
+			}
+		}
+	}
+	return missing
+}
+
+// resolvePaymentComponent finds the payment field a request refers to. With an
+// explicit field name it matches by Name (the multi-payment case); with an
+// empty name it falls back to the first payment field (the common single-
+// payment form). ok is false when there is no matching payment field.
+func resolvePaymentComponent(def formDefinition, field string) (formComponent, bool) {
+	if strings.TrimSpace(field) == "" {
+		return paymentComponent(def)
+	}
+	for _, page := range def.Pages {
+		for _, comp := range page.Components {
+			if comp.Type == "payment" && comp.Name == field {
+				return comp, true
+			}
+		}
+	}
+	return formComponent{}, false
+}
+
+// createFormPaymentIntentBody is the request body for a payment-intent: the
+// draft submission id and the target payment field's name. The amount is NEVER
+// accepted from the client — it is resolved server-side from the form
+// definition so a hostile client cannot pay less.
+type createFormPaymentIntentBody struct {
+	SubmissionID string `json:"submission_id"`
+	Field        string `json:"field"`
+}
+
+// createFormPaymentIntent creates a Stripe hosted Checkout Session for ONE
+// payment field of an in-progress form and returns its redirect URL. Unlike a
+// terminal "pay to submit", this is a mid-form action: the draft stays 'draft'
+// throughout and only that field's state advances (→ pending). Verification
+// order:
 //
 //  1. id is a valid UUID and names a live form trigger.
-//  2. the form actually has a payment component (else 400).
-//  3. the login gate (require_login) is honoured, as on submit.
-//  4. the request body carries a valid submission_id UUID.
-//  5. a live draft exists for that id and belongs to THIS trigger.
-//  6. the amount is resolved SERVER-SIDE (literal or ${data.X}) and converted
-//     to minor units — the client never supplies it.
+//  2. the request body carries a valid submission_id UUID and a field name.
+//  3. that field names a payment component on the form (else 400).
+//  4. the login gate (require_login) is honoured, as on submit.
+//  5. a live draft exists for that id and belongs to THIS trigger, and is not
+//     already fired.
+//  6. the amount is resolved SERVER-SIDE (literal, ${data.X}, or a compute
+//     flow) and converted to minor units — the client never supplies it.
 //  7. the Stripe secret key is resolved server-side (decrypted by the API) and
 //     sanity-checked; it is never returned or logged.
-//  8. the Checkout Session is created and its id recorded on the draft
-//     (draft → finalising) BEFORE the URL is handed back, so the completion
-//     callback can bind the returned session to this exact draft.
+//  8. the Checkout Session is created and recorded as the field's PENDING state
+//     (with the session id) BEFORE the URL is handed back, so the completion
+//     callback can bind the returned session to this exact field + draft.
 func (s *Service) createFormPaymentIntent(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" || uuid.Validate(id) != nil {
@@ -60,12 +163,6 @@ func (s *Service) createFormPaymentIntent(c *gin.Context) {
 	}
 
 	def, _ := parseFormDefinition(tr.Data)
-
-	comp, ok := paymentComponent(def)
-	if !ok {
-		c.AbortWithStatus(http.StatusBadRequest)
-		return
-	}
 
 	// Login gate parity with submitForm — a require_login form must not start
 	// a payment for an anonymous visitor.
@@ -88,10 +185,15 @@ func (s *Service) createFormPaymentIntent(c *gin.Context) {
 		return
 	}
 
-	// The draft must exist and belong to this trigger. GetFormDraftAny returns
-	// it in any state so a retry (the user cancelled Stripe and came back)
-	// works: a draft in 'draft' or 'finalising' may (re)start payment; a
-	// 'fired' draft has already completed and must not pay again.
+	comp, ok := resolvePaymentComponent(def, body.Field)
+	if !ok {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	field := comp.Name
+
+	// The draft must exist and belong to this trigger. A 'fired' draft has
+	// already been submitted — nothing left to pay for.
 	draft, derr := s.db.GetFormDraftAny(sid)
 	if derr != nil {
 		log.WithError(derr).Error("form payment: unable to load draft")
@@ -102,8 +204,7 @@ func (s *Service) createFormPaymentIntent(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
-	if draft.Status != "draft" && draft.Status != "finalising" {
-		// Already fired (or an unexpected state) — nothing to pay for.
+	if draft.Status != "draft" {
 		c.AbortWithStatus(http.StatusConflict)
 		return
 	}
@@ -132,16 +233,13 @@ func (s *Service) createFormPaymentIntent(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payment amount"})
 		return
 	}
+	currency := strings.ToLower(strings.TrimSpace(comp.Currency))
 
 	// Resolve the Stripe secret key via the API (secrets are decrypted
 	// server-side and never leave the API except through this controlled
 	// resolve). It is used only to build the per-call Stripe client; it is
 	// never returned to the browser nor logged.
-	secretRef := strings.TrimSpace(comp.PaymentSecret)
-	if secretRef == "" {
-		secretRef = defaultPaymentSecretRef
-	}
-	secretKey := s.trigger.ResolveString(id, secretRef)
+	secretKey := s.resolvePaymentSecret(id, comp)
 	if !looksLikeStripeSecret(secretKey) {
 		log.WithField("trigger_id", id).Error("form payment: Stripe secret key did not resolve")
 		c.AbortWithStatus(http.StatusInternalServerError)
@@ -158,12 +256,15 @@ func (s *Service) createFormPaymentIntent(c *gin.Context) {
 
 	base := s.formPublicBaseURL(c)
 	// {CHECKOUT_SESSION_ID} is a Stripe placeholder it substitutes on redirect.
-	successURL := fmt.Sprintf("%s/form/%s/complete?submission_id=%s&session_id={CHECKOUT_SESSION_ID}", base, id, sid)
+	// success_url returns to the generic completion handler, scoped to THIS
+	// field; cancel_url drops the user straight back onto the form.
+	successURL := fmt.Sprintf("%s/form/%s/complete?submission_id=%s&field=%s&session_id={CHECKOUT_SESSION_ID}",
+		base, id, sid, url.QueryEscape(field))
 	cancelURL := fmt.Sprintf("%s/form/%s?submission_id=%s", base, id, sid)
 
 	url, sessionID, err := stripewh.CreateFormCheckoutSession(secretKey, stripewh.CheckoutParams{
 		AmountMinor: amountMinor,
-		Currency:    strings.ToLower(strings.TrimSpace(comp.Currency)),
+		Currency:    currency,
 		ProductName: productName,
 		SuccessURL:  successURL,
 		CancelURL:   cancelURL,
@@ -175,18 +276,25 @@ func (s *Service) createFormPaymentIntent(c *gin.Context) {
 		return
 	}
 
-	// Record the session id on the draft BEFORE returning the URL, so the
-	// completion callback can require draft.payment_ref == session_id. Fail
-	// closed if we can't record it — better to not redirect than to redirect
-	// to a session we can never verify.
-	marked, merr := s.db.MarkFormDraftFinalising(sid, sessionID)
+	// Record the session id as the field's PENDING state BEFORE returning the
+	// URL, so the completion callback can require the returned session to match
+	// this exact field's pending session. Fail closed if we can't record it —
+	// better to not redirect than to redirect to a session we can never verify.
+	pending, _ := json.Marshal(paymentFieldState{
+		Type:        "payment",
+		Status:      "pending",
+		SessionID:   sessionID,
+		AmountMinor: amountMinor,
+		Currency:    currency,
+	})
+	marked, merr := s.db.SetFieldState(sid, field, pending)
 	if merr != nil {
-		log.WithError(merr).Error("form payment: unable to mark draft finalising")
+		log.WithError(merr).Error("form payment: unable to record pending field state")
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 	if !marked {
-		// Raced with a submit/complete that fired the draft — abort the payment.
+		// The draft is no longer a live 'draft' (fired/expired) — abort payment.
 		c.AbortWithStatus(http.StatusConflict)
 		return
 	}
@@ -195,21 +303,23 @@ func (s *Service) createFormPaymentIntent(c *gin.Context) {
 }
 
 // completeFormPayment is the success_url Stripe redirects the browser to after
-// Checkout. It verifies the session is genuinely PAID and bound to the stored
-// draft, then finalises the draft exactly once. Verification order:
+// Checkout. It is the generic stateful-field return handler, dispatched by the
+// field's type; for a payment field it verifies the session is genuinely PAID
+// and bound to that field's pending state, marks the field COMPLETE, and 302s
+// the user back to the form (same page, field now "Paid ✓") — it does NOT fire
+// the flow. Verification order:
 //
-//  1. id is a valid UUID naming a live form trigger; the form has a payment
-//     component.
-//  2. submission_id (UUID) and session_id query params are present.
+//  1. id is a valid UUID naming a live form trigger.
+//  2. submission_id (UUID), field, and session_id query params are present and
+//     field names a payment component.
 //  3. the draft exists (any status) and belongs to this trigger.
-//  4. an already-'fired' draft short-circuits to a success page (idempotent —
-//     a duplicate callback must not fire twice).
-//  5. the callback session_id MUST equal the draft's stored payment_ref — a
-//     forged/mismatched session can never fire.
-//  6. the Stripe session's payment_status MUST be "paid"; otherwise the user
-//     is bounced back to the form to retry (draft stays 'finalising').
-//  7. the draft is atomically claimed (finalising → fired); the first claimer
-//     fires the flow, a late duplicate sees success.
+//  4. an already-'complete' field short-circuits back to the form (idempotent —
+//     a duplicate callback must not double anything).
+//  5. the callback session_id MUST equal the field's pending session_id — a
+//     forged/mismatched session can never complete the field.
+//  6. the Stripe session's payment_status MUST be "paid"; otherwise the user is
+//     bounced back to the form to retry (state stays 'pending').
+//  7. the field's state is advanced to 'complete'.
 func (s *Service) completeFormPayment(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" || uuid.Validate(id) != nil {
@@ -229,18 +339,22 @@ func (s *Service) completeFormPayment(c *gin.Context) {
 
 	def, _ := parseFormDefinition(tr.Data)
 
-	comp, ok := paymentComponent(def)
-	if !ok {
-		c.AbortWithStatus(http.StatusBadRequest)
-		return
-	}
-
 	sid := c.Query("submission_id")
 	sessionID := c.Query("session_id")
+	field := c.Query("field")
 	if uuid.Validate(sid) != nil || sessionID == "" {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
+
+	comp, ok := resolvePaymentComponent(def, field)
+	if !ok {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	field = comp.Name
+	backToForm := fmt.Sprintf("/form/%s?submission_id=%s&updated=%s", id, sid, url.QueryEscape(field))
+	retryForm := fmt.Sprintf("/form/%s?submission_id=%s", id, sid)
 
 	draft, derr := s.db.GetFormDraftAny(sid)
 	if derr != nil {
@@ -253,27 +367,35 @@ func (s *Service) completeFormPayment(c *gin.Context) {
 		return
 	}
 
-	// Idempotency: the flow already ran for this draft — show success without
-	// re-verifying or re-firing.
-	if draft.Status == "fired" {
-		s.renderFormPaymentSuccess(c, def)
+	// Load the field's current state. The pending state (written at intent)
+	// carries the session id we handed off and the amount to lock in.
+	states, serr := s.db.GetFieldStates(sid)
+	if serr != nil {
+		log.WithError(serr).Error("form payment complete: unable to load field states")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+	var st paymentFieldState
+	if raw, present := states[field]; present && len(raw) > 0 {
+		_ = json.Unmarshal(raw, &st)
+	}
+
+	// Idempotency: the field already completed — just return to the form.
+	if st.Status == "complete" {
+		c.Redirect(http.StatusSeeOther, backToForm)
 		return
 	}
 
-	// The callback session must be the one we handed off to. A mismatched or
-	// forged session id can never fire the flow.
-	if !draft.PaymentRef.Valid || draft.PaymentRef.String != sessionID {
-		log.WithField("trigger_id", id).Warn("form payment complete: session id does not match stored payment ref")
-		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/form/%s?submission_id=%s", id, sid))
+	// The callback session must be the one we handed off for THIS field. A
+	// mismatched or forged session id can never complete it.
+	if st.SessionID == "" || st.SessionID != sessionID {
+		log.WithField("trigger_id", id).Warn("form payment complete: session id does not match pending field state")
+		c.Redirect(http.StatusSeeOther, retryForm)
 		return
 	}
 
 	// Resolve the secret key and confirm the session is genuinely PAID.
-	secretRef := strings.TrimSpace(comp.PaymentSecret)
-	if secretRef == "" {
-		secretRef = defaultPaymentSecretRef
-	}
-	secretKey := s.trigger.ResolveString(id, secretRef)
+	secretKey := s.resolvePaymentSecret(id, comp)
 	if !looksLikeStripeSecret(secretKey) {
 		log.WithField("trigger_id", id).Error("form payment complete: Stripe secret key did not resolve")
 		c.AbortWithStatus(http.StatusInternalServerError)
@@ -287,30 +409,44 @@ func (s *Service) completeFormPayment(c *gin.Context) {
 		return
 	}
 	if status != "paid" {
-		// Not paid — let the visitor retry from the form (draft still live).
-		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/form/%s?submission_id=%s", id, sid))
+		// Not paid — let the visitor retry from the form (state stays pending).
+		c.Redirect(http.StatusSeeOther, retryForm)
 		return
 	}
 
-	// PAID. Atomically claim the finalising draft; the first caller fires.
-	claimed, payload, ferr := s.db.FireFormDraft(sid, []string{"finalising"})
-	if ferr != nil {
-		log.WithError(ferr).Error("form payment complete: unable to claim draft")
+	// PAID. Advance the field to 'complete', locking in the amount charged.
+	complete, _ := json.Marshal(paymentFieldState{
+		Type:        "payment",
+		Status:      "complete",
+		SessionID:   sessionID,
+		AmountMinor: st.AmountMinor,
+		Currency:    st.Currency,
+		PaidAt:      time.Now().UTC().Format(time.RFC3339),
+	})
+	if marked, merr := s.db.SetFieldState(sid, field, complete); merr != nil {
+		log.WithError(merr).Error("form payment complete: unable to record complete field state")
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
-	}
-	if !claimed {
-		// A concurrent callback already fired it — idempotent success.
-		s.renderFormPaymentSuccess(c, def)
-		return
+	} else if !marked {
+		// The draft is no longer live (submitted/expired between paid and here).
+		// The payment succeeded regardless; send the user back to the form,
+		// which will reflect whatever state remains.
+		log.WithField("trigger_id", id).Warn("form payment complete: draft no longer live when recording complete state")
 	}
 
-	if err := s.fireFormDraftPayload(c, tr, def, payload); err != nil {
-		log.WithError(err).Error("form payment complete: unable to finalise draft payload")
-		c.AbortWithStatus(http.StatusInternalServerError)
-		return
+	c.Redirect(http.StatusSeeOther, backToForm)
+}
+
+// resolvePaymentSecret resolves the Stripe secret key for a payment field via
+// the API's controlled ${secrets.X} resolve, defaulting the reference when the
+// field leaves PaymentSecret blank. The key is used only to build a per-call
+// Stripe client; it is never returned to the browser nor logged.
+func (s *Service) resolvePaymentSecret(triggerID string, comp formComponent) string {
+	secretRef := strings.TrimSpace(comp.PaymentSecret)
+	if secretRef == "" {
+		secretRef = defaultPaymentSecretRef
 	}
-	s.renderFormPaymentSuccess(c, def)
+	return s.trigger.ResolveString(triggerID, secretRef)
 }
 
 // resolveFormAmountMinor resolves the payment field's amount to minor units.
@@ -361,79 +497,6 @@ func (s *Service) resolveFormAmountMinor(c *gin.Context, def formDefinition, com
 	return amountToMinorUnits(amount, comp.Currency)
 }
 
-// fireFormDraftPayload unmarshals a claimed draft's stored answers, runs the
-// exact same sanitisation pipeline as submitForm, and triggers the flow. The
-// pipeline is security-critical: the draft payload is client-authored (via
-// autosave), so option whitelists, display-only/read-only stripping and
-// hidden-branch stripping must all be applied before the answers reach the
-// flow. Note: the original form's URL query string is NOT carried across the
-// Stripe redirect, so a read-only default sourced from ${query.X} re-bakes to
-// empty here — a minor fidelity loss that preserves every security property
-// (client values for read-only fields are still discarded).
-func (s *Service) fireFormDraftPayload(c *gin.Context, tr *launch.Trigger, def formDefinition, payload json.RawMessage) error {
-	body := map[string]interface{}{}
-	if len(payload) > 0 {
-		if err := json.Unmarshal(payload, &body); err != nil {
-			return err
-		}
-	}
-	// A stored draft never carries the fire-once marker, but strip defensively.
-	delete(body, "__submission_id")
-
-	cookie, _ := c.Cookie("flomation-token")
-	token := extractSessionToken(c.GetHeader("Authorization"), cookie)
-	userID := s.resolveSessionUser(token)
-
-	ctx := substitutionContext{QueryParams: queryParamsMap(c)}
-	if userID != "" {
-		if vars, verr := s.loadUserVariables(userID); verr == nil {
-			ctx.UserVariables = vars
-		}
-	}
-	var dataOutputs map[string]interface{}
-	if def.DataSource != nil && def.DataSource.FlowID != "" {
-		if formUsesDataNamespace(def) || formHasDynamicOptions(def) {
-			dataOutputs = s.formData.ResolveRaw(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
-			ctx.DataVariables = flattenOutputs(dataOutputs)
-		}
-	}
-	if formHasDynamicOptions(def) {
-		def = bakeDynamicOptions(def, dataOutputs)
-	}
-	resolved := resolveFormForRender(def, ctx)
-	final := sanitiseFormSubmission(body, resolved)
-	if userID != "" {
-		final["user_id"] = userID
-	}
-
-	go func() {
-		if err := s.trigger.TriggerAs(tr, final, userID); err != nil {
-			log.WithError(err).Error("unable to execute form payment trigger")
-		}
-	}()
-	return nil
-}
-
-// renderFormPaymentSuccess shows the post-payment thank-you. When the form is
-// configured to redirect on submit and the target is a safe http(s) URL, the
-// browser is sent there; otherwise a minimal self-contained success page is
-// rendered (using the author's success message when set).
-func (s *Service) renderFormPaymentSuccess(c *gin.Context, def formDefinition) {
-	msg := "Your response has been submitted successfully."
-	if def.Submit != nil {
-		if def.Submit.OnSubmit == "redirect" {
-			if u := safeHTTPURL(def.Submit.RedirectURL); u != "" {
-				c.Redirect(http.StatusSeeOther, u)
-				return
-			}
-		}
-		if strings.TrimSpace(def.Submit.SuccessMessage) != "" {
-			msg = def.Submit.SuccessMessage
-		}
-	}
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(paymentSuccessHTML(msg)))
-}
-
 // looksLikeStripeSecret reports whether a resolved value looks like a Stripe
 // secret ("sk_…") or restricted ("rk_…") key. It exists only to distinguish
 // "resolved to a real key" from "resolved to empty or an unresolved ${...}
@@ -441,20 +504,6 @@ func (s *Service) renderFormPaymentSuccess(c *gin.Context, def formDefinition) {
 func looksLikeStripeSecret(k string) bool {
 	k = strings.TrimSpace(k)
 	return strings.HasPrefix(k, "sk_") || strings.HasPrefix(k, "rk_")
-}
-
-// safeHTTPURL returns u only if it is an absolute http(s) URL, else "".
-// Prevents an author-configured redirect from becoming a javascript:/data:
-// vector on the server-rendered success page.
-func safeHTTPURL(u string) string {
-	u = strings.TrimSpace(u)
-	if u == "" {
-		return ""
-	}
-	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
-		return u
-	}
-	return ""
 }
 
 // formPublicBaseURL returns the externally-reachable base URL used to build
@@ -474,14 +523,4 @@ func (s *Service) formPublicBaseURL(c *gin.Context) string {
 		scheme = proto
 	}
 	return scheme + "://" + c.Request.Host
-}
-
-// paymentSuccessHTML renders the minimal success page. The message is
-// author-controlled, so it is HTML-escaped before interpolation.
-func paymentSuccessHTML(message string) string {
-	return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Payment received</title>` +
-		`<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#161019;color:#fff;text-align:center;padding:1rem;}` +
-		`.card{max-width:32rem;}.icon{font-size:3rem;}h2{margin:.5rem 0;}p{color:#c9c2d1;}</style></head>` +
-		`<body><div class="card"><div class="icon">&#x2705;</div><h2>Thank you!</h2><p>` +
-		html.EscapeString(message) + `</p></div></body></html>`
 }

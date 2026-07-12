@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -88,6 +89,94 @@ func TestPaymentComponent(t *testing.T) {
 		{Name: "email", Type: "email"},
 	}}}})
 	Expect(ok).To(BeFalse())
+}
+
+// TestIsFieldStateSatisfied covers the per-type submit-gate predicate: a
+// payment field is satisfied ONLY once its recorded state is "complete" (set
+// exclusively server-side after the Stripe paid + session-binding checks). A
+// pending, empty, malformed, or unknown-type state is never satisfied.
+func TestIsFieldStateSatisfied(t *testing.T) {
+	RegisterTestingT(t)
+
+	complete, _ := json.Marshal(paymentFieldState{Type: "payment", Status: "complete"})
+	pending, _ := json.Marshal(paymentFieldState{Type: "payment", Status: "pending"})
+
+	Expect(isFieldStateSatisfied("payment", complete)).To(BeTrue())
+	Expect(isFieldStateSatisfied("payment", pending)).To(BeFalse())
+	// Absent / empty / malformed state → not satisfied (must not let submit
+	// through when there is nothing recorded).
+	Expect(isFieldStateSatisfied("payment", nil)).To(BeFalse())
+	Expect(isFieldStateSatisfied("payment", json.RawMessage(``))).To(BeFalse())
+	Expect(isFieldStateSatisfied("payment", json.RawMessage(`{`))).To(BeFalse())
+	// A stateful type we don't understand blocks submit (fails closed).
+	Expect(isFieldStateSatisfied("esignature", complete)).To(BeFalse())
+}
+
+// TestResolvePaymentComponent covers field-scoped lookup (multi-payment forms),
+// the empty-name fallback to the first payment field, and the miss cases.
+func TestResolvePaymentComponent(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{Pages: []formPage{{Components: []formComponent{
+		{Name: "deposit", Type: "payment", Amount: "10.00", Currency: "gbp"},
+		{Name: "email", Type: "email"},
+		{Name: "balance", Type: "payment", Amount: "90.00", Currency: "gbp"},
+	}}}}
+
+	// Named lookup picks the exact field, not just the first.
+	comp, ok := resolvePaymentComponent(def, "balance")
+	Expect(ok).To(BeTrue())
+	Expect(comp.Name).To(Equal("balance"))
+	Expect(comp.Amount).To(Equal("90.00"))
+
+	// Empty name falls back to the first payment field (single-payment forms).
+	comp, ok = resolvePaymentComponent(def, "")
+	Expect(ok).To(BeTrue())
+	Expect(comp.Name).To(Equal("deposit"))
+
+	// A name that isn't a payment field (or doesn't exist) misses.
+	_, ok = resolvePaymentComponent(def, "email")
+	Expect(ok).To(BeFalse())
+	_, ok = resolvePaymentComponent(def, "nope")
+	Expect(ok).To(BeFalse())
+}
+
+// TestUnsatisfiedRequiredStatefulFields is the server submit gate: it names the
+// required stateful fields that are visible but not yet satisfied, and nothing
+// else. Optional fields, satisfied fields, and hidden fields never appear.
+func TestUnsatisfiedRequiredStatefulFields(t *testing.T) {
+	RegisterTestingT(t)
+
+	complete, _ := json.Marshal(paymentFieldState{Type: "payment", Status: "complete"})
+
+	def := formDefinition{Pages: []formPage{{Components: []formComponent{
+		{Name: "deposit", Type: "payment", Required: true},           // required, unsatisfied
+		{Name: "tip", Type: "payment", Required: false},              // optional — never gates
+		{Name: "balance", Type: "payment", Required: true},           // required, satisfied below
+		{Name: "extra", Type: "payment", Required: true, VisibleIf: &visibilityRule{
+			Match: "all",
+			Rules: []visibilityClause{{Field: "wants_extra", Op: "equals", Value: "yes"}},
+		}}, // required but hidden unless wants_extra == yes
+	}}}}
+
+	states := map[string]json.RawMessage{"balance": complete}
+	answers := map[string]interface{}{} // wants_extra not "yes" → extra is hidden
+
+	missing := unsatisfiedRequiredStatefulFields(def, answers, states)
+
+	Expect(missing).To(ConsistOf("deposit"))           // only the visible, required, unsatisfied one
+	Expect(missing).ToNot(ContainElement("tip"))       // optional
+	Expect(missing).ToNot(ContainElement("balance"))   // satisfied
+	Expect(missing).ToNot(ContainElement("extra"))     // hidden
+
+	// Reveal the hidden field: now it must gate too.
+	missing = unsatisfiedRequiredStatefulFields(def, map[string]interface{}{"wants_extra": "yes"}, states)
+	Expect(missing).To(ConsistOf("deposit", "extra"))
+
+	// Everything satisfied → empty (submit may proceed).
+	depositDone, _ := json.Marshal(paymentFieldState{Type: "payment", Status: "complete"})
+	all := map[string]json.RawMessage{"deposit": depositDone, "balance": complete}
+	Expect(unsatisfiedRequiredStatefulFields(def, map[string]interface{}{}, all)).To(BeEmpty())
 }
 
 // TestSanitiseFormSubmission_StripsHiddenAndReadOnly asserts the shared

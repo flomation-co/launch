@@ -557,6 +557,32 @@
             font-weight: 700;
             color: var(--text);
         }
+        /* Paid state — the field is satisfied, tint it and show a tick. */
+        .payment-amount--paid {
+            color: var(--teal, #00aa9c);
+        }
+        .payment-action {
+            margin-top: 12px;
+        }
+        /* Pay button — the primary mid-form call to action for a payment field. */
+        .payment-pay-btn {
+            padding: 10px 20px;
+            font-size: 15px;
+            font-weight: 600;
+            color: #fff;
+            background: var(--teal, #00aa9c);
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.15s ease, opacity 0.15s ease;
+        }
+        .payment-pay-btn:hover:not(:disabled) {
+            background: #00958a;
+        }
+        .payment-pay-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
 
         /* ── Location ── */
         .location-wrapper {
@@ -1123,6 +1149,29 @@
         const b64 = "{{ .ResumePayload }}";
         try { return b64 ? JSON.parse(atob(b64)) : {}; } catch (e) { return {}; }
     })();
+    // Per-field mid-state map (field name → opaque state object), e.g. a paid
+    // payment field. Server-authoritative: it is written only by the completion
+    // handler after the external check (Stripe paid + session binding), so a
+    // field showing "complete" here genuinely was. Mutated in place when a
+    // /complete redirect returns (see the ?updated= handling on load). Same
+    // base64 decode + XSS reasoning as RESUME_PAYLOAD.
+    let FIELD_STATES = (function () {
+        const b64 = "{{ .FieldStates }}";
+        try { return b64 ? JSON.parse(atob(b64)) : {}; } catch (e) { return {}; }
+    })();
+    // Stateful field types whose value is resolved out-of-band (payment, …).
+    // Mirrors statefulFieldTypes in form_payment.go. A required stateful field
+    // blocks submit until its state is satisfied.
+    const STATEFUL_FIELD_TYPES = { payment: true };
+    // isFieldStateSatisfied mirrors the Go predicate: a required stateful field
+    // is "done" per its type. Payment is satisfied once its state is "complete".
+    function isFieldStateSatisfied(type, state) {
+        if (!state) return false;
+        switch (type) {
+            case "payment": return state.status === "complete";
+            default: return false;
+        }
+    }
     const AUTOSAVE_KEY = "flomation_form_" + FORM_ID;
     let formValues = {};
     let currentPage = 0;
@@ -3203,11 +3252,18 @@
         return !!component.value_source && component.type !== "payment";
     }
 
-    // renderPayment shows a read-only "you will pay X" summary line. It
-    // collects no input — the card is captured by Stripe's hosted Checkout
-    // page after the user clicks "Pay & Submit". The amount shown here is
-    // purely presentational; the authoritative charge is resolved SERVER-SIDE
-    // at checkout (so a tampered client value is irrelevant).
+    // paymentAmounts caches each computed payment field's latest client-known
+    // amount (major-unit string) so the Pay button can show it and stay enabled.
+    // The authoritative charge is always re-resolved server-side at checkout.
+    let paymentAmounts = {};
+
+    // renderPayment renders a payment field as a mid-form action: an amount line
+    // plus a "Pay £X" button (or, once the field's server-recorded state is
+    // complete, a "Paid ✓ · £X" chip). It collects no typed input — the card is
+    // captured by Stripe's hosted Checkout, and the authoritative charge is
+    // resolved SERVER-SIDE at checkout, so a tampered client value is irrelevant.
+    // The field's paid/unpaid state comes from FIELD_STATES, written only by the
+    // server after the Stripe paid + session-binding checks.
     function renderPayment(form, container, component) {
         const wrapper = document.createElement("div");
         wrapper.classList.add("payment-summary");
@@ -3219,14 +3275,128 @@
         const line = document.createElement("div");
         line.classList.add("payment-amount");
         line.id = "payment-amount-" + component.name;
-        // A value_source amount is computed from the current answers (reactively,
-        // via /compute — see runCompute) and shown here once the flow returns.
-        // A literal / ${data.X} amount is formatted or deferred to checkout.
-        line.textContent = component.value_source
-            ? "Calculating…"
-            : formatPaymentAmount(component.amount, component.currency);
         wrapper.appendChild(line);
+
+        const action = document.createElement("div");
+        action.classList.add("payment-action");
+        action.id = "payment-action-" + component.name;
+        wrapper.appendChild(action);
+
         container.appendChild(wrapper);
+        renderPaymentState(component);
+    }
+
+    // renderPaymentState (re)paints a payment field's amount line and action
+    // button from its current state. Called on first render, when a computed
+    // amount arrives (runCompute), and after a paid redirect returns.
+    function renderPaymentState(component) {
+        const line = document.getElementById("payment-amount-" + component.name);
+        const action = document.getElementById("payment-action-" + component.name);
+        if (!line || !action) return;
+        const state = FIELD_STATES[component.name];
+
+        if (state && state.status === "complete") {
+            // Paid — lock the field. Show the amount recorded server-side.
+            const paid = formatMinorAmount(state.amount_minor, state.currency || component.currency);
+            line.textContent = paid ? ("Paid ✓ · " + paid) : "Paid ✓";
+            line.classList.add("payment-amount--paid");
+            action.innerHTML = "";
+            return;
+        }
+
+        line.classList.remove("payment-amount--paid");
+
+        // Unpaid. Resolve the amount we can show the user: a computed field's
+        // last /compute result, or a literal amount. A dynamic (${...}) or not-
+        // yet-computed amount is unknown client-side (the server still resolves
+        // it authoritatively at checkout).
+        const known = component.value_source
+            ? (component.name in paymentAmounts ? paymentAmounts[component.name] : null)
+            : component.amount;
+        line.textContent = (component.value_source && known === null)
+            ? "Calculating…"
+            : formatPaymentAmount(known, component.currency);
+
+        action.innerHTML = "";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.id = "payment-pay-" + component.name;
+        btn.classList.add("btn", "payment-pay-btn");
+        const short = formatAmountShort(known, component.currency);
+        btn.textContent = short ? ("Pay " + short) : "Pay";
+        // A computed field with no amount yet: keep the button disabled until we
+        // know a value so the user can't kick off a "£0 / invalid amount" intent.
+        btn.disabled = !!component.value_source && known === null;
+        btn.addEventListener("click", function () { startFieldAction(component); });
+        action.appendChild(btn);
+    }
+
+    // formatMinorAmount renders a minor-unit integer (e.g. 1234 pence) as a
+    // localised currency string ("£12.34"). Returns "" when the amount is absent
+    // or unparseable. Mirrors currencyDecimals in form.go for zero/three-decimal
+    // currencies so JPY/KWD render correctly.
+    function formatMinorAmount(minor, currency) {
+        if (minor === undefined || minor === null) return "";
+        const n = Number(minor);
+        if (!isFinite(n)) return "";
+        const cur = String(currency || "gbp").toUpperCase();
+        const zero = {BIF:1,CLP:1,DJF:1,GNF:1,JPY:1,KMF:1,KRW:1,MGA:1,PYG:1,RWF:1,UGX:1,VND:1,VUV:1,XAF:1,XOF:1,XPF:1};
+        const three = {BHD:1,JOD:1,KWD:1,OMR:1,TND:1};
+        const decimals = zero[cur] ? 0 : (three[cur] ? 3 : 2);
+        const major = n / Math.pow(10, decimals);
+        try {
+            return new Intl.NumberFormat(undefined, {style: "currency", currency: cur}).format(major);
+        } catch (_) {
+            return major.toFixed(decimals) + " " + cur;
+        }
+    }
+
+    // formatAmountShort renders a MAJOR-unit amount string ("12.34") as a bare
+    // localised currency string ("£12.34") for the Pay button. Returns "" for an
+    // unknown / dynamic amount so the button falls back to a plain "Pay".
+    function formatAmountShort(amount, currency) {
+        if (typeof amount !== "string" || amount.indexOf("${") !== -1) return "";
+        const n = Number(amount);
+        if (!isFinite(n) || amount.trim() === "") return "";
+        const cur = String(currency || "gbp").toUpperCase();
+        try {
+            return new Intl.NumberFormat(undefined, {style: "currency", currency: cur}).format(n);
+        } catch (_) {
+            return n.toFixed(2) + " " + cur;
+        }
+    }
+
+    // startFieldAction kicks off a stateful field's out-of-band action. For a
+    // payment field it flushes the latest answers to the draft, asks the server
+    // to create a Stripe Checkout Session for THIS field (amount + secret key
+    // resolved entirely server-side — the client sends only the draft id and the
+    // field name), and redirects to it. Stripe returns to /form/:id/complete,
+    // which verifies the session is PAID, marks the field complete, and 302s back
+    // here (?updated=<field>), landing on this page with the field showing Paid.
+    // A cancelled payment returns to the form (state stays pending) so the user
+    // can retry. Future stateful types branch on component.type here.
+    function startFieldAction(component) {
+        const btn = document.getElementById("payment-pay-" + component.name);
+        if (btn) { btn.disabled = true; btn.textContent = "Redirecting…"; }
+
+        // Ensure the draft holds the latest answers before handing off — the
+        // server resolves the amount from the draft, not from any client body.
+        flushAutosave();
+
+        fetch("/form/" + FORM_ID + "/payment-intent", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({submission_id: SUBMISSION_ID, field: component.name})
+        })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error("payment init failed"))))
+        .then((data) => {
+            if (data && data.url) { window.location.href = data.url; return; }
+            throw new Error("no checkout url");
+        })
+        .catch(() => {
+            // Re-enable so the user can retry.
+            renderPaymentState(component);
+        });
     }
 
     // formatPaymentAmount renders a literal amount as a localised currency
@@ -3246,15 +3416,6 @@
         }
     }
 
-    // formHasPayment reports whether the form carries a payment field, which
-    // switches the submit button to a Stripe Checkout redirect instead of a
-    // direct POST.
-    function formHasPayment(form) {
-        for (const page of form.pages)
-            for (const comp of page.components)
-                if (comp.type === "payment") return true;
-        return false;
-    }
 
     function renderDropdown(form, container, component) {
         const group = document.createElement("div");
@@ -3504,8 +3665,14 @@
             for (const comp of page.components) {
                 if (!comp.required) continue;
                 if (DISPLAY_ONLY.has(comp.type)) continue;
-                if (comp.type === "payment") continue; // collects no value
                 if (hiddenFields.has(comp.name)) continue; // conditionally hidden — not required
+                if (STATEFUL_FIELD_TYPES[comp.type]) {
+                    // A required stateful field (payment, …) blocks Submit until
+                    // its server-recorded state is satisfied. Mirrors the server
+                    // submit gate (unsatisfiedRequiredStatefulFields).
+                    if (!isFieldStateSatisfied(comp.type, FIELD_STATES[comp.name])) valid = false;
+                    continue;
+                }
                 const v = formValues[comp.name];
                 // Radio + dropdown: empty string means "not chosen".
                 // Checkboxes: an empty array means "none selected".
@@ -3766,15 +3933,12 @@
                     const text = hasVal ? String(data.value) : null;
                     if (comp.type === "payment") {
                         // Payment amount: display only — the authoritative charge
-                        // is recomputed + collected server-side at checkout. Show
-                        // the computed charge, or a fallback if the flow produced
-                        // nothing, so the widget never hangs on "Calculating…".
-                        const pel = document.getElementById("payment-amount-" + comp.name);
-                        if (pel) {
-                            pel.textContent = text !== null
-                                ? formatPaymentAmount(text, comp.currency)
-                                : "Amount calculated at checkout";
-                        }
+                        // is recomputed + collected server-side at checkout. Cache
+                        // the computed charge (or "" so a paid-less flow doesn't
+                        // hang on "Calculating…") and re-render so the amount line
+                        // AND the Pay button (label + enabled) reflect it.
+                        paymentAmounts[comp.name] = text !== null ? text : "";
+                        renderPaymentState(comp);
                         return;
                     }
                     if (text === null) return;
@@ -3784,10 +3948,12 @@
                 })
                 .catch(() => {
                     // Network/other failure: don't leave a payment widget stuck
-                    // on "Calculating…" — fall back to the checkout message.
-                    if (comp.type === "payment") {
-                        const pel = document.getElementById("payment-amount-" + comp.name);
-                        if (pel && pel.textContent === "Calculating…") pel.textContent = "Amount calculated at checkout";
+                    // on "Calculating…". Mark the amount unknown ("") and
+                    // re-render — the button enables (server resolves the amount
+                    // authoritatively at checkout) and the line stops calculating.
+                    if (comp.type === "payment" && !(comp.name in paymentAmounts)) {
+                        paymentAmounts[comp.name] = "";
+                        renderPaymentState(comp);
                     }
                     /* best-effort — never block the form */
                 });
@@ -3855,7 +4021,7 @@
         }
 
         const submit = document.createElement("button");
-        submit.textContent = formHasPayment(form) ? "Pay & Submit" : "Submit";
+        submit.textContent = "Submit";
         submit.id = "submit";
         submit.disabled = true;
         submit.classList.add("btn", "btn-submit");
@@ -3889,13 +4055,40 @@
         // so the initial values (from defaults / a resumed draft) are shown.
         container.addEventListener("focusout", () => scheduleCompute(form));
         scheduleCompute(form);
+
+        // If we've just returned from a stateful-field action (e.g. a completed
+        // payment), the server redirected back with ?updated=<field>. Land on
+        // that field's page so the user sees its new state ("Paid ✓") where they
+        // acted, and clean the param so a refresh doesn't re-jump.
+        focusUpdatedField(form);
+    }
+
+    // focusUpdatedField navigates to the page owning the field named in the
+    // ?updated= query param (set by the /complete redirect) and strips the
+    // param. No-op when the param is absent or names no field.
+    function focusUpdatedField(form) {
+        let updated = null;
+        try { updated = new URLSearchParams(window.location.search).get("updated"); } catch (_) { updated = null; }
+        if (!updated) return;
+        for (let p = 0; p < form.pages.length; p++) {
+            for (const comp of form.pages[p].components) {
+                if (comp.name !== updated) continue;
+                setPage(form, p);
+                try {
+                    const u = new URL(window.location.href);
+                    u.searchParams.delete("updated");
+                    window.history.replaceState({}, "", u.toString());
+                } catch (_) { /* ignore */ }
+                return;
+            }
+        }
     }
 
     function submitForm(form) {
-        // Payment forms never POST answers directly — they hand off to Stripe
-        // Checkout and the server finalises the draft after payment.
-        if (formHasPayment(form)) { startFormPayment(form); return; }
-
+        // Every form submits the same way now — a plain POST. Stateful fields
+        // (payment, …) resolve out-of-band earlier via their own Pay button and
+        // record their state on the draft; the submit gate (client + server)
+        // ensures a required stateful field is satisfied before we get here.
         const submit = document.getElementById("submit");
         submit.disabled = true;
         submit.textContent = "Submitting...";
@@ -3915,7 +4108,19 @@
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify(payload)
         })
-        .then(() => {
+        .then((r) => {
+            if (r.status === 402) {
+                // Server submit gate: a required stateful field isn't satisfied
+                // (e.g. an unpaid required payment). Should be unreachable — the
+                // client gate keeps Submit disabled — but handle it defensively:
+                // re-render so the offending field's Pay button is visible again.
+                for (const page of form.pages)
+                    for (const comp of page.components)
+                        if (STATEFUL_FIELD_TYPES[comp.type]) renderPaymentState(comp);
+                validateForm(form);
+                return Promise.reject(new Error("payment required"));
+            }
+            if (!r.ok) return Promise.reject(new Error("submit failed"));
             // Submitted — drop the local cushion so a later visit starts clean.
             try { sessionStorage.removeItem(AUTOSAVE_KEY); } catch (e) { /* ignore */ }
             handleSubmitSuccess(form);
@@ -3923,42 +4128,6 @@
         .catch(() => {
             submit.disabled = false;
             submit.textContent = "Submit";
-        });
-    }
-
-    // startFormPayment flushes the latest answers to the server draft, then
-    // asks the server to create a Stripe hosted Checkout Session for this
-    // submission and redirects the browser to it. The amount and the Stripe
-    // secret key are resolved entirely server-side — the client sends only the
-    // draft submission id. After payment Stripe redirects to
-    // /form/:id/complete, which verifies the session is PAID and fires the flow
-    // from the stored draft. A cancelled payment returns to this form (the
-    // draft is still live) so the user can retry.
-    function startFormPayment(form) {
-        const submit = document.getElementById("submit");
-        submit.disabled = true;
-        submit.textContent = "Redirecting to payment…";
-
-        // Ensure the draft holds the latest answers before handing off — the
-        // server finalises from the draft, not from any client body.
-        flushAutosave();
-
-        fetch("/form/" + FORM_ID + "/payment-intent", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({submission_id: SUBMISSION_ID})
-        })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error("payment init failed"))))
-        .then((data) => {
-            if (data && data.url) {
-                window.location.href = data.url;
-                return;
-            }
-            throw new Error("no checkout url");
-        })
-        .catch(() => {
-            submit.disabled = false;
-            submit.textContent = "Pay & Submit";
         });
     }
 
