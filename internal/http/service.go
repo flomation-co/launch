@@ -245,9 +245,10 @@ func (s *Service) configure() error {
 	s.engine.OPTIONS("/v1/embed/form/:id/field-states", s.embedPreflight)
 
 	// Web Trigger invoke — call a flow over HTTP (any verb) and get its Web
-	// Response back synchronously. Gated by the flow resource; each verb is
-	// registered so a flow can branch on ${method}.
-	embedFlow := s.engine.Group("/v1/embed/flow/:id", s.embedFlowGate())
+	// Response back synchronously. Auth is per-trigger (public by default, or the
+	// embed publishable-key gate when opted in), applied inside the handler; each
+	// verb is registered so a flow can branch on ${method}.
+	embedFlow := s.engine.Group("/v1/embed/flow/:id")
 	embedFlow.GET("/invoke", s.handleEmbedFlowInvoke)
 	embedFlow.POST("/invoke", s.handleEmbedFlowInvoke)
 	embedFlow.PUT("/invoke", s.handleEmbedFlowInvoke)

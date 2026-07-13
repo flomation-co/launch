@@ -34,21 +34,6 @@ var (
 	webInvokePollInterval = 500 * time.Millisecond
 )
 
-// embedFlowGate guards the Web Trigger invoke by the FLOW resource directly (the
-// :id is the flow id), reusing the shared publishable-key + origin + opt-in gate.
-func (s *Service) embedFlowGate() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		id := c.Param("id")
-		if uuid.Validate(id) != nil {
-			c.AbortWithStatus(http.StatusUnauthorized)
-			return
-		}
-		if s.applyEmbedGate(c, embedResourceFlow, id) {
-			c.Next()
-		}
-	}
-}
-
 // handleEmbedFlowInvoke is the synchronous Web Trigger entrypoint: it turns the
 // HTTP request into the flow's trigger data (method + query/body fields as bare
 // outputs), runs the flow via the internal create+poll, and returns the flow's
@@ -56,16 +41,32 @@ func (s *Service) embedFlowGate() gin.HandlerFunc {
 // caller can poll. Identity (${user.X}) and history (${history}) are layered on
 // in a later slice.
 func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
-	flowID := c.Param("id") // gate already validated uuid + opt-in
+	flowID := c.Param("id")
+	if uuid.Validate(flowID) != nil {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
 
 	method := c.Request.Method
 	// Forward the end-user's Sentinel JWT (if any) so the API can resolve the
 	// logged-in visitor and populate ${user.X}. Anonymous when absent.
 	authToken := c.GetHeader("Authorization")
 
-	// The Web Trigger's config drives verb enforcement + history. Best-effort:
-	// on error, proceed as a plain any-verb, no-history invoke.
+	// The Web Trigger's config drives auth, verb enforcement + history.
 	cfg := s.fetchWebTriggerConfig(flowID)
+
+	// Optional auth: gate on the embed publishable key + origin + resource opt-in
+	// ONLY when the trigger opted into "publishable". Otherwise the endpoint is
+	// public — callable by anyone with the flow id (the default). Either way we
+	// reflect CORS so a browser accepts the response; a forwarded JWT still
+	// populates ${user.X} in both modes.
+	if cfg != nil && cfg.Auth == "publishable" {
+		if !s.applyEmbedGate(c, embedResourceFlow, flowID) {
+			return // applyEmbedGate wrote the 401/403 (and CORS on success)
+		}
+	} else {
+		s.setEmbedCORS(c, c.GetHeader("Origin"))
+	}
 
 	// Strict verb enforcement when the trigger declares accepted methods.
 	if cfg != nil && len(cfg.Methods) > 0 && !containsFold(cfg.Methods, method) {
@@ -160,6 +161,7 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 // webTriggerCfg mirrors the API's Web Trigger config projection.
 type webTriggerCfg struct {
 	Found        bool              `json:"found"`
+	Auth         string            `json:"auth"` // "none" (public) | "publishable"
 	KeepHistory  bool              `json:"keep_history"`
 	MessageField string            `json:"message_field"`
 	Methods      []string          `json:"methods"`

@@ -283,3 +283,72 @@ func TestEmbedFlowRoutesRegister_NoConflict(t *testing.T) {
 		fgrp.POST("", noop)
 	}).ToNot(Panic())
 }
+
+// authAPI serves a web-trigger config with the given auth, an embed-resolve
+// verdict, and a completed execution — for exercising the optional gate.
+func authAPI(auth string, allow bool) *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/internal/flo/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/web-trigger") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"found": true, "auth": auth})
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "e1"})
+	})
+	mux.HandleFunc("/api/v1/internal/execution/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"execution_status": "executed",
+			"result":           map[string]interface{}{"outputs": map[string]interface{}{}},
+		})
+	})
+	mux.HandleFunc("/api/v1/internal/embed/resolve", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"embed_app_id": "app-1", "origin_allowed": allow, "resource_allowed": allow,
+		})
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestWebInvoke_PublicByDefault(t *testing.T) {
+	RegisterTestingT(t)
+	defer withFastPolling(2*time.Second, 2*time.Millisecond)()
+
+	srv := authAPI("none", false) // auth=none: no pk needed, gate skipped
+	defer srv.Close()
+	// No publishable key, no allowed origin — a public trigger still runs.
+	w := doInvoke(newInvokeService(srv.URL), http.MethodPost, "/v1/embed/flow/"+testFlowID+"/invoke", "{}")
+	Expect(w.Code).To(Equal(http.StatusOK))
+}
+
+func TestWebInvoke_PublishableGate(t *testing.T) {
+	RegisterTestingT(t)
+	defer withFastPolling(2*time.Second, 2*time.Millisecond)()
+
+	gin.SetMode(gin.TestMode)
+	run := func(srv *httptest.Server, withKey bool) int {
+		r := gin.New()
+		r.Any("/v1/embed/flow/:id/invoke", newInvokeService(srv.URL).handleEmbedFlowInvoke)
+		req := httptest.NewRequest(http.MethodPost, "/v1/embed/flow/"+testFlowID+"/invoke", strings.NewReader("{}"))
+		req.Header.Set("Origin", "https://app.example")
+		if withKey {
+			req.Header.Set(publishableKeyHeader, "pk_test")
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// auth=publishable + no pk ⇒ 401 (gate active).
+	deny := authAPI("publishable", true)
+	defer deny.Close()
+	Expect(run(deny, false)).To(Equal(http.StatusUnauthorized))
+
+	// auth=publishable + pk + allowed origin/resource ⇒ passes ⇒ 200.
+	Expect(run(deny, true)).To(Equal(http.StatusOK))
+
+	// auth=publishable + pk but NOT allowed ⇒ 403.
+	blocked := authAPI("publishable", false)
+	defer blocked.Close()
+	Expect(run(blocked, true)).To(Equal(http.StatusForbidden))
+}
