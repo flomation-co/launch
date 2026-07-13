@@ -41,20 +41,30 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// Form draft (autosave / fire-once submission) tuning.
+const (
+	// formDraftTTL is how long a server-side draft lives before it is purged.
+	formDraftTTL = 24 * time.Hour
+	// formDraftMaxBytes caps an autosave payload to keep a hostile client from
+	// filling the drafts table with an oversized blob.
+	formDraftMaxBytes = 256 * 1024
+)
+
 type Service struct {
-	config         *config.Config
-	engine         *gin.Engine
-	internalEngine *gin.Engine  // mTLS-only listener for internal routes
-	apiClient      *http.Client // mTLS-capable client for internal API calls
-	trigger        *trigger.Service
-	agent          *agent.Service
-	google         *google.Service
-	telegram       *telegrampkg.Service
-	db             *persistence.Service
-	facebookIndex  *facebook.PageIndex
-	voiceCalls     *twilio.VoiceCallManager
-	formData       *formDataResolver // caches ${data.X} form autofill results
-	mqtt           *mqttpkg.Service  // holds the broker subscriptions for MQTT triggers
+	config             *config.Config
+	engine             *gin.Engine
+	internalEngine     *gin.Engine  // mTLS-only listener for internal routes
+	apiClient          *http.Client // mTLS-capable client for internal API calls
+	trigger            *trigger.Service
+	agent              *agent.Service
+	google             *google.Service
+	telegram           *telegrampkg.Service
+	db                 *persistence.Service
+	facebookIndex      *facebook.PageIndex
+	voiceCalls         *twilio.VoiceCallManager
+	formData           *formDataResolver   // caches ${data.X} form autofill results
+	mqtt               *mqttpkg.Service    // holds the broker subscriptions for MQTT triggers
+	formComputeLimiter *computeRateLimiter // bounds /form/:id/compute per form
 }
 
 func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent.Service, googleSvc *google.Service, telegramSvc *telegrampkg.Service, db *persistence.Service, mqttSvc *mqttpkg.Service) (*Service, error) {
@@ -78,6 +88,10 @@ func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent
 		voiceCalls:    twilio.NewVoiceCallManager(),
 		formData:      newFormDataResolver(apiClient, config.InternalAPIURL()),
 		mqtt:          mqttSvc,
+		// ~5 compute requests/second per form with a small burst — enough for
+		// live debounced typing, tight enough to stop a client spinning the
+		// pricing flow.
+		formComputeLimiter: newComputeRateLimiter(5, 10),
 	}
 
 	templ := template.Must(template.ParseFS(assets.Templates, "files/form.html"))
@@ -94,6 +108,15 @@ func NewService(config *config.Config, trigger *trigger.Service, agentSvc *agent
 }
 
 func corsMiddleware(c *gin.Context) {
+	// Embed SDK routes manage their own per-origin CORS (see embedGate /
+	// embedPreflight): they reflect a specific allowed Origin and permit writes.
+	// The wildcard GET-only policy below would otherwise override them and block
+	// cross-origin POST/PUT preflight.
+	if strings.HasPrefix(c.Request.URL.Path, "/v1/embed/") {
+		c.Next()
+		return
+	}
+
 	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 	c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 	c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -171,9 +194,52 @@ func (s *Service) configure() error {
 	s.engine.GET("/qr/:id", s.handleQr)
 	s.engine.GET("/form/:id", s.handleForm)
 	s.engine.GET("/form/:id/data", s.handleFormData)
+	// Per-field flow compute for NON-payment display fields: runs the flow the
+	// author bound to a field with the current answers as input and returns
+	// its computed value. Payment amounts are computed server-side at checkout,
+	// never here.
+	s.engine.POST("/form/:id/compute", s.computeFormField)
 	s.engine.POST("/form/:id", s.submitForm)
+	s.engine.PUT("/form/:id/submission/:sid", s.autosaveFormDraft)
 	s.engine.POST("/form/:id/upload", s.uploadFormBlob)
+	// Native form payments (Stripe hosted Checkout). payment-intent creates a
+	// Checkout Session for a draft and returns its URL; complete is the
+	// success_url Stripe redirects back to, verifies the session is PAID, then
+	// finalises the draft (sanitise → fire-once → trigger).
+	s.engine.POST("/form/:id/payment-intent", s.createFormPaymentIntent)
+	s.engine.GET("/form/:id/complete", s.completeFormPayment)
 	s.engine.GET("/image/:id", s.handleImageLoad)
+
+	// Embed SDK edge — publishable-key gated, per-origin CORS. Wraps the existing
+	// form handlers so a third-party app can render/submit a form natively (no
+	// iframe): the gate validates key + Origin + resource opt-in and reflects the
+	// Origin, while the handlers still re-validate every write. The definition
+	// endpoint returns a secret-stripped public projection.
+	embedForm := s.engine.Group("/v1/embed/form/:id", s.embedFormGate())
+	embedForm.GET("/definition", s.handleEmbedFormDefinition)
+	embedForm.POST("/session", s.handleEmbedFormSession)
+	embedForm.GET("/data", s.handleFormData)
+	embedForm.POST("", s.submitForm)
+	embedForm.POST("/compute", s.computeFormField)
+	embedForm.PUT("/submission/:sid", s.autosaveFormDraft)
+	embedForm.POST("/upload", s.uploadFormBlob)
+	embedForm.POST("/payment-intent", s.createEmbedPaymentIntent)
+	embedForm.GET("/field-states", s.getEmbedFieldStates)
+	// Payment completion is PUBLIC — Stripe redirects the top-level browser here
+	// with no key/origin, so it can't sit behind the embed gate. It is secured by
+	// the Stripe session binding + the return_url stored at intent time.
+	s.engine.GET("/v1/embed/form/:id/complete", s.completeEmbedPayment)
+	// CORS preflight for the embed form routes (no key required — reflects the
+	// Origin and advertises the allowed methods/headers).
+	s.engine.OPTIONS("/v1/embed/form/:id/definition", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/session", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/data", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/compute", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/submission/:sid", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/upload", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/payment-intent", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/field-states", s.embedPreflight)
 
 	// Internal routes — service-to-service calls from the API.
 	// When mTLS is enabled, these register on a separate Gin engine
@@ -267,7 +333,26 @@ func (s *Service) Listen() error {
 	if s.internalEngine != nil {
 		go s.listenInternal()
 	}
+	go s.purgeExpiredFormDrafts()
 	return s.engine.Run(fmt.Sprintf("%v:%v", s.config.HttpListenConfig.Address, s.config.HttpListenConfig.Port))
+}
+
+// purgeExpiredFormDrafts periodically deletes lapsed form drafts. Mirrors the
+// simple ticker loop used by the schedule/S3 poll services.
+func (s *Service) purgeExpiredFormDrafts() {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		deleted, err := s.db.PurgeExpiredFormDrafts()
+		if err != nil {
+			log.WithError(err).Warn("unable to purge expired form drafts")
+			continue
+		}
+		if deleted > 0 {
+			log.WithField("deleted", deleted).Info("purged expired form drafts")
+		}
+	}
 }
 
 // listenInternal starts the mTLS-protected internal listener on a
@@ -698,6 +783,58 @@ func (s *Service) submitForm(c *gin.Context) {
 		return
 	}
 
+	// Fire-once claim. The client threads its draft submission id back in the
+	// body; it must never reach the trigger data, so strip it first. When a
+	// valid id is present we atomically claim the draft — the first submit
+	// wins, a double-submit (or payment callback) sees an already-fired draft
+	// and no-ops. A submit without an id (e.g. an older client) proceeds
+	// unguarded, exactly as before.
+	sid := extractSubmissionID(body)
+
+	// Load the draft's per-field states (payment paid/pending, …) when a
+	// submission id is present. Nil when there is no draft — which correctly
+	// leaves any required stateful field UNSATISFIED in the gate below.
+	var fieldStates map[string]json.RawMessage
+	if sid != "" && uuid.Validate(sid) == nil {
+		var serr error
+		fieldStates, serr = s.db.GetFieldStates(sid)
+		if serr != nil {
+			log.WithError(serr).Error("unable to load field states for submit gate")
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Stateful-field submit gate — ALWAYS run (not only when a submission id is
+	// present). A required stateful field (payment, and future out-of-band types)
+	// must be satisfied — its state recorded server-side — before the flow can
+	// fire. With no draft/state it is unsatisfied, so an ungated submit (e.g. an
+	// embed POST without a session) of a required-payment form is rejected here
+	// rather than firing unpaid. Runs before the fire-once claim so a rejected
+	// submit does not consume the draft. fieldStates is reused below for
+	// __field_states.
+	if missing := unsatisfiedRequiredStatefulFields(def, body, fieldStates); len(missing) > 0 {
+		c.JSON(http.StatusPaymentRequired, gin.H{
+			"error":  "required field not completed",
+			"fields": missing,
+		})
+		return
+	}
+
+	if sid != "" && uuid.Validate(sid) == nil {
+		claimed, _, err := s.db.FireFormDraft(sid, []string{"draft", "finalising"})
+		if err != nil {
+			log.WithError(err).Error("unable to claim form draft")
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
+		if !claimed {
+			// Already fired — idempotent no-op, do NOT re-trigger.
+			c.Status(http.StatusOK)
+			return
+		}
+	}
+
 	// Restore the baked-at-render values for read-only fields, ignoring
 	// any client-supplied values. This is the security check that
 	// matches the render-time guarantee — if the user saw "Name: Andy"
@@ -725,22 +862,20 @@ func (s *Service) submitForm(c *gin.Context) {
 		def = bakeDynamicOptions(def, dataOutputs)
 	}
 	resolved := resolveFormForRender(def, ctx)
-	// Sanitisation pipeline, applied in this order:
-	//   1. Enforce option whitelist for radio/dropdown/checkboxes.
-	//   2. Drop any client-supplied values for display-only components
-	//      (section_header, divider, info_text) — they take no input.
-	//   3. Restore baked-at-render values for read-only components.
-	//   4. Strip answers for conditionally-hidden components — a hidden
-	//      branch must never smuggle values into the trigger data.
-	// Read-only stripping runs before the hidden strip so a read-only
-	// field can act as a (baked) condition source; the hidden strip runs
-	// last so it sees every other field's final value.
-	sanitised := sanitiseOptionSubmissions(body, resolved)
-	sanitised = stripDisplayOnlySubmissions(sanitised, resolved)
-	sanitised = stripReadOnlySubmissions(sanitised, resolved)
-	final := stripHiddenSubmissions(sanitised, resolved)
+	// Sanitisation pipeline (option whitelist → matrix whitelist → strip
+	// display-only → restore read-only defaults → strip hidden). Read-only
+	// stripping runs before the hidden strip so a read-only field can act as
+	// a (baked) condition source; the hidden strip runs last so it sees every
+	// other field's final value. Shared with the payment finalise path.
+	final := sanitiseFormSubmission(body, resolved)
 	if userID != "" {
 		final["user_id"] = userID
+	}
+	// Surface the per-field mid-state (what was paid/verified out-of-band) to
+	// the flow so downstream steps can act on it. Prefixed like the fire-once
+	// marker so it can never collide with a real answer key.
+	if len(fieldStates) > 0 {
+		final["__field_states"] = fieldStates
 	}
 
 	go func() {
@@ -752,6 +887,77 @@ func (s *Service) submitForm(c *gin.Context) {
 	}()
 
 	c.Status(http.StatusOK)
+}
+
+// extractSubmissionID pops the client-supplied draft submission id out of a
+// form submission body. It is removed unconditionally so it can never be
+// forwarded into the trigger data as if it were a form answer.
+func extractSubmissionID(body map[string]interface{}) string {
+	sid, _ := body["__submission_id"].(string)
+	delete(body, "__submission_id")
+	return sid
+}
+
+// autosaveBodyStatus validates a raw autosave payload. It returns the HTTP
+// status to send on failure (413 if it exceeds the cap, 400 if it is not a
+// JSON object), or 0 when the body is acceptable. Pure so it can be unit
+// tested without a database.
+func autosaveBodyStatus(raw []byte) int {
+	if len(raw) > formDraftMaxBytes {
+		return http.StatusRequestEntityTooLarge
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return http.StatusBadRequest
+	}
+	return 0
+}
+
+// autosaveFormDraft persists an in-progress form's answers so the user can
+// close the tab and resume later. It is deliberately dumb: it stores the raw
+// JSON object verbatim (no sanitisation — that happens on submit) against a
+// live draft. The payload is capped and never logged.
+func (s *Service) autosaveFormDraft(c *gin.Context) {
+	id := c.Param("id")
+	if uuid.Validate(id) != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	tr, err := s.trigger.GetTriggerByID(id)
+	if err != nil || tr == nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	if tr.Type != launch.TriggerTypeForm {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	sid := c.Param("sid")
+	if uuid.Validate(sid) != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	// Read one byte past the cap so an over-limit body is detectable.
+	raw, _ := io.ReadAll(io.LimitReader(c.Request.Body, formDraftMaxBytes+1))
+	if status := autosaveBodyStatus(raw); status != 0 {
+		c.AbortWithStatus(status)
+		return
+	}
+
+	ok, err := s.db.SaveFormDraftPayload(sid, raw)
+	if err != nil {
+		log.WithError(err).Error("unable to save form draft payload")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 // uploadFormBlob accepts a single file from an anonymous form
@@ -1030,10 +1236,49 @@ func (s *Service) handleForm(c *gin.Context) {
 	}
 	resolved := resolveFormForRender(def, ctx)
 
+	// Draft submission. Resume an existing live draft when the client presents
+	// a valid submission_id that belongs to this trigger; otherwise mint a
+	// fresh draft. Draft persistence failure is non-fatal — the form still
+	// renders and submits, just without autosave/resume/fire-once.
+	submissionID := uuid.NewString()
+	// The resume payload is base64-encoded (like the Form field below) and
+	// atob+JSON.parse'd on the client. It is NEVER injected raw into the page:
+	// the draft holds client-authored answers, so a template.JS() interpolation
+	// would be a stored-XSS vector (a "</script>" in an answer would break out).
+	// base64 has no HTML/JS metacharacters, so it is safe in a quoted string.
+	resumePayload := ""
+	// fieldStatesPayload carries the draft's per-field mid-state map (payment
+	// paid/pending, …) to the client so each stateful field renders its current
+	// state on load/resume — e.g. a paid field shows "Paid ✓" after the Stripe
+	// round-trip. base64 for the same XSS-safety reason as the resume payload
+	// (the map holds no HTML/JS metacharacters once encoded).
+	fieldStatesPayload := ""
+	resumed := false
+	if q := c.Query("submission_id"); q != "" && uuid.Validate(q) == nil {
+		if draft, derr := s.db.GetFormDraft(q); derr == nil && draft != nil && draft.TriggerID == id {
+			submissionID = q
+			resumed = true
+			if len(draft.Payload) > 0 {
+				resumePayload = base64.StdEncoding.EncodeToString(draft.Payload)
+			}
+			if len(draft.FieldStates) > 0 {
+				fieldStatesPayload = base64.StdEncoding.EncodeToString(draft.FieldStates)
+			}
+		}
+	}
+	if !resumed {
+		if cerr := s.db.CreateFormDraft(submissionID, id, tr.FlowID, formDraftTTL); cerr != nil {
+			log.WithError(cerr).Warn("unable to create form draft")
+		}
+	}
+
 	resolvedBytes, _ := json.Marshal(resolved)
 	c.HTML(http.StatusOK, "form.html", gin.H{
 		"Form":            base64.StdEncoding.EncodeToString(resolvedBytes),
 		"FormID":          id,
+		"SubmissionID":    submissionID,
+		"ResumePayload":   resumePayload,
+		"FieldStates":     fieldStatesPayload,
 		"MetaTitle":       metaText(resolved.Title),
 		"MetaDescription": metaText(resolved.Description),
 	})

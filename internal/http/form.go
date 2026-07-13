@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -89,6 +90,22 @@ type formComponent struct {
 	// applies. Empty means the static Options above are used.
 	OptionsSource string `json:"options_source,omitempty"`
 
+	// Multiple, on a picture_choice field, switches it from single-select
+	// (response is a string option value) to multi-select (response is an
+	// array of option values). Ignored by other field types.
+	Multiple bool `json:"multiple,omitempty"`
+
+	// Matrix (grid) field — rows down the side, a shared set of columns
+	// across the top, each row answered by picking from the columns. The
+	// response is an object keyed by row value; CellType decides whether
+	// each row holds a single column value (radio → string) or a set
+	// (checkbox → []string). Only used by the "matrix" field type.
+	MatrixRows    []formOption `json:"matrix_rows,omitempty"`
+	MatrixColumns []formOption `json:"matrix_columns,omitempty"`
+	// CellType is "radio" (default, single pick per row) or "checkbox"
+	// (multiple picks per row). Empty is treated as "radio".
+	CellType string `json:"cell_type,omitempty"`
+
 	// Numeric constraints — apply to number, slider, and rating types.
 	// Pointer types distinguish "unset" from "zero", which matters:
 	// Min=0 is a legitimate constraint (e.g. non-negative quantity)
@@ -113,6 +130,16 @@ type formComponent struct {
 	// (raw lat/lng from navigator.geolocation). Empty means fine.
 	Precision string `json:"precision,omitempty"`
 
+	// NPS end-of-scale captions — shown under the 0 and scale buttons of an
+	// nps field (e.g. "Not likely" / "Very likely"). Purely presentational.
+	ScaleLabelLow  string `json:"scale_label_low,omitempty"`
+	ScaleLabelHigh string `json:"scale_label_high,omitempty"`
+
+	// ContactFields lists which sub-fields a contact_name component collects,
+	// in order. Empty defaults to ["first_name","last_name","email"]. The
+	// response is an object keyed by these names (plus optionally "phone").
+	ContactFields []string `json:"contact_fields,omitempty"`
+
 	// Upload-field constraints — apply to esignature, camera, and
 	// file_upload types. AcceptMime uses HTML5 accept-attribute syntax
 	// (comma-separated exact MIMEs or category/* wildcards).
@@ -135,6 +162,29 @@ type formComponent struct {
 	ConfidenceThreshold *float64 `json:"confidence_threshold,omitempty"`
 	PrivacyNotice       string   `json:"privacy_notice,omitempty"`
 	ShowPrivacyNotice   *bool    `json:"show_privacy_notice,omitempty"`
+
+	// Payment-field settings (type == "payment"). Amount is a MAJOR-unit
+	// decimal string (e.g. "49.99") — it may be a literal or a ${data.X}
+	// reference resolved server-side at payment time (NEVER trusted from the
+	// client). Currency is an ISO-4217 code (e.g. "gbp"). PaymentSecret is a
+	// ${secrets.X} reference to the Stripe secret key; an empty value falls
+	// back to defaultPaymentSecretRef. The field collects no input — it is
+	// rendered as a read-only "you will pay X" summary.
+	Amount        string `json:"amount,omitempty"`
+	Currency      string `json:"currency,omitempty"`
+	PaymentSecret string `json:"payment_secret,omitempty"`
+
+	// ValueSource, when set, names a flow whose output computes this field's
+	// value from the CURRENT form answers (posted as ${input.X}). It is the
+	// server-authoritative source of the field's value — a client-supplied
+	// value for a computed field is never trusted and is stripped on submit.
+	// The canonical use is a payment field whose Amount is derived by a
+	// pricing flow (e.g. a reg-plate → car-park price). A non-payment
+	// computed field renders read-only and is refreshed via /form/:id/compute.
+	ValueSource string `json:"value_source,omitempty"`
+	// ValueOutput selects which key of the compute flow's outputs holds the
+	// value. Empty defaults to the field's own Name (see computeOutputKey).
+	ValueOutput string `json:"value_output,omitempty"`
 
 	// VisibleIf, when set, makes this component conditionally visible based
 	// on the answers to earlier fields. Nil means "always visible" (the
@@ -181,6 +231,9 @@ func isDisplayOnly(t string) bool {
 type formOption struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
+	// Image is an option-tile image URL used by the picture_choice field.
+	// Empty means the option renders as a text fallback tile.
+	Image string `json:"image,omitempty"`
 }
 
 // substitutionContext bundles the inputs to ${X} substitution at render time.
@@ -417,7 +470,7 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 	specs := map[string]formComponent{}
 	for _, page := range resolved.Pages {
 		for _, c := range page.Components {
-			if len(c.Options) > 0 && (c.Type == "radio" || c.Type == "dropdown" || c.Type == "checkboxes" || c.Type == "ranking") {
+			if len(c.Options) > 0 && (c.Type == "radio" || c.Type == "dropdown" || c.Type == "checkboxes" || c.Type == "ranking" || c.Type == "opinion_scale" || c.Type == "picture_choice") {
 				specs[c.Name] = c
 			}
 		}
@@ -438,7 +491,7 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 		}
 
 		switch spec.Type {
-		case "radio", "dropdown":
+		case "radio", "dropdown", "opinion_scale":
 			s, ok := out[name].(string)
 			if !ok {
 				out[name] = ""
@@ -446,6 +499,37 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 			}
 			if _, hit := whitelist[s]; !hit {
 				out[name] = ""
+			}
+		case "picture_choice":
+			// picture_choice mirrors radio (single) or checkboxes
+			// (multiple) depending on spec.Multiple, reusing the same
+			// option-value whitelist.
+			if spec.Multiple {
+				arr, ok := out[name].([]interface{})
+				if !ok {
+					out[name] = []interface{}{}
+					continue
+				}
+				filtered := make([]interface{}, 0, len(arr))
+				for _, entry := range arr {
+					s, ok := entry.(string)
+					if !ok {
+						continue
+					}
+					if _, hit := whitelist[s]; hit {
+						filtered = append(filtered, s)
+					}
+				}
+				out[name] = filtered
+			} else {
+				s, ok := out[name].(string)
+				if !ok {
+					out[name] = ""
+					continue
+				}
+				if _, hit := whitelist[s]; !hit {
+					out[name] = ""
+				}
 			}
 		case "checkboxes":
 			arr, ok := out[name].([]interface{})
@@ -495,6 +579,105 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 	return out
 }
 
+// sanitiseMatrixSubmissions enforces the row/column whitelists for matrix
+// (grid) fields. A matrix answer is an object keyed by row value; each row's
+// value is a single column value (cell_type "radio") or an array of column
+// values (cell_type "checkbox"). The generic option whitelist doesn't fit —
+// a matrix has two whitelists (rows and columns) and a nested-object shape —
+// so this is a dedicated pass, mirroring the trust-the-definition philosophy
+// of sanitiseOptionSubmissions:
+//
+//   - The submitted answer must be a map[string]interface{}; anything else
+//     (wrong type, missing) becomes an empty map.
+//   - Any key not in the row whitelist is dropped.
+//   - radio: the row's value must be a string in the column whitelist, else
+//     that row entry is dropped.
+//   - checkbox: the row's value must be an array; entries are filtered to
+//     whitelisted column values, de-duplicated, order preserved. An empty
+//     array is permitted (a row left unanswered).
+//
+// Returns a new map; does not mutate the input.
+func sanitiseMatrixSubmissions(submission map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	specs := map[string]formComponent{}
+	for _, page := range resolved.Pages {
+		for _, c := range page.Components {
+			if c.Type == "matrix" {
+				specs[c.Name] = c
+			}
+		}
+	}
+	if len(specs) == 0 {
+		return submission
+	}
+
+	out := make(map[string]interface{}, len(submission))
+	for k, v := range submission {
+		out[k] = v
+	}
+
+	for name, spec := range specs {
+		rowWhitelist := map[string]struct{}{}
+		for _, r := range spec.MatrixRows {
+			rowWhitelist[r.Value] = struct{}{}
+		}
+		colWhitelist := map[string]struct{}{}
+		for _, col := range spec.MatrixColumns {
+			colWhitelist[col.Value] = struct{}{}
+		}
+		checkbox := spec.CellType == "checkbox"
+
+		raw, ok := out[name].(map[string]interface{})
+		if !ok {
+			out[name] = map[string]interface{}{}
+			continue
+		}
+
+		clean := make(map[string]interface{}, len(raw))
+		for rowValue, answer := range raw {
+			if _, rowOK := rowWhitelist[rowValue]; !rowOK {
+				continue
+			}
+			if checkbox {
+				arr, arrOK := answer.([]interface{})
+				if !arrOK {
+					// A row present but not an array becomes an empty
+					// selection rather than being dropped, so the row key
+					// survives with a well-formed (empty) value.
+					clean[rowValue] = []interface{}{}
+					continue
+				}
+				seen := map[string]struct{}{}
+				filtered := make([]interface{}, 0, len(arr))
+				for _, entry := range arr {
+					s, sOK := entry.(string)
+					if !sOK {
+						continue
+					}
+					if _, dupe := seen[s]; dupe {
+						continue
+					}
+					if _, colOK := colWhitelist[s]; colOK {
+						seen[s] = struct{}{}
+						filtered = append(filtered, s)
+					}
+				}
+				clean[rowValue] = filtered
+			} else {
+				s, sOK := answer.(string)
+				if !sOK {
+					continue
+				}
+				if _, colOK := colWhitelist[s]; !colOK {
+					continue
+				}
+				clean[rowValue] = s
+			}
+		}
+		out[name] = clean
+	}
+	return out
+}
+
 // stripDisplayOnlySubmissions removes keys whose corresponding component
 // is a display-only type (section_header, divider, info_text). These
 // components exist to structure the form visually, not to collect input,
@@ -535,11 +718,12 @@ func stripReadOnlySubmissions(submission map[string]interface{}, resolved formDe
 	readOnly := map[string]string{}
 	for _, page := range resolved.Pages {
 		for _, c := range page.Components {
-			// Structured types (location, address) produce a nested object
-			// response and have no meaningful string DefaultValue — skipping
-			// them here means a hand-authored read_only: true is ignored
-			// rather than corrupting the response shape.
-			if c.Type == "location" || c.Type == "address" {
+			// Structured types (location, address, contact_name, matrix)
+			// produce a nested object response and have no meaningful string
+			// DefaultValue — skipping them here means a hand-authored
+			// read_only: true is ignored rather than corrupting the
+			// response shape.
+			if c.Type == "location" || c.Type == "address" || c.Type == "contact_name" || c.Type == "matrix" {
 				continue
 			}
 			if c.ReadOnly {
@@ -782,6 +966,139 @@ func stripHiddenSubmissions(submission map[string]interface{}, resolved formDefi
 		}
 	}
 	return out
+}
+
+// sanitiseFormSubmission runs the full submit-time sanitisation pipeline on a
+// raw answer map against a resolved form definition, in the security-critical
+// order used by submitForm:
+//
+//  1. Enforce the option whitelist for radio/dropdown/checkboxes/etc.
+//  2. Enforce the matrix row/column whitelists.
+//  3. Drop client-supplied values for display-only components.
+//  4. Drop client-supplied values for flow-computed components (value_source).
+//  5. Restore baked-at-render values for read-only components.
+//  6. Strip answers for conditionally-hidden components.
+//
+// It is shared by submitForm and the payment-completion finalise path so both
+// strip identically — the draft payload a payment form finalises is just as
+// client-authored (via autosave) as a direct POST body. Pure.
+func sanitiseFormSubmission(body map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	sanitised := sanitiseOptionSubmissions(body, resolved)
+	sanitised = sanitiseMatrixSubmissions(sanitised, resolved)
+	sanitised = stripDisplayOnlySubmissions(sanitised, resolved)
+	sanitised = stripComputedSubmissions(sanitised, resolved)
+	sanitised = stripReadOnlySubmissions(sanitised, resolved)
+	return stripHiddenSubmissions(sanitised, resolved)
+}
+
+// computeOutputKey returns the compute flow output key that holds a field's
+// value: the author-chosen ValueOutput, or the field's own Name when unset.
+func computeOutputKey(c formComponent) string {
+	if k := strings.TrimSpace(c.ValueOutput); k != "" {
+		return k
+	}
+	return c.Name
+}
+
+// stripComputedSubmissions removes any client-supplied value for a field with
+// a ValueSource. A computed field's value is authoritatively produced by its
+// flow (server-side, from the sanitised answers) — for a payment field at
+// checkout, for a display field via /form/:id/compute — so a value posted by
+// the client must NEVER reach the trigger data. Mirrors the trust-the-
+// definition philosophy of stripDisplayOnlySubmissions.
+//
+// Returns a new map; does not mutate the input.
+func stripComputedSubmissions(submission map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	computed := map[string]struct{}{}
+	for _, page := range resolved.Pages {
+		for _, c := range page.Components {
+			if strings.TrimSpace(c.ValueSource) != "" {
+				computed[c.Name] = struct{}{}
+			}
+		}
+	}
+	if len(computed) == 0 {
+		return submission
+	}
+	out := make(map[string]interface{}, len(submission))
+	for k, v := range submission {
+		if _, isComputed := computed[k]; isComputed {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// paymentComponent returns the first payment field in the form (a form is
+// expected to carry at most one). ok is false when there is none, letting the
+// payment endpoints 400 a form that has no payment field.
+func paymentComponent(def formDefinition) (formComponent, bool) {
+	for _, page := range def.Pages {
+		for _, c := range page.Components {
+			if c.Type == "payment" {
+				return c, true
+			}
+		}
+	}
+	return formComponent{}, false
+}
+
+// zeroDecimalCurrencies charge in whole units — the "minor unit" IS the major
+// unit, so no ×100 scaling. threeDecimalCurrencies use a thousandth as the
+// smallest unit. Everything else is the 2-decimal default. Mirrors Stripe's
+// zero/three-decimal currency lists (and stripe_common.MoneyToMinorUnits in
+// the executor).
+var zeroDecimalCurrencies = map[string]struct{}{
+	"bif": {}, "clp": {}, "djf": {}, "gnf": {}, "jpy": {}, "kmf": {},
+	"krw": {}, "mga": {}, "pyg": {}, "rwf": {}, "ugx": {}, "vnd": {},
+	"vuv": {}, "xaf": {}, "xof": {}, "xpf": {},
+}
+
+var threeDecimalCurrencies = map[string]struct{}{
+	"bhd": {}, "jod": {}, "kwd": {}, "omr": {}, "tnd": {},
+}
+
+// currencyDecimals returns the number of fractional digits in the currency's
+// smallest unit. Unknown currencies fall back to 2.
+func currencyDecimals(currency string) int {
+	c := strings.ToLower(strings.TrimSpace(currency))
+	if _, ok := zeroDecimalCurrencies[c]; ok {
+		return 0
+	}
+	if _, ok := threeDecimalCurrencies[c]; ok {
+		return 3
+	}
+	return 2
+}
+
+// amountPattern accepts a non-negative decimal string ("49.99", "1000",
+// "1.234"). It deliberately excludes signs, exponents, and thousands
+// separators so a hostile or malformed amount is rejected outright rather
+// than silently coerced.
+var amountPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+
+// amountToMinorUnits converts a MAJOR-unit decimal amount (e.g. "49.99") into
+// the currency's smallest integer unit (e.g. 4999 pence). It rejects a
+// non-numeric or negative amount. Rounding is to the nearest minor unit,
+// which absorbs binary-float artefacts (49.99×100 = 4998.9999… → 4999).
+func amountToMinorUnits(amount, currency string) (int64, error) {
+	a := strings.TrimSpace(amount)
+	if a == "" {
+		return 0, fmt.Errorf("empty amount")
+	}
+	if !amountPattern.MatchString(a) {
+		return 0, fmt.Errorf("invalid amount %q", a)
+	}
+	f, err := strconv.ParseFloat(a, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid amount %q: %w", a, err)
+	}
+	if f < 0 { // unreachable given the pattern, kept as belt-and-braces
+		return 0, fmt.Errorf("negative amount %q", a)
+	}
+	factor := math.Pow(10, float64(currencyDecimals(currency)))
+	return int64(math.Round(f * factor)), nil
 }
 
 // loadUserVariables fetches the user's ${user.X} variable map from the API.

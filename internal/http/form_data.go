@@ -2,6 +2,8 @@ package http
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -102,7 +104,9 @@ func (r *formDataResolver) ResolveRaw(flowID string, timeoutSeconds int) map[str
 		if timeoutSeconds > 0 {
 			timeout = time.Duration(timeoutSeconds) * time.Second
 		}
-		outputs := r.run(flowID, timeout)
+		// The data-source path runs with no per-request input, so every viewer
+		// shares one flow-ID-keyed cache entry. Body is the empty JSON object.
+		outputs := r.run(flowID, []byte("{}"), timeout)
 		r.store(flowID, outputs)
 		return outputs, nil
 	})
@@ -110,6 +114,51 @@ func (r *formDataResolver) ResolveRaw(flowID string, timeoutSeconds int) map[str
 		return m
 	}
 	return nil
+}
+
+// ResolveComputed runs a flow with the given inputs (posted to it as
+// ${input.X}) and returns its raw output map. Unlike ResolveRaw, the result
+// depends on the inputs, so the cache/singleflight key is
+// flowID + NUL + hex(sha256(inputsJSON)) — answer-specific, never the flat
+// flow-id key. It never errors: a failed/timed-out run yields an empty map, so
+// a computed field simply resolves to "" (matching the "unknown reference →
+// empty" substitution semantic). A nil resolver short-circuits to nil.
+//
+// This is what makes a computed value SERVER-AUTHORITATIVE: the caller supplies
+// the answers, the flow (not the client) produces the value.
+func (r *formDataResolver) ResolveComputed(flowID string, inputs map[string]interface{}, timeoutSeconds int) map[string]interface{} {
+	if r == nil || flowID == "" {
+		return nil
+	}
+
+	inputsJSON, err := json.Marshal(inputs)
+	if err != nil {
+		log.WithError(err).Warn("form compute: could not marshal inputs; resolving to empty")
+		return map[string]interface{}{}
+	}
+	sum := sha256.Sum256(inputsJSON)
+	key := flowID + "\x00" + hex.EncodeToString(sum[:])
+
+	if v, ok := r.cached(key); ok {
+		return v
+	}
+
+	v, _, _ := r.group.Do(key, func() (interface{}, error) {
+		if v, ok := r.cached(key); ok {
+			return v, nil
+		}
+		timeout := r.timeout
+		if timeoutSeconds > 0 {
+			timeout = time.Duration(timeoutSeconds) * time.Second
+		}
+		outputs := r.run(flowID, inputsJSON, timeout)
+		r.store(key, outputs)
+		return outputs, nil
+	})
+	if m, ok := v.(map[string]interface{}); ok {
+		return m
+	}
+	return map[string]interface{}{}
 }
 
 func (r *formDataResolver) cached(flowID string) (map[string]interface{}, bool) {
@@ -130,8 +179,8 @@ func (r *formDataResolver) store(flowID string, outputs map[string]interface{}) 
 
 // run creates a data-source execution and polls for its outputs, mirroring
 // the Start Flow action's create+poll contract against the internal API.
-func (r *formDataResolver) run(flowID string, timeout time.Duration) map[string]interface{} {
-	executionID, err := r.createExecution(flowID)
+func (r *formDataResolver) run(flowID string, body []byte, timeout time.Duration) map[string]interface{} {
+	executionID, err := r.createExecution(flowID, body)
 	if err != nil {
 		log.WithFields(log.Fields{"error": err, "flow_id": flowID}).
 			Warn("form data-source: could not start flow; rendering without ${data.X}")
@@ -155,10 +204,15 @@ func (r *formDataResolver) run(flowID string, timeout time.Duration) map[string]
 }
 
 // createExecution POSTs to the internal execute endpoint and returns the new
-// execution ID. The flow runs via its manual trigger (chosen API-side).
-func (r *formDataResolver) createExecution(flowID string) (string, error) {
+// execution ID. The flow runs via its manual trigger (chosen API-side). The
+// body is a JSON object of inputs that reach the flow as ${input.X}; the
+// data-source path passes "{}", the compute path passes the form answers.
+func (r *formDataResolver) createExecution(flowID string, body []byte) (string, error) {
 	url := fmt.Sprintf("%s/api/v1/internal/flo/%s/execute", r.apiURL, flowID)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBufferString("{}"))
+	if len(body) == 0 {
+		body = []byte("{}")
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -207,6 +261,16 @@ func (r *formDataResolver) pollResult(pollURL string) (map[string]interface{}, b
 		return nil, false
 	}
 	if data.ExecutionStatus == "executed" {
+		// The execution result nests the flow's Set Output values under an
+		// "outputs" key (alongside id / logs / status / node_results). Surface
+		// that inner map so ${data.X} and computed field/amount values read the
+		// actual outputs (e.g. out["parking_charge"]) — reading the wrapper made
+		// every computed value resolve to nil. Confirmed against the execution
+		// result shape. Fall back to the whole result only if "outputs" is
+		// absent (defensive).
+		if outputs, ok := data.Result["outputs"].(map[string]interface{}); ok {
+			return outputs, true
+		}
 		return data.Result, true
 	}
 	return nil, false
