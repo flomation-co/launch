@@ -1,0 +1,17 @@
+-- Add the MQTT trigger type to launch's TriggerType enum. Without it,
+-- CreateTrigger's INSERT INTO trigger (type) ... = 'mqtt' is rejected by
+-- Postgres (invalid enum value) and the trigger silently fails.
+--
+-- Unlike every other trigger here this one is not a webhook: nothing POSTs to
+-- Launch. The mqtt service holds a subscription open to the operator's broker
+-- and fires the flow when a message arrives, so the type name has no
+-- "-webhook" suffix. It matches the executor node directory actions/trigger/mqtt
+-- (the api derives the type from the node label: trigger/mqtt -> mqtt).
+--
+-- NUMBERING: golang-migrate silently skips a version once a HIGHER one has been
+-- applied, so the number has to be right against the whole live sequence, not
+-- just against the previous file on this branch. 41 was chosen against the
+-- highest number across main AND every open branch (40 at the time of writing) —
+-- checking only main, which was at 38, would have collided. If a branch targeting
+-- 41+ merges before this one, renumber rather than assuming the gap is free.
+ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'mqtt';

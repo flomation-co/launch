@@ -101,6 +101,27 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
 	s.registerSendGridWebhook(c.Request.Context(), &tr)
 
+	// MQTT triggers: open the broker subscription now, rather than waiting for the
+	// mqtt service's next reconcile tick.
+	//
+	// Off the request goroutine deliberately. Register reads the trigger and takes
+	// its lease, and the flow save has no reason to wait on either — the reconcile
+	// loop is the safety net if this fails, so the only thing blocking here could
+	// do is make saving a flow feel slow when the database or broker is having a
+	// bad day. Only tr.ID is captured, and Register is safe to call concurrently
+	// with the reconcile loop.
+	if tr.Type == launch.TriggerTypeMQTT && s.mqtt != nil {
+		triggerID := tr.ID
+		go func() {
+			if err := s.mqtt.Register(triggerID); err != nil {
+				log.WithFields(log.Fields{
+					"trigger_id": triggerID,
+					"error":      err,
+				}).Warn("unable to subscribe to the MQTT broker now; the reconcile loop will retry")
+			}
+		}()
+	}
+
 	if t == nil {
 		c.JSON(http.StatusCreated, r)
 	} else {
@@ -217,6 +238,15 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the SendGrid event webhook we created.
 	if t.Type == launch.TriggerTypeSendGridWebhook {
 		s.deregisterSendGridWebhook(c.Request.Context(), t)
+	}
+
+	// Close the MQTT subscription. Unlike a webhook there is nothing to
+	// deregister at the provider — dropping the connection *is* the
+	// deregistration — but it has to happen before the trigger row goes away, or
+	// the reconcile loop will keep the connection open against a trigger it can no
+	// longer look up.
+	if t.Type == launch.TriggerTypeMQTT && s.mqtt != nil {
+		s.mqtt.Deregister(t.ID)
 	}
 
 	if err := s.trigger.RemoveTrigger(*t); err != nil {

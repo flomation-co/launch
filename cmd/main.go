@@ -10,11 +10,12 @@ import (
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
 	"flomation.app/automate/launch/internal/google"
 	drivepoll "flomation.app/automate/launch/internal/google/drivepoll"
-	"flomation.app/automate/launch/internal/microsoft"
-	msmailpoll "flomation.app/automate/launch/internal/microsoft/mailpoll"
 	"flomation.app/automate/launch/internal/http"
 	linkedinpoll "flomation.app/automate/launch/internal/linkedin"
 	"flomation.app/automate/launch/internal/metrics"
+	"flomation.app/automate/launch/internal/microsoft"
+	msmailpoll "flomation.app/automate/launch/internal/microsoft/mailpoll"
+	"flomation.app/automate/launch/internal/mqtt"
 	"flomation.app/automate/launch/internal/persistence"
 	s3trigger "flomation.app/automate/launch/internal/s3"
 	"flomation.app/automate/launch/internal/schedule"
@@ -134,7 +135,13 @@ func main() {
 		log.Info("Google Drive poll service started")
 	}
 
-	r, err := http.NewService(cfg, t, agentSvc, googleSvc, telegramSvc, db)
+	// MQTT triggers hold a persistent subscription to the operator's broker; the
+	// service reconciles them against the trigger table and leases each one so only
+	// a single Launch instance subscribes.
+	mqttSvc := mqtt.NewService(cfg, db, t)
+	log.Info("mqtt trigger service started")
+
+	r, err := http.NewService(cfg, t, agentSvc, googleSvc, telegramSvc, db, mqttSvc)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err,

@@ -38,6 +38,13 @@ const (
 	TriggerTypeMondayWebhook      = "monday-webhook"      // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeIntercomWebhook    = "intercom-webhook"    // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeSendGridWebhook    = "sendgrid-webhook"    // #nosec G101 — trigger type identifier, not a credential
+
+	// TriggerTypeMQTT is not a webhook: nothing POSTs to Launch. The mqtt service
+	// holds a subscription open to the operator's broker and fires the flow when a
+	// message arrives, so the name carries no "-webhook" suffix. It must match the
+	// executor node directory (actions/trigger/mqtt) — the api derives the type
+	// from the node label, turning "trigger/mqtt" into "mqtt".
+	TriggerTypeMQTT = "mqtt"
 )
 
 type Trigger struct {
