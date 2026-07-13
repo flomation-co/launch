@@ -144,6 +144,19 @@ func TestResolvePaymentComponent(t *testing.T) {
 // TestUnsatisfiedRequiredStatefulFields is the server submit gate: it names the
 // required stateful fields that are visible but not yet satisfied, and nothing
 // else. Optional fields, satisfied fields, and hidden fields never appear.
+// TestUnsatisfiedRequiredStatefulFields_NilStates locks the security property
+// the always-run submit gate depends on: with NO field states at all (nil map —
+// e.g. an embed POST that skipped the session/draft), a required stateful field
+// is unsatisfied and must be flagged, so an ungated payment submit is rejected.
+func TestUnsatisfiedRequiredStatefulFields_NilStates(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{Pages: []formPage{{Components: []formComponent{
+		{Name: "pay", Type: "payment", Required: true},
+	}}}}
+	Expect(unsatisfiedRequiredStatefulFields(def, map[string]interface{}{}, nil)).To(ConsistOf("pay"))
+}
+
 func TestUnsatisfiedRequiredStatefulFields(t *testing.T) {
 	RegisterTestingT(t)
 

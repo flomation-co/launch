@@ -214,6 +214,7 @@ func (s *Service) configure() error {
 	// endpoint returns a secret-stripped public projection.
 	embedForm := s.engine.Group("/v1/embed/form/:id", s.embedFormGate())
 	embedForm.GET("/definition", s.handleEmbedFormDefinition)
+	embedForm.POST("/session", s.handleEmbedFormSession)
 	embedForm.GET("/data", s.handleFormData)
 	embedForm.POST("", s.submitForm)
 	embedForm.POST("/compute", s.computeFormField)
@@ -222,6 +223,7 @@ func (s *Service) configure() error {
 	// CORS preflight for the embed form routes (no key required — reflects the
 	// Origin and advertises the allowed methods/headers).
 	s.engine.OPTIONS("/v1/embed/form/:id/definition", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/session", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/data", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/compute", s.embedPreflight)
@@ -778,12 +780,9 @@ func (s *Service) submitForm(c *gin.Context) {
 	// unguarded, exactly as before.
 	sid := extractSubmissionID(body)
 
-	// Stateful-field submit gate. A required stateful field (payment, and future
-	// out-of-band types) must be satisfied — its state recorded server-side —
-	// before the flow can fire. Read the draft's field_states and reject with 402
-	// (naming the offending fields) when any visible required stateful field is
-	// unsatisfied. Run BEFORE the fire-once claim so a rejected submit does not
-	// consume the draft. states is reused below to surface __field_states.
+	// Load the draft's per-field states (payment paid/pending, …) when a
+	// submission id is present. Nil when there is no draft — which correctly
+	// leaves any required stateful field UNSATISFIED in the gate below.
 	var fieldStates map[string]json.RawMessage
 	if sid != "" && uuid.Validate(sid) == nil {
 		var serr error
@@ -793,13 +792,22 @@ func (s *Service) submitForm(c *gin.Context) {
 			c.AbortWithStatus(http.StatusInternalServerError)
 			return
 		}
-		if missing := unsatisfiedRequiredStatefulFields(def, body, fieldStates); len(missing) > 0 {
-			c.JSON(http.StatusPaymentRequired, gin.H{
-				"error":  "required field not completed",
-				"fields": missing,
-			})
-			return
-		}
+	}
+
+	// Stateful-field submit gate — ALWAYS run (not only when a submission id is
+	// present). A required stateful field (payment, and future out-of-band types)
+	// must be satisfied — its state recorded server-side — before the flow can
+	// fire. With no draft/state it is unsatisfied, so an ungated submit (e.g. an
+	// embed POST without a session) of a required-payment form is rejected here
+	// rather than firing unpaid. Runs before the fire-once claim so a rejected
+	// submit does not consume the draft. fieldStates is reused below for
+	// __field_states.
+	if missing := unsatisfiedRequiredStatefulFields(def, body, fieldStates); len(missing) > 0 {
+		c.JSON(http.StatusPaymentRequired, gin.H{
+			"error":  "required field not completed",
+			"fields": missing,
+		})
+		return
 	}
 
 	if sid != "" && uuid.Validate(sid) == nil {

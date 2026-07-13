@@ -249,3 +249,24 @@ func (s *Service) handleEmbedFormDefinition(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, projectDefinition(def))
 }
+
+// handleEmbedFormSession mints a server-side draft for an embedded form and
+// returns its submission id. The SDK calls this once on load so that autosave,
+// payments and the stateful submit gate — all of which live on the draft — work
+// over the embed path. The Launch-hosted page gets its draft from handleForm,
+// but the SDK never loads that HTML, so it needs an explicit session.
+func (s *Service) handleEmbedFormSession(c *gin.Context) {
+	id := c.Param("id")
+	tr, err := s.trigger.GetTriggerByID(id)
+	if err != nil || tr == nil || tr.Type != launch.TriggerTypeForm {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	submissionID := uuid.NewString()
+	if cerr := s.db.CreateFormDraft(submissionID, id, tr.FlowID, formDraftTTL); cerr != nil {
+		log.WithError(cerr).Error("embed: unable to create form session draft")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"submission_id": submissionID})
+}
