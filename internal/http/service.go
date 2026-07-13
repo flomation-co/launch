@@ -209,6 +209,9 @@ func (s *Service) configure() error {
 	s.engine.POST("/form/:id/payment-intent", s.createFormPaymentIntent)
 	s.engine.GET("/form/:id/complete", s.completeFormPayment)
 	s.engine.GET("/image/:id", s.handleImageLoad)
+	// Programmatic manual-trigger run (edge-facing, authenticated by the
+	// trigger's optional run token — see handleManualRun).
+	s.engine.POST("/trigger/:id/run", s.handleManualRun)
 
 	// Embed SDK edge — publishable-key gated, per-origin CORS. Wraps the existing
 	// form handlers so a third-party app can render/submit a form natively (no
