@@ -338,7 +338,7 @@ func TestFormatPEMRepairsAFlattenedCertificate(t *testing.T) {
 // margin, not on the true expiry.
 func TestLeaseSafetyMarginCoversAReconcileInterval(t *testing.T) {
 	if leaseSafetyMargin <= reconcileInterval {
-		t.Errorf("leaseSafetyMargin (%s) must exceed one reconcile interval (%s), or a single missed tick could leave us subscribed past the point another instance can claim the lease",
+		t.Errorf("leaseSafetyMargin (%s) must exceed the reconcile interval (%s): releasing a subscription this far before its lease actually lapses leaves at least one full tick of buffer, which is what guarantees we have disconnected before any other instance can acquire the lease and double-fire the flow",
 			leaseSafetyMargin, reconcileInterval)
 	}
 	if leaseSafetyMargin >= leaseDuration {
