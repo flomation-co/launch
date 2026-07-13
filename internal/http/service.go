@@ -504,6 +504,12 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeStripeWebhook:
 		s.handleStripeWebhook(c, tr)
 		return
+	case launch.TriggerTypeQuickBooksWebhook:
+		s.handleQuickBooksWebhook(c, tr)
+		return
+	case launch.TriggerTypeXeroWebhook:
+		s.handleXeroWebhook(c, tr)
+		return
 	case launch.TriggerTypeCalendlyWebhook:
 		s.handleCalendlyWebhook(c, tr)
 		return
