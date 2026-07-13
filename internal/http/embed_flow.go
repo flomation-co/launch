@@ -81,7 +81,10 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 	}
 
 	body, _ := json.Marshal(data)
-	executionID, outputs, done := s.runWebInvoke(flowID, body)
+	// Forward the end-user's Sentinel JWT (if any) so the API can resolve the
+	// logged-in visitor and populate ${user.X}. Anonymous when absent.
+	authToken := c.GetHeader("Authorization")
+	executionID, outputs, done := s.runWebInvoke(flowID, body, authToken)
 
 	if !done {
 		// Still running past the hang budget — hand back the execution id to poll.
@@ -106,8 +109,8 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 // runWebInvoke creates an execution for the flow with the given trigger data and
 // polls it until it completes or the hang budget elapses. Returns the execution
 // id, the flow outputs (when completed), and whether it completed in time.
-func (s *Service) runWebInvoke(flowID string, body []byte) (string, map[string]interface{}, bool) {
-	executionID, err := s.createFlowExecution(flowID, body)
+func (s *Service) runWebInvoke(flowID string, body []byte, authToken string) (string, map[string]interface{}, bool) {
+	executionID, err := s.createFlowExecution(flowID, body, authToken)
 	if err != nil {
 		log.WithFields(log.Fields{"error": err, "flow_id": flowID}).Error("web invoke: could not start flow")
 		return "", nil, false
@@ -127,7 +130,7 @@ func (s *Service) runWebInvoke(flowID string, body []byte) (string, map[string]i
 	return executionID, nil, false
 }
 
-func (s *Service) createFlowExecution(flowID string, body []byte) (string, error) {
+func (s *Service) createFlowExecution(flowID string, body []byte, authToken string) (string, error) {
 	url := fmt.Sprintf("%s/api/v1/internal/flo/%s/execute", s.config.InternalAPIURL(), flowID)
 	if len(body) == 0 {
 		body = []byte("{}")
@@ -137,6 +140,10 @@ func (s *Service) createFlowExecution(flowID string, body []byte) (string, error
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Forwarded end-user token — the API validates it and binds ${user.X}.
+	if authToken != "" {
+		req.Header.Set("Authorization", authToken)
+	}
 	resp, err := s.apiClient.Do(req)
 	if err != nil {
 		return "", err
