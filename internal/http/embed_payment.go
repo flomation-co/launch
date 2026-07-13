@@ -277,20 +277,35 @@ func (s *Service) completeEmbedPayment(c *gin.Context) {
 	c.Redirect(http.StatusSeeOther, paidURL)
 }
 
-// getEmbedFieldStates returns the draft's per-field state map (payment paid/
-// pending, …) so the SDK can resume after a payment redirect and render a paid
-// field. Behind the embed gate. The map carries no PII.
+// getEmbedFieldStates returns the draft's resumable state — the autosaved
+// answers AND the per-field state map (payment paid/pending, …) — so the SDK can
+// resume after a payment redirect: restore what the user had entered and render a
+// paid field. Behind the embed gate. The draft is identified by the unguessable
+// submission id and must belong to this form.
 func (s *Service) getEmbedFieldStates(c *gin.Context) {
+	id := c.Param("id")
 	sid := c.Query("submission_id")
 	if uuid.Validate(sid) != nil {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
-	states, err := s.db.GetFieldStates(sid)
+	draft, err := s.db.GetFormDraftAny(sid)
 	if err != nil {
-		log.WithError(err).Error("embed: unable to load field states")
+		log.WithError(err).Error("embed: unable to load draft for resume")
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"field_states": states})
+	answers := map[string]interface{}{}
+	fieldStates := map[string]json.RawMessage{}
+	if draft != nil && draft.TriggerID == id {
+		if len(draft.Payload) > 0 {
+			_ = json.Unmarshal(draft.Payload, &answers)
+		}
+		if len(draft.FieldStates) > 0 {
+			_ = json.Unmarshal(draft.FieldStates, &fieldStates)
+		}
+	}
+	// The fire-once marker is transport-only and must never resurface as an answer.
+	delete(answers, "__submission_id")
+	c.JSON(http.StatusOK, gin.H{"answers": answers, "field_states": fieldStates})
 }
