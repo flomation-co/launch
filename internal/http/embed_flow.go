@@ -21,6 +21,8 @@ const (
 	// webResponseKey is the reserved flow-output key the Web Response action
 	// writes (mirror of the executor's web_response.WebResponseKey).
 	webResponseKey = "__web_response__"
+	// threadHeader round-trips the conversation thread id to/from the client.
+	threadHeader = "X-Flomation-Thread"
 )
 
 // Poll timing — vars (not consts) so tests can shrink them.
@@ -56,9 +58,25 @@ func (s *Service) embedFlowGate() gin.HandlerFunc {
 func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 	flowID := c.Param("id") // gate already validated uuid + opt-in
 
+	method := c.Request.Method
+	// Forward the end-user's Sentinel JWT (if any) so the API can resolve the
+	// logged-in visitor and populate ${user.X}. Anonymous when absent.
+	authToken := c.GetHeader("Authorization")
+
+	// The Web Trigger's config drives verb enforcement + history. Best-effort:
+	// on error, proceed as a plain any-verb, no-history invoke.
+	cfg := s.fetchWebTriggerConfig(flowID)
+
+	// Strict verb enforcement when the trigger declares accepted methods.
+	if cfg != nil && len(cfg.Methods) > 0 && !containsFold(cfg.Methods, method) {
+		c.Header("Allow", strings.Join(cfg.Methods, ", "))
+		c.AbortWithStatus(http.StatusMethodNotAllowed)
+		return
+	}
+
 	// Build the trigger data. These keys become the Web Trigger node's bare
 	// outputs (${method}, ${id}, ${name}, …) via the executor's InjectTriggerData.
-	data := map[string]interface{}{"method": c.Request.Method}
+	data := map[string]interface{}{"method": method}
 	for k, v := range c.Request.URL.Query() {
 		if len(v) == 1 {
 			data[k] = v[0]
@@ -70,7 +88,6 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 		raw, _ := io.ReadAll(io.LimitReader(c.Request.Body, webInvokeMaxBody))
 		if len(raw) > 0 {
 			data["raw_body"] = string(raw)
-			// Spread top-level JSON body keys as bare fields too.
 			var bodyObj map[string]interface{}
 			if json.Unmarshal(raw, &bodyObj) == nil {
 				for k, v := range bodyObj {
@@ -80,19 +97,53 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 		}
 	}
 
+	// Conversation history (opt-in via keep_history): mint/resume a thread, inject
+	// the running history as ${history}, and record the user's message turn.
+	var threadID string
+	keepHistory := cfg != nil && cfg.KeepHistory
+	messageField := "message"
+	if cfg != nil && cfg.MessageField != "" {
+		messageField = cfg.MessageField
+	}
+	if keepHistory {
+		threadID = c.GetHeader(threadHeader)
+		if threadID == "" {
+			threadID = s.mintWebThread(flowID, authToken)
+		}
+		if threadID != "" {
+			data["history"] = s.webThreadHistory(threadID)
+			if msg, ok := data[messageField].(string); ok && msg != "" {
+				s.appendWebThreadTurn(threadID, "user", msg)
+			}
+		}
+	}
+
 	body, _ := json.Marshal(data)
-	// Forward the end-user's Sentinel JWT (if any) so the API can resolve the
-	// logged-in visitor and populate ${user.X}. Anonymous when absent.
-	authToken := c.GetHeader("Authorization")
 	executionID, outputs, done := s.runWebInvoke(flowID, body, authToken)
 
+	if threadID != "" {
+		c.Header(threadHeader, threadID) // round-trip so the client persists it
+	}
+
 	if !done {
-		// Still running past the hang budget — hand back the execution id to poll.
-		c.JSON(http.StatusAccepted, gin.H{"execution_id": executionID})
+		c.JSON(http.StatusAccepted, gin.H{"execution_id": executionID, "thread_id": threadID})
 		return
 	}
 
-	if wr, ok := parseWebResponse(outputs[webResponseKey]); ok {
+	wr, hasWR := parseWebResponse(outputs[webResponseKey])
+
+	// Record the assistant turn: the Web Response's history text, else its body.
+	if keepHistory && threadID != "" && hasWR {
+		assistant := wr.history
+		if assistant == "" {
+			assistant = wr.body
+		}
+		if assistant != "" {
+			s.appendWebThreadTurn(threadID, "assistant", assistant)
+		}
+	}
+
+	if hasWR {
 		for k, v := range wr.headers {
 			c.Header(k, v)
 		}
@@ -104,6 +155,109 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 	// No Web Response action ran — return the flow outputs as the default.
 	delete(outputs, webResponseKey)
 	c.JSON(http.StatusOK, outputs)
+}
+
+// webTriggerCfg mirrors the API's Web Trigger config projection.
+type webTriggerCfg struct {
+	Found        bool              `json:"found"`
+	KeepHistory  bool              `json:"keep_history"`
+	MessageField string            `json:"message_field"`
+	Methods      []string          `json:"methods"`
+	Fields       map[string]string `json:"fields"`
+}
+
+// fetchWebTriggerConfig reads the flow's Web Trigger config from the API. Returns
+// nil on any error (the caller degrades to a plain invoke).
+func (s *Service) fetchWebTriggerConfig(flowID string) *webTriggerCfg {
+	url := fmt.Sprintf("%s/api/v1/internal/flo/%s/web-trigger", s.config.InternalAPIURL(), flowID)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := s.apiClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var cfg webTriggerCfg
+	if json.NewDecoder(resp.Body).Decode(&cfg) != nil || !cfg.Found {
+		return nil
+	}
+	return &cfg
+}
+
+// mintWebThread creates a thread (bound to the forwarded user) and returns its id
+// ("" on failure — history is then skipped for this turn).
+func (s *Service) mintWebThread(flowID, authToken string) string {
+	body, _ := json.Marshal(map[string]string{"flow_id": flowID})
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/api/v1/internal/web-thread", s.config.InternalAPIURL()), bytes.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authToken != "" {
+		req.Header.Set("Authorization", authToken)
+	}
+	resp, err := s.apiClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		return ""
+	}
+	var out struct {
+		ThreadID string `json:"thread_id"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return ""
+	}
+	return out.ThreadID
+}
+
+// webThreadHistory fetches a thread's recent turns ([{role,content}], oldest-first).
+func (s *Service) webThreadHistory(threadID string) []map[string]string {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/v1/internal/web-thread/%s/history", s.config.InternalAPIURL(), threadID), nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := s.apiClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out struct {
+		Turns []map[string]string `json:"turns"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return nil
+	}
+	return out.Turns
+}
+
+// appendWebThreadTurn records one turn (best-effort).
+func (s *Service) appendWebThreadTurn(threadID, role, content string) {
+	body, _ := json.Marshal(map[string]string{"role": role, "content": content})
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/api/v1/internal/web-thread/%s/turn", s.config.InternalAPIURL(), threadID), bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if resp, err := s.apiClient.Do(req); err == nil {
+		_ = resp.Body.Close()
+	}
+}
+
+func containsFold(list []string, v string) bool {
+	for _, x := range list {
+		if strings.EqualFold(x, v) {
+			return true
+		}
+	}
+	return false
 }
 
 // runWebInvoke creates an execution for the flow with the given trigger data and
@@ -198,6 +352,7 @@ type webResponse struct {
 	status      int
 	contentType string
 	headers     map[string]string
+	history     string // clean assistant text to record (defaults to body)
 }
 
 // parseWebResponse coerces the reserved __web_response__ output (set by the Web
@@ -218,6 +373,9 @@ func parseWebResponse(v interface{}) (webResponse, bool) {
 		wr.contentType = ct
 	}
 	wr.headers = toHeaders(m["headers"])
+	if h, ok := m["history"].(string); ok {
+		wr.history = h
+	}
 	return wr, true
 }
 
