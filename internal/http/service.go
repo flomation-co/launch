@@ -244,6 +244,17 @@ func (s *Service) configure() error {
 	s.engine.OPTIONS("/v1/embed/form/:id/payment-intent", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/field-states", s.embedPreflight)
 
+	// Web Trigger invoke — call a flow over HTTP (any verb) and get its Web
+	// Response back synchronously. Gated by the flow resource; each verb is
+	// registered so a flow can branch on ${method}.
+	embedFlow := s.engine.Group("/v1/embed/flow/:id", s.embedFlowGate())
+	embedFlow.GET("/invoke", s.handleEmbedFlowInvoke)
+	embedFlow.POST("/invoke", s.handleEmbedFlowInvoke)
+	embedFlow.PUT("/invoke", s.handleEmbedFlowInvoke)
+	embedFlow.PATCH("/invoke", s.handleEmbedFlowInvoke)
+	embedFlow.DELETE("/invoke", s.handleEmbedFlowInvoke)
+	s.engine.OPTIONS("/v1/embed/flow/:id/invoke", s.embedPreflight)
+
 	// Internal routes — service-to-service calls from the API.
 	// When mTLS is enabled, these register on a separate Gin engine
 	// served on the internal port with client certificate verification.
