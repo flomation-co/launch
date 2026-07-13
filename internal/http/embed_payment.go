@@ -143,7 +143,7 @@ func (s *Service) createEmbedPaymentIntent(c *gin.Context) {
 	// there, not from this URL, so it can't be tampered with.
 	successURL := fmt.Sprintf("%s/v1/embed/form/%s/complete?submission_id=%s&field=%s&session_id={CHECKOUT_SESSION_ID}",
 		base, id, sid, url.QueryEscape(field))
-	cancelURL := appendQuery(body.ReturnURL, "flo_payment", "cancelled")
+	cancelURL := appendQuery(body.ReturnURL, "flo_field", field, "flo_status", "cancelled")
 
 	checkoutURL, sessionID, err := stripewh.CreateFormCheckoutSession(secretKey, stripewh.CheckoutParams{
 		AmountMinor: amountMinor,
@@ -183,8 +183,9 @@ func (s *Service) createEmbedPaymentIntent(c *gin.Context) {
 // completeEmbedPayment is the PUBLIC success_url Stripe redirects the browser to
 // (no key/origin — Stripe is the caller). It verifies the session is genuinely
 // PAID and bound to the field's pending state, marks the field complete, and
-// 302s to the STORED return_url (the developer's app) with flo_paid so the SDK
-// can resume and show the field paid. Security rests on the session binding +
+// 302s to the STORED return_url (the developer's app) with flo_field/flo_status
+// so the SDK can resume and show the field paid. Security rests on the session
+// binding +
 // the return_url having been validated + stored at intent time.
 func (s *Service) completeEmbedPayment(c *gin.Context) {
 	id := c.Param("id")
@@ -228,8 +229,12 @@ func (s *Service) completeEmbedPayment(c *gin.Context) {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
-	paidURL := appendQuery(st.ReturnURL, "flo_paid", field, "submission_id", sid)
-	retryURL := appendQuery(st.ReturnURL, "flo_payment", "failed")
+	// Generic stateful-field return params (payment today; e-sign / ID-verify /
+	// OAuth-connect fields reuse the same shape): flo_field names the field that
+	// completed its out-of-band action, flo_status is the outcome, and
+	// submission_id lets the SDK resume the draft.
+	paidURL := appendQuery(st.ReturnURL, "flo_field", field, "flo_status", "complete", "submission_id", sid)
+	retryURL := appendQuery(st.ReturnURL, "flo_field", field, "flo_status", "failed", "submission_id", sid)
 
 	// Idempotent: already complete → back to the app.
 	if st.Status == "complete" {
