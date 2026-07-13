@@ -48,6 +48,11 @@ type paymentFieldState struct {
 	AmountMinor int64  `json:"amount_minor,omitempty"`
 	Currency    string `json:"currency,omitempty"`
 	PaidAt      string `json:"paid_at,omitempty"`
+	// ReturnURL is where the embed completion handler sends the browser back to
+	// (the developer's app). It is validated + stored at intent time — when the
+	// request carries a gate-verified Origin — so the PUBLIC /complete callback
+	// (which Stripe hits with no key/origin) never trusts a query-supplied URL.
+	ReturnURL string `json:"return_url,omitempty"`
 }
 
 // isFieldStateSatisfied reports whether a stateful field's recorded state means

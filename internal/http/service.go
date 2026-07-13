@@ -220,6 +220,12 @@ func (s *Service) configure() error {
 	embedForm.POST("/compute", s.computeFormField)
 	embedForm.PUT("/submission/:sid", s.autosaveFormDraft)
 	embedForm.POST("/upload", s.uploadFormBlob)
+	embedForm.POST("/payment-intent", s.createEmbedPaymentIntent)
+	embedForm.GET("/field-states", s.getEmbedFieldStates)
+	// Payment completion is PUBLIC — Stripe redirects the top-level browser here
+	// with no key/origin, so it can't sit behind the embed gate. It is secured by
+	// the Stripe session binding + the return_url stored at intent time.
+	s.engine.GET("/v1/embed/form/:id/complete", s.completeEmbedPayment)
 	// CORS preflight for the embed form routes (no key required — reflects the
 	// Origin and advertises the allowed methods/headers).
 	s.engine.OPTIONS("/v1/embed/form/:id/definition", s.embedPreflight)
@@ -229,6 +235,8 @@ func (s *Service) configure() error {
 	s.engine.OPTIONS("/v1/embed/form/:id/compute", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/submission/:sid", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/upload", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/payment-intent", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/field-states", s.embedPreflight)
 
 	// Internal routes — service-to-service calls from the API.
 	// When mTLS is enabled, these register on a separate Gin engine
