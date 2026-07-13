@@ -1,0 +1,15 @@
+-- Add the 'web' trigger type to launch's TriggerType enum. Without it, when the
+-- api registers a Web Trigger the CreateTrigger INSERT INTO trigger (type) ... =
+-- 'web' is rejected by Postgres (invalid enum value) and the trigger fails.
+--
+-- Unlike webhook/poll triggers, the Web Trigger is invoked directly via the embed
+-- edge (POST /v1/embed/flow/:id/invoke) — Launch opens no subscription and polls
+-- nothing for it; the enum value just lets the trigger row be stored. The type
+-- name matches the executor node directory actions/trigger/web (the api derives
+-- the type from the node label: trigger/web -> web).
+--
+-- Pairs with api migration 124, which seeds the api-side trigger_type row. Both
+-- are required. NUMBERING: re-check against the whole live sequence (main + open
+-- branches), not just the previous file — golang-migrate skips a version once a
+-- higher one has applied.
+ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'web';
