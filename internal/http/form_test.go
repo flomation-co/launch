@@ -277,6 +277,59 @@ func TestSanitiseOptionSubmissions_Ranking_FiltersDedupesPreservesOrder(t *testi
 	Expect(sanitised["priorities"]).To(Equal([]interface{}{}))
 }
 
+func TestSanitiseOptionSubmissions_PictureChoice_Single_WhitelistEnforced(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{
+			Components: []formComponent{
+				{Name: "avatar", Type: "picture_choice", Multiple: false, Options: []formOption{
+					{Label: "Cat", Value: "cat", Image: "https://example.com/cat.png"},
+					{Label: "Dog", Value: "dog", Image: "https://example.com/dog.png"},
+				}},
+			},
+		}},
+	}
+
+	// A whitelisted value survives.
+	sanitised := sanitiseOptionSubmissions(map[string]interface{}{"avatar": "dog"}, resolved)
+	Expect(sanitised["avatar"]).To(Equal("dog"))
+
+	// An off-whitelist value becomes "".
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"avatar": "hacked"}, resolved)
+	Expect(sanitised["avatar"]).To(Equal(""))
+
+	// A non-string (e.g. an array smuggled into a single-select) becomes "".
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"avatar": []interface{}{"cat"}}, resolved)
+	Expect(sanitised["avatar"]).To(Equal(""))
+}
+
+func TestSanitiseOptionSubmissions_PictureChoice_Multiple_FiltersToWhitelist(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{
+			Components: []formComponent{
+				{Name: "toppings", Type: "picture_choice", Multiple: true, Options: []formOption{
+					{Label: "Cheese", Value: "cheese", Image: "https://example.com/cheese.png"},
+					{Label: "Ham", Value: "ham", Image: "https://example.com/ham.png"},
+					{Label: "Olives", Value: "olives", Image: "https://example.com/olives.png"},
+				}},
+			},
+		}},
+	}
+
+	// Whitelisted entries survive in order; off-whitelist / wrong-type dropped.
+	sanitised := sanitiseOptionSubmissions(map[string]interface{}{
+		"toppings": []interface{}{"cheese", "pineapple", "olives", 42, "ham"},
+	}, resolved)
+	Expect(sanitised["toppings"]).To(Equal([]interface{}{"cheese", "olives", "ham"}))
+
+	// A non-array (e.g. a bare string) becomes an empty array.
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"toppings": "cheese"}, resolved)
+	Expect(sanitised["toppings"]).To(Equal([]interface{}{}))
+}
+
 func TestSanitiseOptionSubmissions_NonOptionFieldsUntouched(t *testing.T) {
 	RegisterTestingT(t)
 
@@ -652,4 +705,171 @@ func TestStripHiddenSubmissions_NoRules_ShortCircuits(t *testing.T) {
 	in := map[string]interface{}{"a": "1", "b": "2"}
 	out := stripHiddenSubmissions(in, def)
 	Expect(out).To(Equal(in))
+}
+
+func TestSanitiseOptionSubmissions_OpinionScale_WhitelistEnforced(t *testing.T) {
+	RegisterTestingT(t)
+
+	// opinion_scale is a single-select whose string value must be one of the
+	// component's options — exactly like radio. Off-whitelist or wrong-typed
+	// values are wiped to "".
+	resolved := formDefinition{
+		Pages: []formPage{{
+			Components: []formComponent{
+				{Name: "agree", Type: "opinion_scale", Options: []formOption{
+					{Label: "Disagree", Value: "disagree"},
+					{Label: "Neutral", Value: "neutral"},
+					{Label: "Agree", Value: "agree"},
+				}},
+			},
+		}},
+	}
+
+	// Whitelisted value survives.
+	sanitised := sanitiseOptionSubmissions(map[string]interface{}{"agree": "neutral"}, resolved)
+	Expect(sanitised["agree"]).To(Equal("neutral"))
+
+	// Off-whitelist value is wiped.
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"agree": "smash"}, resolved)
+	Expect(sanitised["agree"]).To(Equal(""))
+
+	// Non-string type is wiped.
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"agree": 3}, resolved)
+	Expect(sanitised["agree"]).To(Equal(""))
+}
+
+func TestStripReadOnlySubmissions_SkipsContactName(t *testing.T) {
+	RegisterTestingT(t)
+
+	// contact_name produces a nested-object response; a hand-authored
+	// read_only: true must NOT overwrite it with the string DefaultValue.
+	resolved := formDefinition{
+		Pages: []formPage{{
+			Components: []formComponent{
+				{Name: "contact", Type: "contact_name", ReadOnly: true, DefaultValue: "IGNORED"},
+			},
+		}},
+	}
+
+	submission := map[string]interface{}{
+		"contact": map[string]interface{}{"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com"},
+	}
+
+	stripped := stripReadOnlySubmissions(submission, resolved)
+
+	contact, ok := stripped["contact"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	Expect(contact["first_name"]).To(Equal("Ada"))
+	Expect(contact["email"]).To(Equal("ada@example.com"))
+}
+
+func matrixField(name, cellType string) formComponent {
+	return formComponent{
+		Name:     name,
+		Type:     "matrix",
+		CellType: cellType,
+		MatrixRows: []formOption{
+			{Label: "Speed", Value: "speed"},
+			{Label: "Support", Value: "support"},
+		},
+		MatrixColumns: []formOption{
+			{Label: "Poor", Value: "poor"},
+			{Label: "OK", Value: "ok"},
+			{Label: "Great", Value: "great"},
+		},
+	}
+}
+
+func TestSanitiseMatrixSubmissions_Radio_WhitelistEnforced(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{Components: []formComponent{matrixField("survey", "radio")}}},
+	}
+
+	// A valid answer passes through; an off-whitelist column value drops that
+	// row; an off-whitelist row key is dropped entirely.
+	sanitised := sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": map[string]interface{}{
+			"speed":   "great",   // valid → kept
+			"support": "amazing", // bad column value → row dropped
+			"unknown": "ok",      // bad row key → dropped
+		},
+	}, resolved)
+
+	got, ok := sanitised["survey"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	Expect(got["speed"]).To(Equal("great"))
+	_, hasSupport := got["support"]
+	Expect(hasSupport).To(BeFalse())
+	_, hasUnknown := got["unknown"]
+	Expect(hasUnknown).To(BeFalse())
+
+	// A non-string row value (wrong type) is dropped.
+	sanitised = sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": map[string]interface{}{"speed": 42},
+	}, resolved)
+	got, ok = sanitised["survey"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	_, hasSpeed := got["speed"]
+	Expect(hasSpeed).To(BeFalse())
+
+	// A non-object answer becomes an empty map.
+	sanitised = sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": "not an object",
+	}, resolved)
+	Expect(sanitised["survey"]).To(Equal(map[string]interface{}{}))
+
+	// Missing key defaults to empty map.
+	sanitised = sanitiseMatrixSubmissions(map[string]interface{}{}, resolved)
+	Expect(sanitised["survey"]).To(Equal(map[string]interface{}{}))
+}
+
+func TestSanitiseMatrixSubmissions_Checkbox_FiltersToWhitelist(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{Components: []formComponent{matrixField("survey", "checkbox")}}},
+	}
+
+	sanitised := sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": map[string]interface{}{
+			// Whitelisted survive, off-whitelist filtered, dupes dropped,
+			// column-definition order NOT required but preserved as submitted.
+			"speed":   []interface{}{"poor", "unknown", "great", "poor", 42},
+			"support": []interface{}{},     // empty array allowed
+			"unknown": []interface{}{"ok"}, // bad row key → dropped
+		},
+	}, resolved)
+
+	got, ok := sanitised["survey"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	Expect(got["speed"]).To(Equal([]interface{}{"poor", "great"}))
+	Expect(got["support"]).To(Equal([]interface{}{}))
+	_, hasUnknown := got["unknown"]
+	Expect(hasUnknown).To(BeFalse())
+
+	// A row present but not an array becomes an empty selection (key kept).
+	sanitised = sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": map[string]interface{}{"speed": "great"},
+	}, resolved)
+	got, ok = sanitised["survey"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	Expect(got["speed"]).To(Equal([]interface{}{}))
+
+	// A non-object answer becomes an empty map.
+	sanitised = sanitiseMatrixSubmissions(map[string]interface{}{
+		"survey": []interface{}{"nope"},
+	}, resolved)
+	Expect(sanitised["survey"]).To(Equal(map[string]interface{}{}))
+}
+
+func TestSanitiseMatrixSubmissions_NoMatrixFields_PassThrough(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{Components: []formComponent{{Name: "text", Type: "text"}}}},
+	}
+	in := map[string]interface{}{"text": "hello"}
+	Expect(sanitiseMatrixSubmissions(in, resolved)).To(Equal(in))
 }
