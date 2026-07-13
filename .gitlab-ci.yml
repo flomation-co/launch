@@ -36,6 +36,18 @@ inject-metadata:
 #  script:
 #    - make sec
 
+migration-check:
+  stage: prepare
+  needs: []
+  # Loads the embedded migration set exactly as the service does on boot
+  # (iofs.New), before any DB. Fails the pipeline on a duplicate version or a
+  # malformed filename. Runs on EVERY pipeline (no only:) so it blocks the MR,
+  # and in prepare (the first stage) so it runs before any build or deploy.
+  # A duplicate migration version took the sibling api service down in prod
+  # on 13/07/2026; the same trap applies here.
+  script:
+    - go test ./internal/persistence/ -run TestMigrationsSourceLoads -v
+
 lint:
   stage: prepare
   variables:
