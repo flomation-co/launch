@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,37 @@ import (
 	"github.com/gin-gonic/gin"
 	. "github.com/onsi/gomega"
 )
+
+func TestWebInvoke_ForwardsAuthHeader(t *testing.T) {
+	RegisterTestingT(t)
+	defer withFastPolling(2*time.Second, 2*time.Millisecond)()
+
+	var gotAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/internal/flo/", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "exec-1"})
+	})
+	mux.HandleFunc("/api/v1/internal/execution/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"execution_status": "executed",
+			"result":           map[string]interface{}{"outputs": map[string]interface{}{}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Any("/v1/embed/flow/:id/invoke", newInvokeService(srv.URL).handleEmbedFlowInvoke)
+	req := httptest.NewRequest(http.MethodPost, "/v1/embed/flow/"+testFlowID+"/invoke", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer user-jwt")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	Expect(gotAuth).To(Equal("Bearer user-jwt")) // forwarded to the API execute call
+}
 
 func newInvokeService(url string) *Service {
 	return &Service{
