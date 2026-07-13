@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,93 @@ import (
 	"github.com/gin-gonic/gin"
 	. "github.com/onsi/gomega"
 )
+
+// historyAPI is a stateful fake API for the history-orchestration test: it serves
+// the web-trigger config (keep_history on), the web_thread endpoints, execute, and
+// an execution whose Web Response carries a distinct history text.
+func historyAPI(appended *[]map[string]string, executeBody *map[string]interface{}, mu *sync.Mutex) *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/internal/flo/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/web-trigger") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"found": true, "keep_history": true, "message_field": "message",
+			})
+			return
+		}
+		mu.Lock()
+		_ = json.NewDecoder(r.Body).Decode(executeBody)
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "exec-1"})
+	})
+	mux.HandleFunc("/api/v1/internal/execution/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"execution_status": "executed",
+			"result": map[string]interface{}{"outputs": map[string]interface{}{
+				webResponseKey: map[string]interface{}{"body": `{"content":"Hi"}`, "history": "Hi there"},
+			}},
+		})
+	})
+	mux.HandleFunc("/api/v1/internal/web-thread", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"thread_id": "t-new"})
+	})
+	mux.HandleFunc("/api/v1/internal/web-thread/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/history") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"turns": []map[string]string{{"role": "user", "content": "earlier"}},
+			})
+			return
+		}
+		var turn map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&turn)
+		mu.Lock()
+		*appended = append(*appended, turn)
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestWebInvoke_HistoryOrchestration(t *testing.T) {
+	RegisterTestingT(t)
+	defer withFastPolling(2*time.Second, 2*time.Millisecond)()
+
+	var appended []map[string]string
+	var executeBody map[string]interface{}
+	var mu sync.Mutex
+	srv := historyAPI(&appended, &executeBody, &mu)
+	defer srv.Close()
+
+	w := doInvoke(newInvokeService(srv.URL), http.MethodPost, "/v1/embed/flow/"+testFlowID+"/invoke", `{"message":"hello"}`)
+
+	Expect(w.Code).To(Equal(200))
+	Expect(w.Header().Get(threadHeader)).To(Equal("t-new")) // minted thread round-tripped
+
+	// ${history} injected from the thread.
+	mu.Lock()
+	defer mu.Unlock()
+	Expect(executeBody["history"]).To(Not(BeNil()))
+	// Both turns recorded; the assistant turn uses the Web Response history text, not the body.
+	Expect(appended).To(HaveLen(2))
+	Expect(appended[0]).To(Equal(map[string]string{"role": "user", "content": "hello"}))
+	Expect(appended[1]).To(Equal(map[string]string{"role": "assistant", "content": "Hi there"}))
+}
+
+func TestWebInvoke_MethodNotAllowed(t *testing.T) {
+	RegisterTestingT(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/internal/flo/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"found": true, "methods": []string{"POST"}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	w := doInvoke(newInvokeService(srv.URL), http.MethodGet, "/v1/embed/flow/"+testFlowID+"/invoke", "")
+
+	Expect(w.Code).To(Equal(http.StatusMethodNotAllowed))
+	Expect(w.Header().Get("Allow")).To(ContainSubstring("POST"))
+}
 
 func TestWebInvoke_ForwardsAuthHeader(t *testing.T) {
 	RegisterTestingT(t)
