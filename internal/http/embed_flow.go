@@ -43,6 +43,21 @@ func (s *Service) embedFlowGate() gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
+		// The trigger's auth_mode decides whether a publishable key is required.
+		// Fetch it once here and stash it so the handler reuses this round-trip.
+		// A missing/nil config means "not a Web Trigger flow" or an API blip — we
+		// fall through to the secure publishable gate rather than opening up.
+		cfg := s.fetchWebTriggerConfig(id)
+		if cfg != nil {
+			c.Set(webTriggerCfgKey, cfg)
+		}
+		if cfg != nil && cfg.AuthMode == webAuthPublic {
+			// Publicly open: no key, any origin. Reflect the caller's Origin so a
+			// browser accepts the response — that is the intended "open" semantics.
+			s.setEmbedCORS(c, c.GetHeader("Origin"))
+			c.Next()
+			return
+		}
 		if s.applyEmbedGate(c, embedResourceFlow, id) {
 			c.Next()
 		}
@@ -64,8 +79,15 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 	authToken := c.GetHeader("Authorization")
 
 	// The Web Trigger's config drives verb enforcement + history. Best-effort:
-	// on error, proceed as a plain any-verb, no-history invoke.
-	cfg := s.fetchWebTriggerConfig(flowID)
+	// on error, proceed as a plain any-verb, no-history invoke. The gate has
+	// already fetched it and stashed it on the context — reuse that to avoid a
+	// second API round-trip (and fall back to a fetch if invoked without the gate).
+	var cfg *webTriggerCfg
+	if v, ok := c.Get(webTriggerCfgKey); ok {
+		cfg, _ = v.(*webTriggerCfg)
+	} else {
+		cfg = s.fetchWebTriggerConfig(flowID)
+	}
 
 	// Strict verb enforcement when the trigger declares accepted methods.
 	if cfg != nil && len(cfg.Methods) > 0 && !containsFold(cfg.Methods, method) {
@@ -157,6 +179,16 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 	c.JSON(http.StatusOK, outputs)
 }
 
+// Web Trigger auth modes (mirror of the API's webAuth* constants).
+const (
+	webAuthPublishable = "publishable"
+	webAuthPublic      = "public"
+)
+
+// webTriggerCfgKey stashes the trigger config on the gin context so the gate and
+// the handler share one API round-trip instead of fetching it twice.
+const webTriggerCfgKey = "web_trigger_cfg"
+
 // webTriggerCfg mirrors the API's Web Trigger config projection.
 type webTriggerCfg struct {
 	Found        bool              `json:"found"`
@@ -164,6 +196,10 @@ type webTriggerCfg struct {
 	MessageField string            `json:"message_field"`
 	Methods      []string          `json:"methods"`
 	Fields       map[string]string `json:"fields"`
+	// AuthMode is the invoke gate: "publishable" (require an embed-app key, the
+	// secure default) or "public" (open, no key). The API projects an unset value
+	// as "publishable"; the gate treats a missing config as publishable too.
+	AuthMode string `json:"auth_mode"`
 }
 
 // fetchWebTriggerConfig reads the flow's Web Trigger config from the API. Returns
