@@ -1,0 +1,31 @@
+-- Repair migration: the Typeform, Jotform and SurveyMonkey webhook integrations
+-- were shipped with their Go trigger-type constants (types.go) and full inbound
+-- handlers (internal/typeform, internal/jotform, internal/surveymonkey), but
+-- their trigger-type values were never added to launch's TriggerType enum, and
+-- the api never seeded its matching trigger_type rows either.
+--
+-- Consequence on every migrated launch DB (verified absent from pg_enum in
+-- production): CreateTrigger's
+--   INSERT INTO trigger (type) VALUES
+--     ('typeform-webhook' | 'jotform-webhook' | 'surveymonkey-webhook')
+-- is rejected by Postgres (invalid enum value), so a flow using one of these
+-- triggers saves 201 but no trigger row is created, no webhook is registered
+-- with the provider, and inbound deliveries 404 — silently.
+--
+-- This is the same class of defect as migration 31 (RepairCalcomAcuityTriggerType);
+-- unlike calcom/acuity, here BOTH sides were missed, so this pairs with api
+-- migration 125, which seeds the api-side trigger_type rows. Both are required.
+--
+-- The values match the launch constants in types.go, which in turn match the api's
+-- derivation from the executor node label (trigger/typeform_webhook ->
+-- "typeform-webhook": strip the "trigger/" prefix, "_" -> "-").
+--
+-- All three are added idempotently, so a hand-run production hotfix and this
+-- migration cannot conflict.
+--
+-- NUMBERING: re-check against the whole live sequence (main + open branches), not
+-- just the previous file — golang-migrate skips a version once a higher one has
+-- applied.
+ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'typeform-webhook';
+ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'jotform-webhook';
+ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'surveymonkey-webhook';
