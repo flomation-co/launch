@@ -218,7 +218,7 @@ func (s *Service) verifyFlomationSession(apiID, token string, res *gatewayResolu
 	return vr.OK
 }
 
-// handleGateway serves ANY /gw/:apiId/*path — the Flomation Gateway edge. It
+// handleGateway serves ANY /gateway/:apiId/*path — the Flomation Gateway edge. It
 // resolves the API, matches the route, runs the pluggable authenticator, builds
 // the trigger data (method + path params + query + body, plus verified ${claims}),
 // and dispatches the endpoint's flow via the Web Trigger path.

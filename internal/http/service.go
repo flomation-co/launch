@@ -258,7 +258,7 @@ func (s *Service) configure() error {
 	// Flomation Gateway — developer-defined HTTP APIs. ANY method + any sub-path
 	// under a short api id; the handler resolves the API, matches the route, runs
 	// the pluggable authenticator, and dispatches the endpoint's flow.
-	s.engine.Any("/gw/:apiId/*path", s.handleGateway)
+	s.engine.Any("/gateway/:apiId/*path", s.handleGateway)
 
 	// Internal routes — service-to-service calls from the API.
 	// When mTLS is enabled, these register on a separate Gin engine

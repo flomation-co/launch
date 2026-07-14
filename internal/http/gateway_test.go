@@ -86,7 +86,7 @@ func gatewayAPI(resolution map[string]interface{}) *httptest.Server {
 func doGateway(url, method, target string, headers map[string]string) *httptest.ResponseRecorder {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Any("/gw/:apiId/*path", newInvokeService(url).handleGateway)
+	r.Any("/gateway/:apiId/*path", newInvokeService(url).handleGateway)
 	req := httptest.NewRequest(method, target, strings.NewReader(""))
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -108,7 +108,7 @@ func TestGatewayInvoke_OpenAuthDispatches(t *testing.T) {
 	})
 	defer srv.Close()
 
-	w := doGateway(srv.URL, http.MethodGet, "/gw/abc/users/42", nil)
+	w := doGateway(srv.URL, http.MethodGet, "/gateway/abc/users/42", nil)
 	Expect(w.Code).To(Equal(http.StatusOK))
 	Expect(w.Body.String()).To(ContainSubstring(`"ok":true`))
 }
@@ -126,8 +126,8 @@ func TestGatewayInvoke_APIKeyRejectsWithoutKey(t *testing.T) {
 	})
 	defer srv.Close()
 
-	Expect(doGateway(srv.URL, http.MethodGet, "/gw/abc/ping", nil).Code).To(Equal(http.StatusUnauthorized))
-	Expect(doGateway(srv.URL, http.MethodGet, "/gw/abc/ping", map[string]string{"X-API-Key": "wrong"}).Code).To(Equal(http.StatusUnauthorized))
+	Expect(doGateway(srv.URL, http.MethodGet, "/gateway/abc/ping", nil).Code).To(Equal(http.StatusUnauthorized))
+	Expect(doGateway(srv.URL, http.MethodGet, "/gateway/abc/ping", map[string]string{"X-API-Key": "wrong"}).Code).To(Equal(http.StatusUnauthorized))
 }
 
 func TestGatewayInvoke_APIKeyAcceptsValidKey(t *testing.T) {
@@ -143,7 +143,7 @@ func TestGatewayInvoke_APIKeyAcceptsValidKey(t *testing.T) {
 	})
 	defer srv.Close()
 
-	Expect(doGateway(srv.URL, http.MethodGet, "/gw/abc/ping", map[string]string{"X-API-Key": "k3y"}).Code).To(Equal(http.StatusOK))
+	Expect(doGateway(srv.URL, http.MethodGet, "/gateway/abc/ping", map[string]string{"X-API-Key": "k3y"}).Code).To(Equal(http.StatusOK))
 }
 
 func TestGatewayInvoke_MethodNotAllowed(t *testing.T) {
@@ -156,7 +156,7 @@ func TestGatewayInvoke_MethodNotAllowed(t *testing.T) {
 	})
 	defer srv.Close()
 
-	w := doGateway(srv.URL, http.MethodPost, "/gw/abc/ping", nil)
+	w := doGateway(srv.URL, http.MethodPost, "/gateway/abc/ping", nil)
 	Expect(w.Code).To(Equal(http.StatusMethodNotAllowed))
 	Expect(w.Header().Get("Allow")).To(ContainSubstring("GET"))
 }
@@ -170,5 +170,5 @@ func TestGatewayInvoke_UnknownAPI404(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	Expect(doGateway(srv.URL, http.MethodGet, "/gw/nope/x", nil).Code).To(Equal(http.StatusNotFound))
+	Expect(doGateway(srv.URL, http.MethodGet, "/gateway/nope/x", nil).Code).To(Equal(http.StatusNotFound))
 }
