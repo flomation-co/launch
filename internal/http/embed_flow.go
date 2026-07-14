@@ -35,12 +35,44 @@ var (
 )
 
 // embedFlowGate guards the Web Trigger invoke by the FLOW resource directly (the
+// embedFlowPreflight answers the CORS preflight (OPTIONS) for the Web Trigger
+// invoke. Unlike the generic embedPreflight it advertises the trigger's ACCEPTED
+// verbs in Access-Control-Allow-Methods (plus OPTIONS), so a browser only
+// proceeds with a permitted method; it falls back to the generic set when the
+// config is unavailable or declares no verb restriction. No key is checked (the
+// browser sends none on preflight).
+func (s *Service) embedFlowPreflight(c *gin.Context) {
+	s.setEmbedCORS(c, c.GetHeader("Origin"))
+	if id := c.Param("id"); uuid.Validate(id) == nil {
+		if cfg := s.fetchWebTriggerConfig(id); cfg != nil && len(cfg.Methods) > 0 {
+			methods := append(append([]string{}, cfg.Methods...), http.MethodOptions)
+			c.Writer.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ", "))
+		}
+	}
+	c.AbortWithStatus(http.StatusNoContent)
+}
+
 // :id is the flow id), reusing the shared publishable-key + origin + opt-in gate.
 func (s *Service) embedFlowGate() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		if uuid.Validate(id) != nil {
 			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		// The trigger's auth_mode decides whether a publishable key is required.
+		// Fetch it once here and stash it so the handler reuses this round-trip.
+		// A missing/nil config means "not a Web Trigger flow" or an API blip — we
+		// fall through to the secure publishable gate rather than opening up.
+		cfg := s.fetchWebTriggerConfig(id)
+		if cfg != nil {
+			c.Set(webTriggerCfgKey, cfg)
+		}
+		if cfg != nil && cfg.AuthMode == webAuthPublic {
+			// Publicly open: no key, any origin. Reflect the caller's Origin so a
+			// browser accepts the response — that is the intended "open" semantics.
+			s.setEmbedCORS(c, c.GetHeader("Origin"))
+			c.Next()
 			return
 		}
 		if s.applyEmbedGate(c, embedResourceFlow, id) {
@@ -64,8 +96,15 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 	authToken := c.GetHeader("Authorization")
 
 	// The Web Trigger's config drives verb enforcement + history. Best-effort:
-	// on error, proceed as a plain any-verb, no-history invoke.
-	cfg := s.fetchWebTriggerConfig(flowID)
+	// on error, proceed as a plain any-verb, no-history invoke. The gate has
+	// already fetched it and stashed it on the context — reuse that to avoid a
+	// second API round-trip (and fall back to a fetch if invoked without the gate).
+	var cfg *webTriggerCfg
+	if v, ok := c.Get(webTriggerCfgKey); ok {
+		cfg, _ = v.(*webTriggerCfg)
+	} else {
+		cfg = s.fetchWebTriggerConfig(flowID)
+	}
 
 	// Strict verb enforcement when the trigger declares accepted methods.
 	if cfg != nil && len(cfg.Methods) > 0 && !containsFold(cfg.Methods, method) {
@@ -119,7 +158,11 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 	}
 
 	body, _ := json.Marshal(data)
-	executionID, outputs, done := s.runWebInvoke(flowID, body, authToken)
+	triggerID := ""
+	if cfg != nil {
+		triggerID = cfg.TriggerID
+	}
+	executionID, outputs, done := s.runWebInvoke(flowID, triggerID, body, authToken)
 
 	if threadID != "" {
 		c.Header(threadHeader, threadID) // round-trip so the client persists it
@@ -157,6 +200,16 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 	c.JSON(http.StatusOK, outputs)
 }
 
+// Web Trigger auth modes (mirror of the API's webAuth* constants).
+const (
+	webAuthPublishable = "publishable"
+	webAuthPublic      = "public"
+)
+
+// webTriggerCfgKey stashes the trigger config on the gin context so the gate and
+// the handler share one API round-trip instead of fetching it twice.
+const webTriggerCfgKey = "web_trigger_cfg"
+
 // webTriggerCfg mirrors the API's Web Trigger config projection.
 type webTriggerCfg struct {
 	Found        bool              `json:"found"`
@@ -164,6 +217,13 @@ type webTriggerCfg struct {
 	MessageField string            `json:"message_field"`
 	Methods      []string          `json:"methods"`
 	Fields       map[string]string `json:"fields"`
+	// AuthMode is the invoke gate: "publishable" (require an embed-app key, the
+	// secure default) or "public" (open, no key). The API projects an unset value
+	// as "publishable"; the gate treats a missing config as publishable too.
+	AuthMode string `json:"auth_mode"`
+	// TriggerID is the flow's "web" trigger record id — invoke via this trigger so
+	// the execution starts from the Web Trigger node (not the flow's manual trigger).
+	TriggerID string `json:"trigger_id"`
 }
 
 // fetchWebTriggerConfig reads the flow's Web Trigger config from the API. Returns
@@ -263,8 +323,8 @@ func containsFold(list []string, v string) bool {
 // runWebInvoke creates an execution for the flow with the given trigger data and
 // polls it until it completes or the hang budget elapses. Returns the execution
 // id, the flow outputs (when completed), and whether it completed in time.
-func (s *Service) runWebInvoke(flowID string, body []byte, authToken string) (string, map[string]interface{}, bool) {
-	executionID, err := s.createFlowExecution(flowID, body, authToken)
+func (s *Service) runWebInvoke(flowID, triggerID string, body []byte, authToken string) (string, map[string]interface{}, bool) {
+	executionID, err := s.createFlowExecution(flowID, triggerID, body, authToken)
 	if err != nil {
 		log.WithFields(log.Fields{"error": err, "flow_id": flowID}).Error("web invoke: could not start flow")
 		return "", nil, false
@@ -284,8 +344,14 @@ func (s *Service) runWebInvoke(flowID string, body []byte, authToken string) (st
 	return executionID, nil, false
 }
 
-func (s *Service) createFlowExecution(flowID string, body []byte, authToken string) (string, error) {
+func (s *Service) createFlowExecution(flowID, triggerID string, body []byte, authToken string) (string, error) {
+	// Invoke the Web Trigger specifically when we know it (entry = the Web Trigger
+	// node). Without a trigger id the generic execute path picks the flow's manual
+	// trigger, whose entry node is wrong/stale — "no start node specified".
 	url := fmt.Sprintf("%s/api/v1/internal/flo/%s/execute", s.config.InternalAPIURL(), flowID)
+	if triggerID != "" {
+		url = fmt.Sprintf("%s/api/v1/internal/flo/%s/trigger/%s/execute", s.config.InternalAPIURL(), flowID, triggerID)
+	}
 	if len(body) == 0 {
 		body = []byte("{}")
 	}
@@ -343,7 +409,11 @@ func (s *Service) pollExecution(pollURL string) (map[string]interface{}, bool) {
 	if outputs, ok := data.Result["outputs"].(map[string]interface{}); ok {
 		return outputs, true
 	}
-	return data.Result, true
+	// No declared flow outputs — return an EMPTY map, never the whole result.
+	// data.Result also carries privileged fields (logs, billing_duration, status)
+	// that must never reach a Web Trigger caller; only the flow's own outputs
+	// (or the Web Response) are public.
+	return map[string]interface{}{}, true
 }
 
 // webResponse is the parsed Web Response capture.
