@@ -43,6 +43,7 @@ const (
 	TriggerTypeTypeformWebhook     = "typeform-webhook"     // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeJotformWebhook      = "jotform-webhook"      // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeSurveyMonkeyWebhook = "surveymonkey-webhook" // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeAWXWebhook          = "awx-webhook"          // #nosec G101 — trigger type identifier, not a credential
 
 	// TriggerTypeMQTT is not a webhook: nothing POSTs to Launch. The mqtt service
 	// holds a subscription open to the operator's broker and fires the flow when a
