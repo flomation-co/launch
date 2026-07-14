@@ -253,7 +253,12 @@ func (s *Service) configure() error {
 	embedFlow.PUT("/invoke", s.handleEmbedFlowInvoke)
 	embedFlow.PATCH("/invoke", s.handleEmbedFlowInvoke)
 	embedFlow.DELETE("/invoke", s.handleEmbedFlowInvoke)
-	s.engine.OPTIONS("/v1/embed/flow/:id/invoke", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/flow/:id/invoke", s.embedFlowPreflight)
+
+	// Flomation Gateway — developer-defined HTTP APIs. ANY method + any sub-path
+	// under a short api id; the handler resolves the API, matches the route, runs
+	// the pluggable authenticator, and dispatches the endpoint's flow.
+	s.engine.Any("/gateway/:apiId/*path", s.handleGateway)
 
 	// Internal routes — service-to-service calls from the API.
 	// When mTLS is enabled, these register on a separate Gin engine
