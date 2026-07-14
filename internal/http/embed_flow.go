@@ -335,25 +335,23 @@ func (s *Service) runWebInvoke(flowID, triggerID string, body []byte, authToken 
 		return "", nil, false
 	}
 
-	pollURL := fmt.Sprintf("%s/api/v1/internal/execution/%s", s.config.InternalAPIURL(), executionID)
+	// Use the completion-PUSH endpoint: /wait long-polls server-side and returns
+	// the instant the execution finishes, so a quick flow (the common gateway
+	// case) comes back in milliseconds with no client poll interval. The endpoint
+	// hangs for ~10s at most (< the API client's timeout), so we re-issue it until
+	// our own budget runs out.
+	waitURL := fmt.Sprintf("%s/api/v1/internal/execution/%s/wait", s.config.InternalAPIURL(), executionID)
 	deadline := time.Now().Add(webInvokeTimeout)
-	interval := webInvokePollInterval
 	for time.Now().Before(deadline) {
-		time.Sleep(interval)
-		if outputs, finished := s.pollExecution(pollURL); finished {
+		if outputs, finished := s.pollExecution(waitURL); finished {
 			if outputs == nil {
 				outputs = map[string]interface{}{}
 			}
 			return executionID, outputs, true
 		}
-		// Escalate toward the cap so a fast flow is caught quickly while a slow
-		// one doesn't poll the API every few ms for 30s.
-		if interval < webInvokePollMax {
-			interval = time.Duration(float64(interval) * 1.6)
-			if interval > webInvokePollMax {
-				interval = webInvokePollMax
-			}
-		}
+		// A real /wait timeout already consumed ~10s; this small guard only stops
+		// a tight retry loop if /wait returns fast with an error (e.g. mid-deploy).
+		time.Sleep(webInvokePollInterval)
 	}
 	return executionID, nil, false
 }

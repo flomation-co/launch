@@ -430,6 +430,45 @@ func TestWebInvoke_TimesOutWith202(t *testing.T) {
 	Expect(w.Body.String()).To(ContainSubstring("execution_id"))
 }
 
+// TestWebInvoke_UsesCompletionWaitEndpoint locks in the completion-PUSH switch:
+// runWebInvoke must poll the server-side /wait long-poll (which returns the
+// instant the flow finishes), not the plain /execution/:id read. A first "running"
+// /wait then an "executed" one also proves the loop re-issues until done.
+func TestWebInvoke_UsesCompletionWaitEndpoint(t *testing.T) {
+	RegisterTestingT(t)
+	defer withFastPolling(2*time.Second, 2*time.Millisecond)()
+
+	var waitHits, plainHits int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/internal/flo/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "exec-1"})
+	})
+	mux.HandleFunc("/api/v1/internal/execution/", func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/wait") {
+			atomic.AddInt32(&plainHits, 1) // the old poll URL — must never be hit now
+		}
+		status := "running"
+		var result map[string]interface{}
+		if atomic.AddInt32(&waitHits, 1) > 1 { // first /wait "running", then done
+			status = "executed"
+			result = map[string]interface{}{"outputs": map[string]interface{}{"ok": "1"}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"execution_status": status, "result": result,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	w := doInvoke(newInvokeService(srv.URL), http.MethodPost, "/v1/embed/flow/"+testFlowID+"/invoke", "{}")
+
+	Expect(w.Code).To(Equal(200))
+	Expect(w.Body.String()).To(ContainSubstring(`"ok":"1"`))
+	Expect(atomic.LoadInt32(&plainHits)).To(Equal(int32(0))) // only the /wait endpoint was polled
+	Expect(atomic.LoadInt32(&waitHits)).To(BeNumerically(">=", 2))
+}
+
 func TestParseWebResponse(t *testing.T) {
 	RegisterTestingT(t)
 
