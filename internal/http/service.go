@@ -566,6 +566,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeSurveyMonkeyWebhook:
 		s.handleSurveyMonkeyWebhook(c, tr)
 		return
+	case launch.TriggerTypeAWXWebhook:
+		s.handleAWXWebhook(c, tr)
+		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
 	default:
