@@ -348,9 +348,9 @@ func newInvokeService(url string) *Service {
 
 // withFastPolling shrinks the hang timing for a test and restores it after.
 func withFastPolling(timeout, interval time.Duration) func() {
-	pt, pi := webInvokeTimeout, webInvokePollInterval
-	webInvokeTimeout, webInvokePollInterval = timeout, interval
-	return func() { webInvokeTimeout, webInvokePollInterval = pt, pi }
+	pt, pi, pm := webInvokeTimeout, webInvokePollInterval, webInvokePollMax
+	webInvokeTimeout, webInvokePollInterval, webInvokePollMax = timeout, interval, interval
+	return func() { webInvokeTimeout, webInvokePollInterval, webInvokePollMax = pt, pi, pm }
 }
 
 const testFlowID = "0d7c8f2e-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
