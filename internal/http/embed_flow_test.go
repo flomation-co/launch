@@ -310,6 +310,35 @@ func TestWebInvoke_DoesNotLeakPrivilegedResultFields(t *testing.T) {
 	Expect(w.Body.String()).ToNot(ContainSubstring("billing_duration"))
 }
 
+// The invoke CORS preflight advertises the Web Trigger's accepted verbs (plus
+// OPTIONS) so a browser only proceeds with a permitted method.
+func TestWebInvoke_PreflightReflectsAcceptedMethods(t *testing.T) {
+	RegisterTestingT(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/internal/flo/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/web-trigger") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"found": true, "methods": []string{"POST", "GET"}})
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.OPTIONS("/v1/embed/flow/:id/invoke", newInvokeService(srv.URL).embedFlowPreflight)
+	req := httptest.NewRequest(http.MethodOptions, "/v1/embed/flow/"+testFlowID+"/invoke", nil)
+	req.Header.Set("Origin", "https://example.com")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	Expect(w.Code).To(Equal(http.StatusNoContent))
+	allow := w.Header().Get("Access-Control-Allow-Methods")
+	Expect(allow).To(ContainSubstring("POST"))
+	Expect(allow).To(ContainSubstring("GET"))
+	Expect(allow).To(ContainSubstring("OPTIONS"))
+}
+
 func newInvokeService(url string) *Service {
 	return &Service{
 		config:    &config.Config{Automate: config.ServiceConfig{URL: url}},

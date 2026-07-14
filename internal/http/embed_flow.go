@@ -35,6 +35,23 @@ var (
 )
 
 // embedFlowGate guards the Web Trigger invoke by the FLOW resource directly (the
+// embedFlowPreflight answers the CORS preflight (OPTIONS) for the Web Trigger
+// invoke. Unlike the generic embedPreflight it advertises the trigger's ACCEPTED
+// verbs in Access-Control-Allow-Methods (plus OPTIONS), so a browser only
+// proceeds with a permitted method; it falls back to the generic set when the
+// config is unavailable or declares no verb restriction. No key is checked (the
+// browser sends none on preflight).
+func (s *Service) embedFlowPreflight(c *gin.Context) {
+	s.setEmbedCORS(c, c.GetHeader("Origin"))
+	if id := c.Param("id"); uuid.Validate(id) == nil {
+		if cfg := s.fetchWebTriggerConfig(id); cfg != nil && len(cfg.Methods) > 0 {
+			methods := append(append([]string{}, cfg.Methods...), http.MethodOptions)
+			c.Writer.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ", "))
+		}
+	}
+	c.AbortWithStatus(http.StatusNoContent)
+}
+
 // :id is the flow id), reusing the shared publishable-key + origin + opt-in gate.
 func (s *Service) embedFlowGate() gin.HandlerFunc {
 	return func(c *gin.Context) {
