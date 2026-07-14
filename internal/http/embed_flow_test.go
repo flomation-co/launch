@@ -243,6 +243,73 @@ func TestWebInvoke_MissingConfig_DefaultsToPublishable(t *testing.T) {
 	Expect(w.Code).To(Equal(http.StatusUnauthorized)) // still key-gated
 }
 
+// When the Web Trigger config carries a trigger id, the invoke must target the
+// trigger-scoped execute endpoint (entry = the Web Trigger node), not the
+// generic execute path (which starts from the flow's manual trigger).
+func TestWebInvoke_TargetsWebTriggerEndpoint(t *testing.T) {
+	RegisterTestingT(t)
+	defer withFastPolling(2*time.Second, 2*time.Millisecond)()
+
+	var executePath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/internal/flo/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/web-trigger") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"found": true, "trigger_id": "trig-web-1"})
+			return
+		}
+		executePath = r.URL.Path
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "exec-1"})
+	})
+	mux.HandleFunc("/api/v1/internal/execution/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"execution_status": "executed", "completion_status": "success",
+			"result": map[string]interface{}{"outputs": map[string]interface{}{}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	doInvoke(newInvokeService(srv.URL), http.MethodPost, "/v1/embed/flow/"+testFlowID+"/invoke", "{}")
+
+	Expect(executePath).To(ContainSubstring("/trigger/trig-web-1/execute"))
+}
+
+// The invoke response must never carry privileged execution-result fields (logs,
+// billing, status). With no declared outputs and no Web Response, the body is {}.
+func TestWebInvoke_DoesNotLeakPrivilegedResultFields(t *testing.T) {
+	RegisterTestingT(t)
+	defer withFastPolling(2*time.Second, 2*time.Millisecond)()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/internal/flo/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/web-trigger") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"found": true})
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "exec-1"})
+	})
+	mux.HandleFunc("/api/v1/internal/execution/", func(w http.ResponseWriter, _ *http.Request) {
+		// A privileged result with NO outputs map — logs/billing must not leak.
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"execution_status": "executed", "completion_status": "success",
+			"result": map[string]interface{}{
+				"logs": "secret executor logs", "billing_duration": 42, "status": 1, "outputs": nil,
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	w := doInvoke(newInvokeService(srv.URL), http.MethodPost, "/v1/embed/flow/"+testFlowID+"/invoke", "{}")
+
+	Expect(w.Code).To(Equal(http.StatusOK))
+	Expect(w.Body.String()).To(Equal("{}"))
+	Expect(w.Body.String()).ToNot(ContainSubstring("secret executor logs"))
+	Expect(w.Body.String()).ToNot(ContainSubstring("billing_duration"))
+}
+
 func newInvokeService(url string) *Service {
 	return &Service{
 		config:    &config.Config{Automate: config.ServiceConfig{URL: url}},
