@@ -905,7 +905,7 @@ func awxAttach(ctx context.Context, cr awxCreds, root, templateID string, relati
 }
 
 // awxDetach removes the notification template from each relation it was attached
-// to. A 404 means it is already gone, which is success.
+// to. A template AWX no longer has is already gone, which is success.
 //
 // ⚠ NEVER disassociate through POST /organizations/{id}/notification_templates/:
 // that view sets parent_key, so unattach_by_id calls sub.delete() and DELETES THE
@@ -917,8 +917,8 @@ func awxDetach(ctx context.Context, cr awxCreds, root, templateID string, relati
 	}
 	for _, rel := range relations {
 		path := fmt.Sprintf("%s/%s/notification_templates_%s/", awxResourcePath(cr.kind), url.PathEscape(cr.templateID), rel)
-		_, status, err := awxDo(ctx, cr, root, http.MethodPost, path, map[string]interface{}{"id": id, "disassociate": true})
-		if err != nil || (status >= 300 && status != http.StatusNotFound) {
+		resp, status, err := awxDo(ctx, cr, root, http.MethodPost, path, map[string]interface{}{"id": id, "disassociate": true})
+		if err != nil || (status >= 300 && !awxAlreadyDetached(status, resp)) {
 			log.WithFields(log.Fields{
 				"template_ref_id": cr.templateID,
 				"relation":        rel,
@@ -927,6 +927,34 @@ func awxDetach(ctx context.Context, cr awxCreds, root, templateID string, relati
 			}).Warn("awx trigger: failed to detach the notification template")
 		}
 	}
+}
+
+// awxAlreadyDetached reports whether a non-2xx detach is really AWX saying the
+// notification template is already gone — which is success, not failure. Reached
+// on a second teardown, and whenever an operator has removed the template in AWX
+// by hand.
+//
+// ★ THE DETACH ANSWERS 400 HERE, NOT 404 — and the two AWX views disagree, which
+// is exactly the sort of thing a hand-written fake will get wrong. The sublist
+// resolves the body's `id` through get_object_or_400, so detaching a template that
+// no longer exists comes back as
+// 400 {"detail":"NotificationTemplate matching query does not exist."}, while
+// DELETE /notification_templates/{id}/ on that same missing template is an
+// ordinary DRF 404. Both mean already-gone. (Detaching a template that DOES exist
+// but is not attached is a plain 204, so the missing-template 400 is the only
+// already-gone shape the sublist has.) Verified against AWX 24.6.1; 404 is
+// tolerated too, in case a later release makes the two views agree.
+//
+// Deliberately NOT a blanket "any 400 is fine": a malformed body is also a 400,
+// and that one has to keep shouting.
+func awxAlreadyDetached(status int, resp map[string]interface{}) bool {
+	switch status {
+	case http.StatusNotFound:
+		return true
+	case http.StatusBadRequest:
+		return strings.Contains(strings.ToLower(awxEventStr(resp["detail"])), "does not exist")
+	}
+	return false
 }
 
 // awxDeleteTemplate removes the notification template from AWX. Deleting it also

@@ -15,6 +15,7 @@ import (
 	"flomation.app/automate/launch"
 
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
 )
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ type fakeAWX struct {
 	failAttach      []string    // relations whose attach should 500
 	nameConflict    bool        // the create returns the unique_together 400 once
 	deleteStatus    int         // status for DELETE /notification_templates/{id}/
+	detachGone      bool        // the template is already gone: detach 400s the way AWX really does
 	templateDeleted bool
 }
 
@@ -123,6 +125,17 @@ func (f *fakeAWX) route(w http.ResponseWriter, r *http.Request) {
 			f.attached = append(f.attached, rel)
 		}
 		f.mu.Unlock()
+
+		// ★ Detaching a template AWX no longer has is a 400, NOT a 404 — the sublist
+		// resolves the body's id with get_object_or_400. (DELETE on the template
+		// itself, by contrast, is an ordinary 404. The two views really do disagree.)
+		// Verified against AWX 24.6.1.
+		if dis, _ := in["disassociate"].(bool); dis && f.detachGone {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"detail": "NotificationTemplate matching query does not exist.",
+			})
+			return
+		}
 
 		for _, bad := range f.failAttach {
 			if bad == rel {
@@ -450,16 +463,84 @@ func TestAWXDeregisterDetachesThenDeletes(t *testing.T) {
 	}
 }
 
-func TestAWXDeregisterIsIdempotentOn404(t *testing.T) {
-	// A template someone already removed by hand in AWX. A 404 on the detach or the
-	// delete means it is already gone — which is success, not an error.
+// awxLogSink collects the warnings and errors the AWX code logs.
+//
+// awxDetach and awxDeleteTemplate report failure by LOGGING rather than by
+// returning an error (a teardown failure must never block a flow delete), so
+// watching the log is the ONLY way to assert that an already-gone teardown is
+// treated as success and not quietly reported as a failure.
+type awxLogSink struct {
+	mu      sync.Mutex
+	off     bool
+	entries []string
+}
+
+func (h *awxLogSink) Levels() []log.Level {
+	return []log.Level{log.PanicLevel, log.FatalLevel, log.ErrorLevel, log.WarnLevel}
+}
+
+func (h *awxLogSink) Fire(e *log.Entry) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.off {
+		return nil
+	}
+	h.entries = append(h.entries, fmt.Sprintf("%s: %s %v", e.Level, e.Message, e.Data))
+	return nil
+}
+
+func (h *awxLogSink) drain() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := append([]string(nil), h.entries...)
+	h.entries = nil
+	return out
+}
+
+func (h *awxLogSink) disable() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.off = true
+}
+
+// captureAWXWarnings returns a drain function yielding every warning/error logged
+// since it was called. logrus has no RemoveHook, so the sink deactivates itself on
+// cleanup rather than trying to unregister.
+func captureAWXWarnings(t *testing.T) func() []string {
+	t.Helper()
+	sink := &awxLogSink{}
+	log.StandardLogger().AddHook(sink)
+	t.Cleanup(sink.disable)
+	return sink.drain
+}
+
+func TestAWXDeregisterIsIdempotentWhenTheTemplateIsAlreadyGone(t *testing.T) {
+	// A template a second teardown has already removed — or one an operator deleted
+	// by hand in AWX. Already gone is SUCCESS, and it must not be reported as a
+	// failure: registerAWXWebhook tears the old template down on EVERY config
+	// change, so a wrong answer here cries wolf on a routine flow save.
+	//
+	// ★ AWX signals already-gone with DIFFERENT statuses on the two views, and this
+	// is not something to guess at — it was found by running against a real AWX
+	// 24.6.1, where the detach 400s:
+	//   detach  POST .../notification_templates_success/ {"id":42,"disassociate":true}
+	//           -> 400 {"detail":"NotificationTemplate matching query does not exist."}
+	//   delete  DELETE /notification_templates/42/
+	//           -> 404 {"detail":"No NotificationTemplate matches the given query."}
 	f := newFakeAWX(t)
-	f.deleteStatus = http.StatusNotFound
+	f.detachGone = true                  // the sublist's get_object_or_400
+	f.deleteStatus = http.StatusNotFound // the detail view's get_object_or_404
 	cr := f.creds(awxEventSuccessful)
+
+	warnings := captureAWXWarnings(t)
 
 	// Must not panic, must not hang, must not retry into a second call.
 	awxDetach(context.Background(), cr, "/api/v2/", "42", []string{"success"})
 	awxDeleteTemplate(context.Background(), cr, "/api/v2/", "42")
+
+	if got := warnings(); len(got) != 0 {
+		t.Errorf("an already-gone teardown must be silent success, but it logged: %v", got)
+	}
 
 	calls, _, _ := f.snapshot()
 	deletes := 0
@@ -473,7 +554,30 @@ func TestAWXDeregisterIsIdempotentOn404(t *testing.T) {
 	}
 
 	// And a second full teardown is still a no-op rather than an error.
+	awxDetach(context.Background(), cr, "/api/v2/", "42", []string{"success"})
 	awxDeleteTemplate(context.Background(), cr, "/api/v2/", "42")
+	if got := warnings(); len(got) != 0 {
+		t.Errorf("the second teardown must also be silent, but it logged: %v", got)
+	}
+}
+
+// TestAWXDetachStillReportsRealFailures guards the fix above from being widened
+// into "any 400 is fine": a malformed detach is ALSO a 400, and that one must keep
+// shouting, or a genuinely stuck attachment would be swallowed in silence.
+func TestAWXDetachStillReportsRealFailures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"detail": "Cannot disassociate: something is genuinely wrong."})
+	}))
+	defer srv.Close()
+
+	cr := awxCreds{base: srv.URL, method: "token", token: "t", kind: awxKindJobTemplate, templateID: "7"}
+	warnings := captureAWXWarnings(t)
+
+	awxDetach(context.Background(), cr, "/api/v2/", "42", []string{"success"})
+
+	if got := warnings(); len(got) == 0 {
+		t.Error("a real 400 failure must still be logged — the already-gone tolerance must not swallow it")
+	}
 }
 
 func TestAWXDeleteTemplateRetriesOnPendingNotifications(t *testing.T) {
