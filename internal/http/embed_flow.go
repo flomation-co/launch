@@ -30,8 +30,13 @@ var (
 	// webInvokeTimeout is how long the POST hangs before returning 202 so the
 	// client can poll for the eventual result.
 	webInvokeTimeout = 30 * time.Second
-	// webInvokePollInterval is how often we poll the execution while hanging.
-	webInvokePollInterval = 500 * time.Millisecond
+	// webInvokePollInterval is the FIRST poll delay while hanging; the interval
+	// then escalates up to webInvokePollMax. Starting tight catches a quick flow
+	// (the common gateway/web-invoke case) in tens of ms instead of half a second,
+	// while the back-off keeps a long-running flow from hammering the API.
+	webInvokePollInterval = 25 * time.Millisecond
+	// webInvokePollMax caps the escalating poll interval.
+	webInvokePollMax = 500 * time.Millisecond
 )
 
 // embedFlowGate guards the Web Trigger invoke by the FLOW resource directly (the
@@ -332,13 +337,22 @@ func (s *Service) runWebInvoke(flowID, triggerID string, body []byte, authToken 
 
 	pollURL := fmt.Sprintf("%s/api/v1/internal/execution/%s", s.config.InternalAPIURL(), executionID)
 	deadline := time.Now().Add(webInvokeTimeout)
+	interval := webInvokePollInterval
 	for time.Now().Before(deadline) {
-		time.Sleep(webInvokePollInterval)
+		time.Sleep(interval)
 		if outputs, finished := s.pollExecution(pollURL); finished {
 			if outputs == nil {
 				outputs = map[string]interface{}{}
 			}
 			return executionID, outputs, true
+		}
+		// Escalate toward the cap so a fast flow is caught quickly while a slow
+		// one doesn't poll the API every few ms for 30s.
+		if interval < webInvokePollMax {
+			interval = time.Duration(float64(interval) * 1.6)
+			if interval > webInvokePollMax {
+				interval = webInvokePollMax
+			}
 		}
 	}
 	return executionID, nil, false
