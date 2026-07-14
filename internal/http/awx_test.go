@@ -898,6 +898,75 @@ func TestAWXVerifyJob(t *testing.T) {
 	}
 }
 
+// TestAWXVerifyJobUsesTheCollectionForTheTemplateKind pins the workflow-template
+// trigger fix. AWX delivers a WORKFLOW job's id in the notification, and a workflow
+// job lives at workflow_jobs/{id}/, NEVER at jobs/{id}/ — the two subclasses share
+// one globally-unique id sequence, so the wrong collection 404s on an id that
+// plainly exists. Before the fix awxVerifyJob hardcoded jobs/{id}/, so with
+// verification on by default EVERY workflow-template trigger was silently dropped as
+// "AWX does not know job N".
+func TestAWXVerifyJobUsesTheCollectionForTheTemplateKind(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	jobsHas, workflowHas := false, false // which collection knows job 42
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		switch {
+		case r.URL.Path == "/api/v2/jobs/42/" && jobsHas,
+			r.URL.Path == "/api/v2/workflow_jobs/42/" && workflowHas:
+			writeJSON(w, 200, map[string]interface{}{"id": 42, "status": "successful"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	cr := awxCreds{base: srv.URL, method: "token", token: "tok"}
+	event := map[string]interface{}{"job_id": "42", "event": awxEventSuccessful, "status": "successful"}
+	seen := func() []string { mu.Lock(); defer mu.Unlock(); return append([]string(nil), paths...) }
+
+	// 1. A workflow-template trigger: the id is a WORKFLOW job. It must be confirmed
+	//    against workflow_jobs/, and jobs/ must not even be tried.
+	paths, jobsHas, workflowHas = nil, false, true
+	wfState := &awxWebhookState{Root: "/api/v2/", Kind: awxKindWorkflowTemplate}
+	if err := awxVerifyJob(context.Background(), cr, wfState, event); err != nil {
+		t.Fatalf("★ a workflow-template trigger must confirm against workflow_jobs/, not jobs/: %v", err)
+	}
+	if got := seen(); len(got) != 1 || got[0] != "/api/v2/workflow_jobs/42/" {
+		t.Errorf("workflow-template verify hit %v, want a single GET of /api/v2/workflow_jobs/42/", got)
+	}
+
+	// 2. A job-template trigger with a plain job: confirmed against jobs/ first.
+	paths, jobsHas, workflowHas = nil, true, false
+	jobState := &awxWebhookState{Root: "/api/v2/", Kind: awxKindJobTemplate}
+	if err := awxVerifyJob(context.Background(), cr, jobState, event); err != nil {
+		t.Fatalf("a job-template trigger with a plain job must confirm against jobs/: %v", err)
+	}
+	if got := seen(); len(got) == 0 || got[0] != "/api/v2/jobs/42/" {
+		t.Errorf("job-template verify hit %v first, want /api/v2/jobs/42/", got)
+	}
+
+	// 3. A SLICED job-template trigger: job_slice_count > 1 spawns a WORKFLOW job, so
+	//    the id is a workflow job even though the kind is job_template. jobs/ 404s,
+	//    then the fallback finds it in workflow_jobs/.
+	paths, jobsHas, workflowHas = nil, false, true
+	if err := awxVerifyJob(context.Background(), cr, jobState, event); err != nil {
+		t.Fatalf("a sliced job-template trigger (workflow-job id) must fall back to workflow_jobs/: %v", err)
+	}
+	if got := seen(); len(got) != 2 || got[0] != "/api/v2/jobs/42/" || got[1] != "/api/v2/workflow_jobs/42/" {
+		t.Errorf("sliced fallback hit %v, want jobs/ then workflow_jobs/", got)
+	}
+
+	// 4. A job AWX has in neither collection is still rejected.
+	paths, jobsHas, workflowHas = nil, false, false
+	if err := awxVerifyJob(context.Background(), cr, jobState, event); err == nil {
+		t.Error("a job in neither collection must be rejected")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // API root discovery
 // ---------------------------------------------------------------------------

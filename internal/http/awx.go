@@ -1449,9 +1449,34 @@ func awxVerifyJob(ctx context.Context, cr awxCreds, state *awxWebhookState, even
 		root = state.Root
 	}
 
-	resp, status, err := awxDo(ctx, cr, root, http.MethodGet, "jobs/"+url.PathEscape(jobID)+"/", nil)
-	if err != nil {
-		return fmt.Errorf("could not reach AWX to confirm job %s: %s", jobID, awxRedact(cr, err.Error()))
+	// ★ PICK THE COLLECTION FROM THE TEMPLATE KIND. A workflow-template trigger
+	// delivers a WORKFLOW job's id, and a workflow job lives at workflow_jobs/{id}/,
+	// not jobs/{id}/. AWX's unified-job subclasses (Job, WorkflowJob, …) share ONE
+	// globally-unique id sequence, so a GET against the wrong collection 404s on an
+	// id that plainly exists — and this callback runs by default, so EVERY event of
+	// a workflow-template trigger would be dropped as "AWX does not know job N". A
+	// SLICED job template (job_slice_count > 1) also spawns a workflow job, so even a
+	// job-template trigger can carry a workflow-job id; hence the 404 fallback to the
+	// other collection before the job is finally declared missing.
+	collections := []string{"jobs/", "workflow_jobs/"}
+	if state != nil && state.Kind == awxKindWorkflowTemplate {
+		collections = []string{"workflow_jobs/", "jobs/"}
+	}
+
+	var resp map[string]interface{}
+	var status int
+	for i, coll := range collections {
+		var err error
+		resp, status, err = awxDo(ctx, cr, root, http.MethodGet, coll+url.PathEscape(jobID)+"/", nil)
+		if err != nil {
+			return fmt.Errorf("could not reach AWX to confirm job %s: %s", jobID, awxRedact(cr, err.Error()))
+		}
+		// A 404 from this kind's own collection may just mean the job is the other
+		// kind (a sliced job template spawns a workflow job); try the other before
+		// giving up. Any non-404 — a success or a real error — is final.
+		if status != http.StatusNotFound || i == len(collections)-1 {
+			break
+		}
 	}
 	if status == http.StatusNotFound {
 		return fmt.Errorf("AWX does not know job %s", jobID)
