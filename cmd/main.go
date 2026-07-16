@@ -5,6 +5,7 @@ import (
 
 	"flomation.app/automate/launch/internal/agent"
 	"flomation.app/automate/launch/internal/config"
+	"flomation.app/automate/launch/internal/dbrow"
 	emailtrigger "flomation.app/automate/launch/internal/email"
 	"flomation.app/automate/launch/internal/embedding"
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
@@ -71,6 +72,9 @@ func main() {
 
 	_ = s3trigger.NewService(cfg, db, t)
 	log.Info("s3 trigger service started")
+
+	_ = dbrow.NewService(cfg, db, t)
+	log.Info("database row poll service started")
 
 	// Email trigger service is started after agent service (needs agent ref)
 	var emailSvc *emailtrigger.Service
