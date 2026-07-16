@@ -179,7 +179,7 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 		log.WithFields(log.Fields{"error": err, "trigger_id": tr.ID}).Error("unable to open database connection")
 		return
 	}
-	defer dbConn.Close()
+	defer func() { _ = dbConn.Close() }()
 	dbConn.SetMaxOpenConns(1)
 
 	if err := dbConn.PingContext(ctx); err != nil {
@@ -208,7 +208,7 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 		log.WithFields(log.Fields{"error": err, "trigger_id": tr.ID, "query": q}).Error("unable to query for new rows")
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	cols, err := rows.Columns()
 	if err != nil {
