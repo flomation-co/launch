@@ -51,6 +51,14 @@ const (
 	// executor node directory (actions/trigger/mqtt) — the api derives the type
 	// from the node label, turning "trigger/mqtt" into "mqtt".
 	TriggerTypeMQTT = "mqtt"
+
+	// TriggerTypeDBRow polls a SQL table on an interval and fires the flow once
+	// per newly-inserted row, tracking a monotonic cursor column (an
+	// auto-increment id or a created_at/updated_at timestamp). Like the S3 and
+	// git-poll triggers nothing POSTs to Launch — the dbrow service drives the
+	// loop. The name must match what the api derives from the executor node
+	// label: "trigger/database_row" → "database-row".
+	TriggerTypeDBRow = "database-row"
 )
 
 type Trigger struct {
