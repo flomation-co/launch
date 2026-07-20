@@ -48,6 +48,10 @@ type formSubmit struct {
 	// RedirectDelaySeconds optionally holds the thank-you view for a moment
 	// before redirecting. Zero redirects immediately.
 	RedirectDelaySeconds int `json:"redirect_delay_seconds,omitempty"`
+	// SubmitLabel overrides the Submit button text (default "Submit"). Display
+	// only — it never affects the submission. Must live on the struct so it
+	// survives the render-time re-marshal to the client.
+	SubmitLabel string `json:"submit_label,omitempty"`
 }
 
 // formDataSource configures form-field autofill from a flow's outputs.

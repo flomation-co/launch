@@ -842,6 +842,20 @@
         .success-text { font-size: 14px; color: var(--text-muted); white-space: pre-wrap; }
         .success-subtext { font-size: 12px; color: var(--text-muted); opacity: 0.7; margin-top: 12px; }
 
+        /* Post-submit summary banner shown above a read-only results page. */
+        .summary-banner {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 16px;
+            margin-bottom: 24px;
+            border: 1px solid rgba(34,197,94,0.35);
+            background: rgba(34,197,94,0.08);
+            border-radius: 10px;
+        }
+        .summary-banner .success-icon { font-size: 24px; margin: 0; }
+        .summary-banner-text { font-size: 14px; color: var(--text); white-space: pre-wrap; }
+
         .footer {
             margin-top: 32px;
             text-align: center;
@@ -1368,6 +1382,49 @@
     function lastVisiblePage(form) {
         const p = firstVisiblePageFrom(form, form.pages.length - 1, -1);
         return p < 0 ? 0 : p;
+    }
+
+    // Field types that never collect user input (structural display only).
+    const DISPLAY_ONLY_TYPES = new Set(["section_header", "divider", "info_text"]);
+
+    // pageHasEditableInput reports whether a page offers ANY user input: a field
+    // that isn't display-only, read-only or flow-computed (value_source). A
+    // payment field counts as input (it needs the Pay interaction). Used to
+    // decide where the Submit button belongs — a final page that is all
+    // read-only/computed values is a results page, not a step to submit from.
+    function pageHasEditableInput(page) {
+        if (!page || !Array.isArray(page.components)) return false;
+        for (const c of page.components) {
+            if (DISPLAY_ONLY_TYPES.has(c.type)) continue;
+            if (c.read_only) continue;
+            if (c.value_source) continue; // computed by a flow — not typed
+            return true;
+        }
+        return false;
+    }
+
+    // lastSubmittablePage is the last VISIBLE page that has editable input — the
+    // page the Submit button lives on. If no page has input (unusual), it falls
+    // back to the last visible page so the form is still submittable.
+    function lastSubmittablePage(form) {
+        for (let p = form.pages.length - 1; p >= 0; p--) {
+            if (hiddenPages.has(p)) continue;
+            if (pageHasEditableInput(form.pages[p])) return p;
+        }
+        return lastVisiblePage(form);
+    }
+
+    // hasSummaryTail reports whether there are visible read-only pages AFTER the
+    // last submittable page — a results/summary tail shown post-submit.
+    function hasSummaryTail(form) {
+        return lastVisiblePage(form) > lastSubmittablePage(form);
+    }
+
+    // submitLabel is the author-configured Submit button text (form.submit.
+    // submit_label), defaulting to "Submit".
+    function submitLabel(form) {
+        const l = form && form.submit && form.submit.submit_label;
+        return (typeof l === "string" && l.trim()) ? l.trim() : "Submit";
     }
 
     function renderLabel(component) {
@@ -3856,10 +3913,11 @@
         const submit = document.getElementById("submit");
         if (submit) {
             // Enable Submit only when every required field is satisfied AND
-            // the viewer is on the last *visible* page — Submit is hidden
-            // elsewhere, but we keep it disabled too as belt-and-braces.
-            const onLastPage = currentPage === lastVisiblePage(form);
-            submit.disabled = !valid || !onLastPage;
+            // the viewer is on the last SUBMITTABLE page (the last page with
+            // editable input) — Submit is hidden elsewhere, but we keep it
+            // disabled too as belt-and-braces.
+            const onSubmitPage = currentPage === lastSubmittablePage(form);
+            submit.disabled = !valid || !onSubmitPage;
         }
 
         // An answer change can flip a page's visibility (e.g. a Yes/No that
@@ -3889,14 +3947,24 @@
         const prev = document.getElementById("previous");
         if (prev) prev.disabled = firstVisiblePageFrom(form, currentPage - 1, -1) < 0;
 
-        const next = document.getElementById("next");
-        if (next) next.disabled = firstVisiblePageFrom(form, currentPage + 1, 1) < 0;
+        // Submit lives on the LAST SUBMITTABLE page (the last visible page with
+        // editable input) — not necessarily the absolute last page. Any visible
+        // read-only pages after it are a post-submit summary, not steps to page
+        // through before submitting.
+        const submitPage = lastSubmittablePage(form);
 
-        // Submit is only reachable on the last *visible* page — a user must
-        // page through the whole form before they can complete it. On
-        // single-page forms page 0 is the last page, so it always shows.
+        // Hide the Next button once the user is on (or past) the submit page —
+        // there is nothing further to fill in. This also removes Next on a
+        // normal last page (where submitPage == last page).
+        const next = document.getElementById("next");
+        if (next) {
+            const noNext = currentPage >= submitPage;
+            next.disabled = noNext;
+            next.classList.toggle("hidden", noNext);
+        }
+
         const submit = document.getElementById("submit");
-        if (submit) submit.classList.toggle("hidden", currentPage !== lastVisiblePage(form));
+        if (submit) submit.classList.toggle("hidden", currentPage !== submitPage);
 
         renderPageIndicator(form);
     }
@@ -4101,6 +4169,7 @@
         if (!container) return;
 
         const buttons = document.createElement("div");
+        buttons.id = "button-row";
         buttons.classList.add("button-row");
 
         if (form.pages.length > 1) {
@@ -4120,7 +4189,7 @@
         }
 
         const submit = document.createElement("button");
-        submit.textContent = "Submit";
+        submit.textContent = submitLabel(form);
         submit.id = "submit";
         submit.disabled = true;
         submit.classList.add("btn", "btn-submit");
@@ -4228,7 +4297,7 @@
         })
         .catch(() => {
             submit.disabled = false;
-            submit.textContent = "Submit";
+            submit.textContent = submitLabel(form);
         });
     }
 
@@ -4259,7 +4328,55 @@
             return;
         }
 
+        // A read-only results tail (final page(s) after the last input page) is
+        // shown post-submit as the completion view — populated with the flow-
+        // computed values for the just-submitted answers — instead of a plain
+        // thank-you card. Only for the default "message" mode.
+        if (hasSummaryTail(form)) {
+            showSummaryTail(form, msg);
+            return;
+        }
+
         showThankYou(msg, "");
+    }
+
+    // showSummaryTail reveals the read-only results page(s) after submission:
+    // a success banner above the summary page, with all navigation removed. The
+    // page's flow-computed values are (re)computed with the submitted answers.
+    function showSummaryTail(form, msg) {
+        // First visible read-only page after the last submittable page.
+        let p = lastSubmittablePage(form) + 1;
+        while (p < form.pages.length && hiddenPages.has(p)) p++;
+        if (p >= form.pages.length) { showThankYou(msg, ""); return; }
+
+        currentPage = p;
+        for (let i = 0; i < form.pages.length; i++) {
+            const el = document.getElementById("page-" + i);
+            if (el) el.classList.toggle("hidden", i !== currentPage);
+        }
+        // Remove all navigation — the form is complete.
+        ["button-row", "page-indicator"].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.classList.add("hidden");
+        });
+        // Success banner above the results.
+        const body = document.getElementById("form-body");
+        if (body && !document.getElementById("summary-banner")) {
+            const banner = document.createElement("div");
+            banner.id = "summary-banner";
+            banner.classList.add("summary-banner");
+            const icon = document.createElement("div");
+            icon.classList.add("success-icon");
+            icon.innerHTML = "&#x2705;";
+            const text = document.createElement("div");
+            text.classList.add("summary-banner-text");
+            text.textContent = msg;
+            banner.appendChild(icon);
+            banner.appendChild(text);
+            body.insertBefore(banner, body.firstChild);
+        }
+        // Compute the summary page's flow-computed values with the final answers.
+        scheduleCompute(form);
     }
 
     // showThankYou renders the success card. The message is author-controlled,

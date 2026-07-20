@@ -195,3 +195,20 @@ func TestPagesNeedingData(t *testing.T) {
 	Expect(pageUsesDataNamespace(def.Pages[1])).To(BeTrue())
 	Expect(pageHasDynamicOptions(def.Pages[2])).To(BeTrue())
 }
+
+// TestSubmitLabel_SurvivesRemarshal guards the render-time round-trip of the
+// configurable Submit button text (same encoding/json-drops-unknown-keys concern
+// as allow_copy): it must reach the client via the re-marshalled definition.
+func TestSubmitLabel_SurvivesRemarshal(t *testing.T) {
+	RegisterTestingT(t)
+
+	raw := []byte(`{"title":"T","pages":[],"submit":{"submit_label":"Get my quote"}}`)
+	def, err := parseFormDefinition(raw)
+	Expect(err).To(BeNil())
+	Expect(def.Submit).ToNot(BeNil())
+	Expect(def.Submit.SubmitLabel).To(Equal("Get my quote"))
+
+	out, err := json.Marshal(def)
+	Expect(err).To(BeNil())
+	Expect(string(out)).To(ContainSubstring(`"submit_label":"Get my quote"`))
+}
