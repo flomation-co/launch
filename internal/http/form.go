@@ -48,6 +48,10 @@ type formSubmit struct {
 	// RedirectDelaySeconds optionally holds the thank-you view for a moment
 	// before redirecting. Zero redirects immediately.
 	RedirectDelaySeconds int `json:"redirect_delay_seconds,omitempty"`
+	// SubmitLabel overrides the Submit button text (default "Submit"). Display
+	// only — it never affects the submission. Must live on the struct so it
+	// survives the render-time re-marshal to the client.
+	SubmitLabel string `json:"submit_label,omitempty"`
 }
 
 // formDataSource configures form-field autofill from a flow's outputs.
@@ -298,8 +302,14 @@ func applySubstitutions(s string, ctx substitutionContext) string {
 			}
 			return ctx.QueryParams[key]
 		case "data":
+			// A nil map signals "not resolved yet" — the render path deliberately
+			// defers the data-source flow to the page that references it (run on
+			// page-enter, client-side, with the answers so far). Leave the token
+			// intact so the browser can resolve it later; metaText strips any
+			// leftover ${...} so nothing leaks to crawlers. A populated (possibly
+			// empty) map means we DID resolve (e.g. on submit) — honour it.
 			if ctx.DataVariables == nil {
-				return ""
+				return match
 			}
 			return ctx.DataVariables[key]
 		default:
@@ -392,13 +402,49 @@ func formUsesDataNamespace(def formDefinition) bool {
 // options from the data-source flow (options_source set).
 func formHasDynamicOptions(def formDefinition) bool {
 	for _, page := range def.Pages {
-		for _, c := range page.Components {
-			if c.OptionsSource != "" {
-				return true
-			}
+		if pageHasDynamicOptions(page) {
+			return true
 		}
 	}
 	return false
+}
+
+// pageUsesDataNamespace reports whether a single page references ${data.X} in a
+// component's label, placeholder or default value. Per-page so the render can
+// tell the client which pages must run the data-source flow on entry (rather
+// than running it eagerly at load for the whole form).
+func pageUsesDataNamespace(page formPage) bool {
+	for _, c := range page.Components {
+		if strings.Contains(c.Label, "${data.") ||
+			strings.Contains(c.Placeholder, "${data.") ||
+			strings.Contains(c.DefaultValue, "${data.") ||
+			strings.Contains(c.DisplayText, "${data.") {
+			return true
+		}
+	}
+	return false
+}
+
+// pageHasDynamicOptions reports whether a single page has an option-based field
+// sourcing its options from the data-source flow.
+func pageHasDynamicOptions(page formPage) bool {
+	for _, c := range page.Components {
+		if c.OptionsSource != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// pagesNeedingData returns, per page (in order), whether that page must run the
+// data-source flow on entry — i.e. it references ${data.X} or sources dynamic
+// options. The client uses this to defer the flow until the relevant page.
+func pagesNeedingData(def formDefinition) []bool {
+	out := make([]bool, len(def.Pages))
+	for i, page := range def.Pages {
+		out[i] = pageUsesDataNamespace(page) || pageHasDynamicOptions(page)
+	}
+	return out
 }
 
 // optionsFromOutput normalises a data-source output value into a form option

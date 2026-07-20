@@ -821,6 +821,17 @@
             color: var(--text-muted);
         }
 
+        /* A page fetching its data-source flow on entry: dim slightly and show a
+           small "Loading…" hint at the top so the pause is explained. */
+        .page-data-loading { position: relative; opacity: 0.75; transition: opacity 0.15s ease; }
+        .page-data-loading::before {
+            content: "Loading…";
+            display: block;
+            margin-bottom: 10px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
         /* Inline spinner — a small rotating ring. Used in place of a
            "Calculating…" caption while a field waits on a flow (payment amount
            line and flow-computed read-only fields). */
@@ -897,6 +908,20 @@
         .success-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
         .success-text { font-size: 14px; color: var(--text-muted); white-space: pre-wrap; }
         .success-subtext { font-size: 12px; color: var(--text-muted); opacity: 0.7; margin-top: 12px; }
+
+        /* Post-submit summary banner shown above a read-only results page. */
+        .summary-banner {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 16px;
+            margin-bottom: 24px;
+            border: 1px solid rgba(34,197,94,0.35);
+            background: rgba(34,197,94,0.08);
+            border-radius: 10px;
+        }
+        .summary-banner .success-icon { font-size: 24px; margin: 0; }
+        .summary-banner-text { font-size: 14px; color: var(--text); white-space: pre-wrap; }
 
         .footer {
             margin-top: 32px;
@@ -1241,6 +1266,60 @@
     }
     const AUTOSAVE_KEY = "flomation_form_" + FORM_ID;
     let formValues = {};
+
+    // ---- Lazy, per-page ${data.X} resolution --------------------------------
+    // The data-source flow is NOT run at load. Instead each page that references
+    // ${data.X} (or sources dynamic options) runs it on ENTRY, with the answers
+    // gathered so far — so an early page can collect an input the flow needs.
+    // PAGE_NEEDS_DATA[n] is true for such pages (base64 JSON from the server).
+    const PAGE_NEEDS_DATA = (function () {
+        const b64 = "{{ .PageNeedsData }}";
+        try { return b64 ? (JSON.parse(atob(b64)) || []) : []; } catch (e) { return []; }
+    })();
+    // DATA_VARS accumulates the flow's outputs (flattened to strings) as pages
+    // resolve; pageDataLoaded guards against re-fetching a page already resolved.
+    let DATA_VARS = {};
+    const pageDataLoaded = new Set();
+
+    // flattenDataValue turns a flow output into a string suitable for ${data.X}
+    // substitution (scalars verbatim; objects/arrays as JSON — matching the
+    // server's flattenOutputs).
+    function flattenDataValue(v) {
+        if (v === null || v === undefined) return "";
+        if (typeof v === "string") return v;
+        if (typeof v === "number" || typeof v === "boolean") return String(v);
+        try { return JSON.stringify(v); } catch (e) { return ""; }
+    }
+
+    // subData replaces ${data.X} tokens with the resolved value (or empty string
+    // if not yet/never resolved — a token is never shown raw to the user).
+    function subData(s) {
+        if (typeof s !== "string" || s.indexOf("${data.") === -1) return s;
+        return s.replace(/\$\{data\.([^}]+)\}/g, function (_, key) {
+            return Object.prototype.hasOwnProperty.call(DATA_VARS, key) ? DATA_VARS[key] : "";
+        });
+    }
+
+    // substituteComponentData returns a shallow copy of a component with ${data.X}
+    // resolved in its human-facing / value fields (and option lists). Applied at
+    // render time so a re-render after data loads shows resolved values.
+    function substituteComponentData(component) {
+        if (!component) return component;
+        const c = Object.assign({}, component);
+        c.label = subData(c.label);
+        c.placeholder = subData(c.placeholder);
+        c.default_value = subData(c.default_value);
+        c.display_text = subData(c.display_text);
+        if (Array.isArray(c.options)) {
+            c.options = c.options.map(function (o) {
+                if (o && typeof o === "object") {
+                    return Object.assign({}, o, { label: subData(o.label), value: subData(o.value) });
+                }
+                return o;
+            });
+        }
+        return c;
+    }
     let currentPage = 0;
     // Names of components / indices of pages currently hidden by a
     // conditional-visibility rule. Recomputed by applyVisibility on every
@@ -1370,6 +1449,49 @@
     function lastVisiblePage(form) {
         const p = firstVisiblePageFrom(form, form.pages.length - 1, -1);
         return p < 0 ? 0 : p;
+    }
+
+    // Field types that never collect user input (structural display only).
+    const DISPLAY_ONLY_TYPES = new Set(["section_header", "divider", "info_text"]);
+
+    // pageHasEditableInput reports whether a page offers ANY user input: a field
+    // that isn't display-only, read-only or flow-computed (value_source). A
+    // payment field counts as input (it needs the Pay interaction). Used to
+    // decide where the Submit button belongs — a final page that is all
+    // read-only/computed values is a results page, not a step to submit from.
+    function pageHasEditableInput(page) {
+        if (!page || !Array.isArray(page.components)) return false;
+        for (const c of page.components) {
+            if (DISPLAY_ONLY_TYPES.has(c.type)) continue;
+            if (c.read_only) continue;
+            if (c.value_source) continue; // computed by a flow — not typed
+            return true;
+        }
+        return false;
+    }
+
+    // lastSubmittablePage is the last VISIBLE page that has editable input — the
+    // page the Submit button lives on. If no page has input (unusual), it falls
+    // back to the last visible page so the form is still submittable.
+    function lastSubmittablePage(form) {
+        for (let p = form.pages.length - 1; p >= 0; p--) {
+            if (hiddenPages.has(p)) continue;
+            if (pageHasEditableInput(form.pages[p])) return p;
+        }
+        return lastVisiblePage(form);
+    }
+
+    // hasSummaryTail reports whether there are visible read-only pages AFTER the
+    // last submittable page — a results/summary tail shown post-submit.
+    function hasSummaryTail(form) {
+        return lastVisiblePage(form) > lastSubmittablePage(form);
+    }
+
+    // submitLabel is the author-configured Submit button text (form.submit.
+    // submit_label), defaulting to "Submit".
+    function submitLabel(form) {
+        const l = form && form.submit && form.submit.submit_label;
+        return (typeof l === "string" && l.trim()) ? l.trim() : "Submit";
     }
 
     function renderLabel(component) {
@@ -3666,10 +3788,18 @@
         if (!container || !form || form.pages.length < pageNumber) return;
 
         const page = form.pages[pageNumber];
-        const pageContainer = document.createElement("div");
-        pageContainer.id = "page-" + pageNumber;
-        pageContainer.classList.add("hidden");
-        container.appendChild(pageContainer);
+        // Reuse the page container if it already exists — so a page can be
+        // re-rendered in place once its ${data.X} / dynamic options resolve on
+        // entry, without disturbing its hidden/visible state.
+        let pageContainer = document.getElementById("page-" + pageNumber);
+        if (pageContainer) {
+            pageContainer.innerHTML = "";
+        } else {
+            pageContainer = document.createElement("div");
+            pageContainer.id = "page-" + pageNumber;
+            pageContainer.classList.add("hidden");
+            container.appendChild(pageContainer);
+        }
 
         const components = [...page.components].sort((a, b) => (a.order || 0) - (b.order || 0));
 
@@ -3697,10 +3827,13 @@
             // "payment" collects no input — it renders a read-only summary and
             // the card is captured by Stripe, so it must never seed a value.
             if (!DISPLAY_ONLY.has(component.type) && !SELF_SEEDED.has(component.type) && component.type !== "payment") {
+                // Resolve ${data.X} in the default so the seeded value matches
+                // what the field displays (empty until the page's data loads).
+                const seededDefault = subData(component.default_value);
                 if (component.type === "boolean") {
-                    formValues[component.name] = component.default_value === "true" || component.default_value === true;
-                } else if (component.default_value !== undefined && component.default_value !== "") {
-                    formValues[component.name] = component.default_value;
+                    formValues[component.name] = seededDefault === "true" || component.default_value === true;
+                } else if (seededDefault !== undefined && seededDefault !== "") {
+                    formValues[component.name] = seededDefault;
                 } else {
                     formValues[component.name] = null;
                 }
@@ -3722,6 +3855,10 @@
     // Split out of renderPage so a field can be re-rendered in place once its
     // options_source data loads.
     function renderComponentInto(form, container, component) {
+        // Resolve any ${data.X} tokens against whatever the flow has returned so
+        // far (empty until the page's data loads). A no-op when the component has
+        // no data references.
+        component = substituteComponentData(component);
         // A flow-computed (value_source) field renders read-only regardless of
         // its declared type — the value is produced by a flow, not typed.
         if (isComputedField(component)) {
@@ -3802,41 +3939,47 @@
         return out;
     }
 
-    // loadDynamicOptions fetches the data-source flow's outputs after first
-    // paint and populates any option-based field with an options_source,
-    // re-rendering just that field in place. Runs asynchronously so a slow
-    // flow never blocks the form from appearing.
-    function loadDynamicOptions(form) {
-        const dynamic = [];
-        for (const page of form.pages)
-            for (const comp of page.components)
-                if (comp.options_source) dynamic.push(comp);
-        if (dynamic.length === 0) return;
+    // ensurePageData resolves the data-source flow for a page on ENTRY, using
+    // the answers gathered so far, then merges its outputs for ${data.X}, bakes
+    // any dynamic option lists, and re-renders the page in place. Fetches once
+    // per page (pageDataLoaded guard). Non-blocking: the page is already visible;
+    // its data-driven fields fill in when the flow returns. This is what defers
+    // the flow until the page that needs it, rather than firing it at load.
+    function ensurePageData(form, pageNumber) {
+        if (pageNumber < 0 || !PAGE_NEEDS_DATA[pageNumber] || pageDataLoaded.has(pageNumber)) return;
+        pageDataLoaded.add(pageNumber); // optimistic — collapse duplicate in-flight fetches
 
-        dynamic.forEach((comp) => {
-            const w = fieldWrapperFor(comp.name);
-            if (w) w.classList.add("options-loading");
-        });
+        const pageEl = document.getElementById("page-" + pageNumber);
+        if (pageEl) pageEl.classList.add("page-data-loading");
 
-        fetch("/form/" + FORM_ID + "/data", {headers: {"Accept": "application/json"}})
+        const answers = {};
+        for (const k in formValues) {
+            if (Object.prototype.hasOwnProperty.call(formValues, k)) answers[k] = formValues[k];
+        }
+
+        fetch("/form/" + FORM_ID + "/data", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "Accept": "application/json"},
+            body: JSON.stringify({answers: answers})
+        })
             .then((r) => (r.ok ? r.json() : {}))
             .then((data) => {
-                for (const comp of dynamic) {
-                    comp.options = normalizeOptions(data[comp.options_source]);
-                    const w = fieldWrapperFor(comp.name);
-                    if (w) {
-                        w.classList.remove("options-loading");
-                        w.innerHTML = "";
-                        renderComponentInto(form, w, comp);
-                    }
+                data = data || {};
+                for (const k in data) {
+                    if (Object.prototype.hasOwnProperty.call(data, k)) DATA_VARS[k] = flattenDataValue(data[k]);
                 }
+                // Bake dynamic option lists for this page's option-source fields.
+                for (const comp of form.pages[pageNumber].components) {
+                    if (comp.options_source) comp.options = normalizeOptions(data[comp.options_source]);
+                }
+                renderPage(form, pageNumber); // re-render in place with resolved ${data.X} + options
+                if (pageEl) pageEl.classList.remove("page-data-loading");
+                applyVisibility(form);
                 validateForm(form);
             })
             .catch(() => {
-                dynamic.forEach((comp) => {
-                    const w = fieldWrapperFor(comp.name);
-                    if (w) w.classList.remove("options-loading");
-                });
+                pageDataLoaded.delete(pageNumber); // allow a retry on a later entry
+                if (pageEl) pageEl.classList.remove("page-data-loading");
             });
     }
 
@@ -3852,6 +3995,12 @@
                 if (!comp.required) continue;
                 if (DISPLAY_ONLY.has(comp.type)) continue;
                 if (hiddenFields.has(comp.name)) continue; // conditionally hidden — not required
+                // A flow-computed (value_source) field is filled by the flow, not
+                // the user — it reads as empty client-side (seeded ""), so it must
+                // NOT count as an unmet required field. The server recomputes and
+                // enforces it authoritatively. (Payment value_source is handled by
+                // the stateful branch below.)
+                if (comp.value_source && !STATEFUL_FIELD_TYPES[comp.type]) continue;
                 if (STATEFUL_FIELD_TYPES[comp.type]) {
                     // A required stateful field (payment, …) blocks Submit until
                     // its server-recorded state is satisfied. Mirrors the server
@@ -3956,10 +4105,11 @@
         const submit = document.getElementById("submit");
         if (submit) {
             // Enable Submit only when every required field is satisfied AND
-            // the viewer is on the last *visible* page — Submit is hidden
-            // elsewhere, but we keep it disabled too as belt-and-braces.
-            const onLastPage = currentPage === lastVisiblePage(form);
-            submit.disabled = !valid || !onLastPage;
+            // the viewer is on the last SUBMITTABLE page (the last page with
+            // editable input) — Submit is hidden elsewhere, but we keep it
+            // disabled too as belt-and-braces.
+            const onSubmitPage = currentPage === lastSubmittablePage(form);
+            submit.disabled = !valid || !onSubmitPage;
         }
 
         // An answer change can flip a page's visibility (e.g. a Yes/No that
@@ -3989,14 +4139,24 @@
         const prev = document.getElementById("previous");
         if (prev) prev.disabled = firstVisiblePageFrom(form, currentPage - 1, -1) < 0;
 
-        const next = document.getElementById("next");
-        if (next) next.disabled = firstVisiblePageFrom(form, currentPage + 1, 1) < 0;
+        // Submit lives on the LAST SUBMITTABLE page (the last visible page with
+        // editable input) — not necessarily the absolute last page. Any visible
+        // read-only pages after it are a post-submit summary, not steps to page
+        // through before submitting.
+        const submitPage = lastSubmittablePage(form);
 
-        // Submit is only reachable on the last *visible* page — a user must
-        // page through the whole form before they can complete it. On
-        // single-page forms page 0 is the last page, so it always shows.
+        // Hide the Next button once the user is on (or past) the submit page —
+        // there is nothing further to fill in. This also removes Next on a
+        // normal last page (where submitPage == last page).
+        const next = document.getElementById("next");
+        if (next) {
+            const noNext = currentPage >= submitPage;
+            next.disabled = noNext;
+            next.classList.toggle("hidden", noNext);
+        }
+
         const submit = document.getElementById("submit");
-        if (submit) submit.classList.toggle("hidden", currentPage !== lastVisiblePage(form));
+        if (submit) submit.classList.toggle("hidden", currentPage !== submitPage);
 
         renderPageIndicator(form);
     }
@@ -4020,6 +4180,13 @@
             const el = document.getElementById("page-" + p);
             if (el) el.classList.toggle("hidden", p !== currentPage);
         }
+
+        // Resolve this page's data on entry (with answers so far):
+        //  - ${data.X} autofill / dynamic options (form-level data_source), and
+        //  - value_source computed fields on this page (scheduleCompute now reads
+        //    only the current page, so entering the page is what fires them).
+        ensurePageData(form, currentPage);
+        scheduleCompute(form);
 
         refreshNavChrome(form);
         // Re-evaluate the Submit enabled state for the new page. Navigation
@@ -4084,13 +4251,19 @@
     // checkout.
     let _computeTimer = null;
     function computedFields(form) {
+        // Only the CURRENT page's computed fields. A value_source field runs its
+        // flow with the current answers, so we defer it to the page it lives on
+        // (computed on page entry + on edits while there) rather than firing every
+        // computed field on load — before earlier pages have been answered. This
+        // is why a page-2 "IP address" field no longer triggers its flow at load.
         const out = [];
-        for (const page of form.pages)
-            for (const comp of page.components)
-                // Any value_source field is computed reactively — including a
-                // payment field, whose amount is shown live on the widget (and
-                // still re-verified server-side at checkout).
-                if (comp.value_source) out.push(comp);
+        const page = form.pages[currentPage];
+        if (!page) return out;
+        for (const comp of page.components)
+            // Any value_source field is computed reactively — including a
+            // payment field, whose amount is shown live on the widget (and
+            // still re-verified server-side at checkout).
+            if (comp.value_source) out.push(comp);
         return out;
     }
     function scheduleCompute(form) {
@@ -4199,6 +4372,7 @@
         if (!container) return;
 
         const buttons = document.createElement("div");
+        buttons.id = "button-row";
         buttons.classList.add("button-row");
 
         if (form.pages.length > 1) {
@@ -4218,7 +4392,7 @@
         }
 
         const submit = document.createElement("button");
-        submit.textContent = "Submit";
+        submit.textContent = submitLabel(form);
         submit.id = "submit";
         submit.disabled = true;
         submit.classList.add("btn", "btn-submit");
@@ -4241,9 +4415,11 @@
             try { cushion = JSON.parse(sessionStorage.getItem(AUTOSAVE_KEY) || "null"); } catch (e) { cushion = null; }
             if (hasOwnKeys(cushion)) applyResumePayload(form, cushion);
         }
-        // Populate any dynamic (flow-sourced) dropdown options after the
-        // form is on screen, so a slow data flow never delays first paint.
-        loadDynamicOptions(form);
+        // Resolve the data-source flow ONLY for the page shown first (if it
+        // references ${data.X} or dynamic options). Other pages resolve lazily
+        // on entry (see setPage → ensurePageData), so the flow isn't fired at
+        // load for data a later page needs — and it can then use earlier answers.
+        ensurePageData(form, currentPage);
 
         // Flow-computed fields (incl. a payment amount) recompute when a field
         // LOSES FOCUS — not on every keystroke — so the dependent flow runs
@@ -4324,7 +4500,7 @@
         })
         .catch(() => {
             submit.disabled = false;
-            submit.textContent = "Submit";
+            submit.textContent = submitLabel(form);
         });
     }
 
@@ -4355,7 +4531,55 @@
             return;
         }
 
+        // A read-only results tail (final page(s) after the last input page) is
+        // shown post-submit as the completion view — populated with the flow-
+        // computed values for the just-submitted answers — instead of a plain
+        // thank-you card. Only for the default "message" mode.
+        if (hasSummaryTail(form)) {
+            showSummaryTail(form, msg);
+            return;
+        }
+
         showThankYou(msg, "");
+    }
+
+    // showSummaryTail reveals the read-only results page(s) after submission:
+    // a success banner above the summary page, with all navigation removed. The
+    // page's flow-computed values are (re)computed with the submitted answers.
+    function showSummaryTail(form, msg) {
+        // First visible read-only page after the last submittable page.
+        let p = lastSubmittablePage(form) + 1;
+        while (p < form.pages.length && hiddenPages.has(p)) p++;
+        if (p >= form.pages.length) { showThankYou(msg, ""); return; }
+
+        currentPage = p;
+        for (let i = 0; i < form.pages.length; i++) {
+            const el = document.getElementById("page-" + i);
+            if (el) el.classList.toggle("hidden", i !== currentPage);
+        }
+        // Remove all navigation — the form is complete.
+        ["button-row", "page-indicator"].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.classList.add("hidden");
+        });
+        // Success banner above the results.
+        const body = document.getElementById("form-body");
+        if (body && !document.getElementById("summary-banner")) {
+            const banner = document.createElement("div");
+            banner.id = "summary-banner";
+            banner.classList.add("summary-banner");
+            const icon = document.createElement("div");
+            icon.classList.add("success-icon");
+            icon.innerHTML = "&#x2705;";
+            const text = document.createElement("div");
+            text.classList.add("summary-banner-text");
+            text.textContent = msg;
+            banner.appendChild(icon);
+            banner.appendChild(text);
+            body.insertBefore(banner, body.firstChild);
+        }
+        // Compute the summary page's flow-computed values with the final answers.
+        scheduleCompute(form);
     }
 
     // showThankYou renders the success card. The message is author-controlled,
