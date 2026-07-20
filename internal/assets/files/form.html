@@ -821,6 +821,66 @@
             color: var(--text-muted);
         }
 
+        /* Inline spinner — a small rotating ring. Used in place of a
+           "Calculating…" caption while a field waits on a flow (payment amount
+           line and flow-computed read-only fields). */
+        .flo-spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(139,92,246,0.25);
+            border-top-color: rgba(139,92,246,0.9);
+            border-radius: 50%;
+            animation: flo-spin 0.7s linear infinite;
+            vertical-align: middle;
+        }
+        @keyframes flo-spin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) {
+            .flo-spinner { animation-duration: 1.6s; }
+        }
+
+        /* Copy affordance — a button anchored at the right edge of a field's
+           input, shown when the field opts in (allow_copy). The input gets extra
+           right padding so its text never sits under the button. */
+        .copy-wrap { position: relative; display: block; }
+        .computed-wrap { position: relative; display: block; }
+        .copy-wrap > input,
+        .copy-wrap > textarea,
+        .copy-wrap > select { padding-right: 46px; }
+        .field-copy-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 8px;
+            font-size: 11px;
+            font-family: inherit;
+            color: var(--text-muted);
+            background: rgba(255,255,255,0.06);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+        }
+        .field-copy-btn:hover { color: var(--text); background: rgba(255,255,255,0.12); }
+        .field-copy-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .field-copy-btn.copied { color: var(--success); border-color: rgba(34,197,94,0.5); }
+        .field-copy-btn svg { width: 12px; height: 12px; }
+        /* When the field is a textarea, anchor the button to the top-right. */
+        .copy-wrap > textarea + .field-copy-btn { top: 8px; }
+
+        /* Spinner slot inside a computed field, right-aligned within the input. */
+        .computed-spinner {
+            position: absolute;
+            top: 50%;
+            right: 12px;
+            transform: translateY(-50%);
+            display: none;
+        }
+        .computed-spinner.active { display: inline-block; }
+
         .success-message {
             text-align: center;
             padding: 40px 20px;
@@ -1329,6 +1389,82 @@
             el.disabled = true;
             el.classList.add("readonly");
         }
+    }
+
+    // Small inline icons for the Copy button (no external icon font on the
+    // public form). 12px, currentColor so they inherit the button's colour.
+    const SVG_COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    const SVG_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+
+    // copyToClipboard writes text and flashes the button to "Copied". Uses the
+    // async Clipboard API where available, falling back to a hidden-textarea
+    // execCommand for older / non-secure-context browsers.
+    function copyToClipboard(text, btn) {
+        const original = btn ? btn.innerHTML : "";
+        const flash = () => {
+            if (!btn) return;
+            btn.classList.add("copied");
+            btn.innerHTML = SVG_CHECK + "<span>Copied</span>";
+            setTimeout(() => { btn.classList.remove("copied"); btn.innerHTML = original; }, 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(flash).catch(() => fallbackCopy(text, flash));
+        } else {
+            fallbackCopy(text, flash);
+        }
+    }
+    function fallbackCopy(text, done) {
+        try {
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.position = "fixed";
+            ta.style.top = "-9999px";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.focus(); ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+            done();
+        } catch (e) { /* clipboard unavailable — silently do nothing */ }
+    }
+
+    // attachCopyButton adds a "Copy" affordance to a field's primary value
+    // control when the component opted in (allow_copy). It anchors to the right
+    // edge of the input; the copied text is the live formValues entry (falling
+    // back to the element's displayed value, e.g. a read-only computed field).
+    // Defensive: only single-value text-like controls get a button, so a copy
+    // flag on an unsupported field type is a harmless no-op.
+    function attachCopyButton(group, component) {
+        if (!component || !component.allow_copy || !group) return;
+        const el = group.querySelector('input[type="text"], input[type="email"], input[type="url"], input[type="tel"], input[type="number"], input[type="date"], input[type="time"], input[type="datetime-local"], input:not([type]), textarea, select');
+        if (!el) return;
+        // Reuse an existing positioned wrapper (e.g. a computed field's
+        // .computed-wrap) so we don't nest wrappers; otherwise wrap the control.
+        let wrap = el.parentNode;
+        if (!wrap || !(wrap.classList.contains("copy-wrap") || wrap.classList.contains("computed-wrap"))) {
+            wrap = document.createElement("div");
+            wrap.classList.add("copy-wrap");
+            el.parentNode.insertBefore(wrap, el);
+            wrap.appendChild(el);
+        }
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.classList.add("field-copy-btn");
+        btn.innerHTML = SVG_COPY + "<span>Copy</span>";
+        btn.addEventListener("click", function () {
+            const stored = formValues[component.name];
+            const val = (stored !== undefined && stored !== null && stored !== "")
+                ? String(stored) : (el.value || "");
+            copyToClipboard(val, btn);
+        });
+        wrap.appendChild(btn);
+    }
+
+    // setComputeSpinner toggles the "waiting on a flow" spinner inside a
+    // computed field's input, shown while its /compute request is in flight.
+    function setComputeSpinner(name, on) {
+        const s = document.getElementById("spinner-" + name);
+        if (s) s.classList.toggle("active", !!on);
     }
 
     function renderTextbox(form, container, component) {
@@ -3225,6 +3361,9 @@
         group.classList.add("field-group");
         group.appendChild(renderLabel(component));
 
+        const wrap = document.createElement("div");
+        wrap.classList.add("computed-wrap");
+
         const el = document.createElement("input");
         el.type = "text";
         el.id = "input-" + component.name;
@@ -3232,14 +3371,29 @@
         el.readOnly = true;
         el.disabled = true;
         el.classList.add("readonly", "computed-field");
+        // Leave room on the right for the spinner (and the Copy button, if the
+        // field opts in) so neither overlaps the value.
+        el.style.paddingRight = component.allow_copy ? "104px" : "40px";
         // Seed the display from any current formValues (e.g. resumed draft),
         // but keep formValues itself empty — the client value is never trusted
         // (the server strips it on submit and recomputes at checkout).
         const seed = formValues[component.name];
-        if (seed !== undefined && seed !== null) el.value = String(seed);
+        const hasSeed = seed !== undefined && seed !== null && seed !== "";
+        if (hasSeed) el.value = String(seed);
         formValues[component.name] = "";
+        wrap.appendChild(el);
 
-        group.appendChild(el);
+        // A spinner shown while the value is being computed by the flow. Start
+        // active when there's nothing to show yet — the first /compute clears it.
+        const spinner = document.createElement("span");
+        spinner.id = "spinner-" + component.name;
+        spinner.classList.add("computed-spinner");
+        if (!hasSeed) spinner.classList.add("active");
+        spinner.style.right = component.allow_copy ? "70px" : "12px";
+        spinner.innerHTML = '<span class="flo-spinner" role="status" aria-label="Calculating"></span>';
+        wrap.appendChild(spinner);
+
+        group.appendChild(wrap);
         container.appendChild(group);
     }
 
@@ -3313,9 +3467,13 @@
         const known = component.value_source
             ? (component.name in paymentAmounts ? paymentAmounts[component.name] : null)
             : component.amount;
-        line.textContent = (component.value_source && known === null)
-            ? "Calculating…"
-            : formatPaymentAmount(known, component.currency);
+        if (component.value_source && known === null) {
+            // Amount still being computed by the pricing flow — show a spinner
+            // rather than a "Calculating…" caption.
+            line.innerHTML = '<span class="flo-spinner" role="status" aria-label="Calculating amount"></span>';
+        } else {
+            line.textContent = formatPaymentAmount(known, component.currency);
+        }
 
         action.innerHTML = "";
         const btn = document.createElement("button");
@@ -3547,8 +3705,15 @@
         // its declared type — the value is produced by a flow, not typed.
         if (isComputedField(component)) {
             renderComputed(form, container, component);
+            attachCopyButton(container.lastElementChild, component);
             return;
         }
+        renderByType(form, container, component);
+        // Attach an optional Copy affordance to the just-rendered field group.
+        attachCopyButton(container.lastElementChild, component);
+    }
+
+    function renderByType(form, container, component) {
         switch (component.type) {
             case "text": renderTextbox(form, container, component); break;
             case "multiline": renderMultiline(form, container, component); break;
@@ -3911,7 +4076,14 @@
         const fields = computedFields(form);
         if (fields.length === 0) return;
         clearTimeout(_computeTimer);
-        _computeTimer = setTimeout(() => runCompute(fields), 800);
+        // Activate the "waiting on a flow" spinner inside the debounce (not on
+        // every keystroke/focusout) so it appears only when a compute is about
+        // to run — for read-only computed fields; payment widgets show their own
+        // spinner on the amount line via renderPaymentState.
+        _computeTimer = setTimeout(() => {
+            for (const c of fields) if (c.type !== "payment") setComputeSpinner(c.name, true);
+            runCompute(fields);
+        }, 800);
     }
     function runCompute(fields) {
         // Snapshot the answers once so every field computes against the same
@@ -3941,12 +4113,16 @@
                         renderPaymentState(comp);
                         return;
                     }
+                    // Compute settled — stop the spinner whether or not a value
+                    // came back (a null result just means no value yet).
+                    setComputeSpinner(comp.name, false);
                     if (text === null) return;
                     formValues[comp.name] = text;
                     const el = document.getElementById("input-" + comp.name);
                     if (el) el.value = text;
                 })
                 .catch(() => {
+                    setComputeSpinner(comp.name, false);
                     // Network/other failure: don't leave a payment widget stuck
                     // on "Calculating…". Mark the amount unknown ("") and
                     // re-render — the button enables (server resolves the amount
