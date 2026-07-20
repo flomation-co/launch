@@ -3809,6 +3809,12 @@
                 if (!comp.required) continue;
                 if (DISPLAY_ONLY.has(comp.type)) continue;
                 if (hiddenFields.has(comp.name)) continue; // conditionally hidden — not required
+                // A flow-computed (value_source) field is filled by the flow, not
+                // the user — it reads as empty client-side (seeded ""), so it must
+                // NOT count as an unmet required field. The server recomputes and
+                // enforces it authoritatively. (Payment value_source is handled by
+                // the stateful branch below.)
+                if (comp.value_source && !STATEFUL_FIELD_TYPES[comp.type]) continue;
                 if (STATEFUL_FIELD_TYPES[comp.type]) {
                     // A required stateful field (payment, …) blocks Submit until
                     // its server-recorded state is satisfied. Mirrors the server
