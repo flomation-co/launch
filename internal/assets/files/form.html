@@ -821,6 +821,17 @@
             color: var(--text-muted);
         }
 
+        /* A page fetching its data-source flow on entry: dim slightly and show a
+           small "Loading…" hint at the top so the pause is explained. */
+        .page-data-loading { position: relative; opacity: 0.75; transition: opacity 0.15s ease; }
+        .page-data-loading::before {
+            content: "Loading…";
+            display: block;
+            margin-bottom: 10px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
         .success-message {
             text-align: center;
             padding: 40px 20px;
@@ -1174,6 +1185,60 @@
     }
     const AUTOSAVE_KEY = "flomation_form_" + FORM_ID;
     let formValues = {};
+
+    // ---- Lazy, per-page ${data.X} resolution --------------------------------
+    // The data-source flow is NOT run at load. Instead each page that references
+    // ${data.X} (or sources dynamic options) runs it on ENTRY, with the answers
+    // gathered so far — so an early page can collect an input the flow needs.
+    // PAGE_NEEDS_DATA[n] is true for such pages (base64 JSON from the server).
+    const PAGE_NEEDS_DATA = (function () {
+        const b64 = "{{ .PageNeedsData }}";
+        try { return b64 ? (JSON.parse(atob(b64)) || []) : []; } catch (e) { return []; }
+    })();
+    // DATA_VARS accumulates the flow's outputs (flattened to strings) as pages
+    // resolve; pageDataLoaded guards against re-fetching a page already resolved.
+    let DATA_VARS = {};
+    const pageDataLoaded = new Set();
+
+    // flattenDataValue turns a flow output into a string suitable for ${data.X}
+    // substitution (scalars verbatim; objects/arrays as JSON — matching the
+    // server's flattenOutputs).
+    function flattenDataValue(v) {
+        if (v === null || v === undefined) return "";
+        if (typeof v === "string") return v;
+        if (typeof v === "number" || typeof v === "boolean") return String(v);
+        try { return JSON.stringify(v); } catch (e) { return ""; }
+    }
+
+    // subData replaces ${data.X} tokens with the resolved value (or empty string
+    // if not yet/never resolved — a token is never shown raw to the user).
+    function subData(s) {
+        if (typeof s !== "string" || s.indexOf("${data.") === -1) return s;
+        return s.replace(/\$\{data\.([^}]+)\}/g, function (_, key) {
+            return Object.prototype.hasOwnProperty.call(DATA_VARS, key) ? DATA_VARS[key] : "";
+        });
+    }
+
+    // substituteComponentData returns a shallow copy of a component with ${data.X}
+    // resolved in its human-facing / value fields (and option lists). Applied at
+    // render time so a re-render after data loads shows resolved values.
+    function substituteComponentData(component) {
+        if (!component) return component;
+        const c = Object.assign({}, component);
+        c.label = subData(c.label);
+        c.placeholder = subData(c.placeholder);
+        c.default_value = subData(c.default_value);
+        c.display_text = subData(c.display_text);
+        if (Array.isArray(c.options)) {
+            c.options = c.options.map(function (o) {
+                if (o && typeof o === "object") {
+                    return Object.assign({}, o, { label: subData(o.label), value: subData(o.value) });
+                }
+                return o;
+            });
+        }
+        return c;
+    }
     let currentPage = 0;
     // Names of components / indices of pages currently hidden by a
     // conditional-visibility rule. Recomputed by applyVisibility on every
@@ -3487,10 +3552,18 @@
         if (!container || !form || form.pages.length < pageNumber) return;
 
         const page = form.pages[pageNumber];
-        const pageContainer = document.createElement("div");
-        pageContainer.id = "page-" + pageNumber;
-        pageContainer.classList.add("hidden");
-        container.appendChild(pageContainer);
+        // Reuse the page container if it already exists — so a page can be
+        // re-rendered in place once its ${data.X} / dynamic options resolve on
+        // entry, without disturbing its hidden/visible state.
+        let pageContainer = document.getElementById("page-" + pageNumber);
+        if (pageContainer) {
+            pageContainer.innerHTML = "";
+        } else {
+            pageContainer = document.createElement("div");
+            pageContainer.id = "page-" + pageNumber;
+            pageContainer.classList.add("hidden");
+            container.appendChild(pageContainer);
+        }
 
         const components = [...page.components].sort((a, b) => (a.order || 0) - (b.order || 0));
 
@@ -3518,10 +3591,13 @@
             // "payment" collects no input — it renders a read-only summary and
             // the card is captured by Stripe, so it must never seed a value.
             if (!DISPLAY_ONLY.has(component.type) && !SELF_SEEDED.has(component.type) && component.type !== "payment") {
+                // Resolve ${data.X} in the default so the seeded value matches
+                // what the field displays (empty until the page's data loads).
+                const seededDefault = subData(component.default_value);
                 if (component.type === "boolean") {
-                    formValues[component.name] = component.default_value === "true" || component.default_value === true;
-                } else if (component.default_value !== undefined && component.default_value !== "") {
-                    formValues[component.name] = component.default_value;
+                    formValues[component.name] = seededDefault === "true" || component.default_value === true;
+                } else if (seededDefault !== undefined && seededDefault !== "") {
+                    formValues[component.name] = seededDefault;
                 } else {
                     formValues[component.name] = null;
                 }
@@ -3543,6 +3619,10 @@
     // Split out of renderPage so a field can be re-rendered in place once its
     // options_source data loads.
     function renderComponentInto(form, container, component) {
+        // Resolve any ${data.X} tokens against whatever the flow has returned so
+        // far (empty until the page's data loads). A no-op when the component has
+        // no data references.
+        component = substituteComponentData(component);
         // A flow-computed (value_source) field renders read-only regardless of
         // its declared type — the value is produced by a flow, not typed.
         if (isComputedField(component)) {
@@ -3616,41 +3696,47 @@
         return out;
     }
 
-    // loadDynamicOptions fetches the data-source flow's outputs after first
-    // paint and populates any option-based field with an options_source,
-    // re-rendering just that field in place. Runs asynchronously so a slow
-    // flow never blocks the form from appearing.
-    function loadDynamicOptions(form) {
-        const dynamic = [];
-        for (const page of form.pages)
-            for (const comp of page.components)
-                if (comp.options_source) dynamic.push(comp);
-        if (dynamic.length === 0) return;
+    // ensurePageData resolves the data-source flow for a page on ENTRY, using
+    // the answers gathered so far, then merges its outputs for ${data.X}, bakes
+    // any dynamic option lists, and re-renders the page in place. Fetches once
+    // per page (pageDataLoaded guard). Non-blocking: the page is already visible;
+    // its data-driven fields fill in when the flow returns. This is what defers
+    // the flow until the page that needs it, rather than firing it at load.
+    function ensurePageData(form, pageNumber) {
+        if (pageNumber < 0 || !PAGE_NEEDS_DATA[pageNumber] || pageDataLoaded.has(pageNumber)) return;
+        pageDataLoaded.add(pageNumber); // optimistic — collapse duplicate in-flight fetches
 
-        dynamic.forEach((comp) => {
-            const w = fieldWrapperFor(comp.name);
-            if (w) w.classList.add("options-loading");
-        });
+        const pageEl = document.getElementById("page-" + pageNumber);
+        if (pageEl) pageEl.classList.add("page-data-loading");
 
-        fetch("/form/" + FORM_ID + "/data", {headers: {"Accept": "application/json"}})
+        const answers = {};
+        for (const k in formValues) {
+            if (Object.prototype.hasOwnProperty.call(formValues, k)) answers[k] = formValues[k];
+        }
+
+        fetch("/form/" + FORM_ID + "/data", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "Accept": "application/json"},
+            body: JSON.stringify({answers: answers})
+        })
             .then((r) => (r.ok ? r.json() : {}))
             .then((data) => {
-                for (const comp of dynamic) {
-                    comp.options = normalizeOptions(data[comp.options_source]);
-                    const w = fieldWrapperFor(comp.name);
-                    if (w) {
-                        w.classList.remove("options-loading");
-                        w.innerHTML = "";
-                        renderComponentInto(form, w, comp);
-                    }
+                data = data || {};
+                for (const k in data) {
+                    if (Object.prototype.hasOwnProperty.call(data, k)) DATA_VARS[k] = flattenDataValue(data[k]);
                 }
+                // Bake dynamic option lists for this page's option-source fields.
+                for (const comp of form.pages[pageNumber].components) {
+                    if (comp.options_source) comp.options = normalizeOptions(data[comp.options_source]);
+                }
+                renderPage(form, pageNumber); // re-render in place with resolved ${data.X} + options
+                if (pageEl) pageEl.classList.remove("page-data-loading");
+                applyVisibility(form);
                 validateForm(form);
             })
             .catch(() => {
-                dynamic.forEach((comp) => {
-                    const w = fieldWrapperFor(comp.name);
-                    if (w) w.classList.remove("options-loading");
-                });
+                pageDataLoaded.delete(pageNumber); // allow a retry on a later entry
+                if (pageEl) pageEl.classList.remove("page-data-loading");
             });
     }
 
@@ -3834,6 +3920,9 @@
             const el = document.getElementById("page-" + p);
             if (el) el.classList.toggle("hidden", p !== currentPage);
         }
+
+        // Resolve this page's data-source flow on entry (with answers so far).
+        ensurePageData(form, currentPage);
 
         refreshNavChrome(form);
         // Re-evaluate the Submit enabled state for the new page. Navigation
@@ -4044,9 +4133,11 @@
             try { cushion = JSON.parse(sessionStorage.getItem(AUTOSAVE_KEY) || "null"); } catch (e) { cushion = null; }
             if (hasOwnKeys(cushion)) applyResumePayload(form, cushion);
         }
-        // Populate any dynamic (flow-sourced) dropdown options after the
-        // form is on screen, so a slow data flow never delays first paint.
-        loadDynamicOptions(form);
+        // Resolve the data-source flow ONLY for the page shown first (if it
+        // references ${data.X} or dynamic options). Other pages resolve lazily
+        // on entry (see setPage → ensurePageData), so the flow isn't fired at
+        // load for data a later page needs — and it can then use earlier answers.
+        ensurePageData(form, currentPage);
 
         // Flow-computed fields (incl. a payment amount) recompute when a field
         // LOSES FOCUS — not on every keystroke — so the dependent flow runs

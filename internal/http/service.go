@@ -194,6 +194,9 @@ func (s *Service) configure() error {
 	s.engine.GET("/qr/:id", s.handleQr)
 	s.engine.GET("/form/:id", s.handleForm)
 	s.engine.GET("/form/:id/data", s.handleFormData)
+	// POST carries the answers gathered so far, so a page's data can depend on
+	// earlier fields (resolved lazily on page entry).
+	s.engine.POST("/form/:id/data", s.handleFormData)
 	// Per-field flow compute for NON-payment display fields: runs the flow the
 	// author bound to a field with the current answers as input and returns
 	// its computed value. Payment amounts are computed server-side at checkout,
@@ -883,15 +886,17 @@ func (s *Service) submitForm(c *gin.Context) {
 			ctx.UserVariables = vars
 		}
 	}
-	// Re-resolve the data source on submit (served from the render-time
-	// cache in the common case). Its outputs are used two ways: as ${data.X}
-	// values so a read-only field bakes the same value it showed, and to
-	// bake dynamic option lists into the definition so the whitelist below
-	// covers dynamically-sourced options exactly as it does static ones.
+	// Re-resolve the data source on submit, WITH the submitted answers, so the
+	// authoritative baking matches what the (answer-aware) client showed. Its
+	// outputs are used two ways: as ${data.X} values so a read-only field bakes
+	// the same value it displayed, and to bake dynamic option lists into the
+	// definition so the whitelist below covers dynamically-sourced options
+	// exactly as it does static ones. The resolver caches keyed on the answers,
+	// so this reuses the page-enter execution in the common case.
 	var dataOutputs map[string]interface{}
 	if def.DataSource != nil && def.DataSource.FlowID != "" {
 		if formUsesDataNamespace(def) || formHasDynamicOptions(def) {
-			dataOutputs = s.formData.ResolveRaw(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
+			dataOutputs = s.formData.ResolveComputed(def.DataSource.FlowID, body, def.DataSource.TimeoutSeconds)
 			ctx.DataVariables = flattenOutputs(dataOutputs)
 		}
 	}
@@ -1263,15 +1268,19 @@ func (s *Service) handleForm(c *gin.Context) {
 			log.WithFields(log.Fields{"error": err}).Warn("failed to load user variables for form; rendering without ${user.X}")
 		}
 	}
-	// ${data.X} — run the form's data-source flow (cached + de-duplicated)
-	// and expose its outputs. Only block the GET when the form actually uses
-	// a ${data.X} scalar; a form that uses the flow ONLY for dynamic dropdown
-	// options skips this and lets the browser fetch /form/:id/data after
-	// first paint. Failure/timeout resolves to empty values.
-	if def.DataSource != nil && def.DataSource.FlowID != "" && formUsesDataNamespace(def) {
-		ctx.DataVariables = s.formData.Resolve(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
-	}
+	// ${data.X} is resolved LAZILY, per page. We deliberately do NOT run the
+	// data-source flow at load — leaving ctx.DataVariables nil makes
+	// applySubstitutions leave ${data.X} tokens intact for the browser to
+	// resolve when the referencing page is entered (POST /form/:id/data with the
+	// answers so far). This avoids firing the flow before the user has provided
+	// the inputs an early page collects. PageNeedsData tells the client which
+	// pages must fetch data on entry.
 	resolved := resolveFormForRender(def, ctx)
+	pageNeedsData := []bool{}
+	if def.DataSource != nil && def.DataSource.FlowID != "" {
+		pageNeedsData = pagesNeedingData(def)
+	}
+	pageNeedsDataJSON, _ := json.Marshal(pageNeedsData)
 
 	// Draft submission. Resume an existing live draft when the client presents
 	// a valid submission_id that belongs to this trigger; otherwise mint a
@@ -1318,6 +1327,7 @@ func (s *Service) handleForm(c *gin.Context) {
 		"FieldStates":     fieldStatesPayload,
 		"MetaTitle":       metaText(resolved.Title),
 		"MetaDescription": metaText(resolved.Description),
+		"PageNeedsData":   base64.StdEncoding.EncodeToString(pageNeedsDataJSON),
 	})
 }
 
@@ -1360,7 +1370,24 @@ func (s *Service) handleFormData(c *gin.Context) {
 		return
 	}
 
-	outputs := s.formData.ResolveRaw(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
+	// A POST carries the answers gathered so far; run the data flow WITH them so
+	// a page's ${data.X} / dynamic options can depend on earlier fields. The
+	// resolver caches keyed on the inputs, so repeated identical page-enters
+	// collapse to one execution. A GET (no body) keeps the original inputless
+	// behaviour for callers that don't need answer-aware data.
+	var outputs map[string]interface{}
+	if c.Request != nil && c.Request.Method == http.MethodPost {
+		var body struct {
+			Answers map[string]interface{} `json:"answers"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		if body.Answers == nil {
+			body.Answers = map[string]interface{}{}
+		}
+		outputs = s.formData.ResolveComputed(def.DataSource.FlowID, body.Answers, def.DataSource.TimeoutSeconds)
+	} else {
+		outputs = s.formData.ResolveRaw(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
+	}
 	if outputs == nil {
 		outputs = map[string]interface{}{}
 	}
