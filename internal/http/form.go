@@ -193,6 +193,13 @@ type formComponent struct {
 	// for fields that should have been hidden — a hidden branch must never
 	// smuggle answers into the trigger data.
 	VisibleIf *visibilityRule `json:"visible_if,omitempty"`
+
+	// AllowCopy renders a "Copy" button at the end of the field so a
+	// respondent can copy its current value to the clipboard. Purely a
+	// display affordance (no bearing on the submission), but it must live on
+	// this struct so it survives the render-time re-marshal to the client —
+	// encoding/json drops any JSON key without a matching field.
+	AllowCopy bool `json:"allow_copy,omitempty"`
 }
 
 // visibilityRule is a group of conditions combined with AND ("all") or OR

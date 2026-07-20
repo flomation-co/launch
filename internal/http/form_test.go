@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -872,4 +873,35 @@ func TestSanitiseMatrixSubmissions_NoMatrixFields_PassThrough(t *testing.T) {
 	}
 	in := map[string]interface{}{"text": "hello"}
 	Expect(sanitiseMatrixSubmissions(in, resolved)).To(Equal(in))
+}
+
+// TestAllowCopy_SurvivesParseAndRemarshal guards the render-time round-trip:
+// the client authors allow_copy in the editor, it is stored as JSON, and on
+// render launch parses it into formComponent and RE-MARSHALS it for the browser
+// (service.go). If AllowCopy were missing from the struct, encoding/json would
+// silently drop the key here and the Copy button would never appear.
+func TestAllowCopy_SurvivesParseAndRemarshal(t *testing.T) {
+	RegisterTestingT(t)
+
+	raw := []byte(`{"title":"T","pages":[{"components":[` +
+		`{"name":"ref","type":"text","allow_copy":true},` +
+		`{"name":"plain","type":"text"}]}]}`)
+
+	def, err := parseFormDefinition(raw)
+	Expect(err).To(BeNil())
+	Expect(def.Pages[0].Components[0].AllowCopy).To(BeTrue())
+	Expect(def.Pages[0].Components[1].AllowCopy).To(BeFalse())
+
+	// Re-marshal exactly as the render path does, then re-read: the flag must
+	// still be present for the field that opted in, and omitted for the other.
+	out, err := json.Marshal(def)
+	Expect(err).To(BeNil())
+
+	var back formDefinition
+	Expect(json.Unmarshal(out, &back)).To(BeNil())
+	Expect(back.Pages[0].Components[0].AllowCopy).To(BeTrue())
+	Expect(back.Pages[0].Components[1].AllowCopy).To(BeFalse())
+
+	// omitempty: the false field must not emit the key at all.
+	Expect(string(out)).ToNot(ContainSubstring(`"name":"plain","type":"text","allow_copy"`))
 }
