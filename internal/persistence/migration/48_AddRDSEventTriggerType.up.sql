@@ -3,7 +3,7 @@
 -- Postgres (invalid enum value), the trigger silently fails to register, and the
 -- rdsevent poll service never sees it (GetTriggersByType returns nothing).
 --
--- Pairs with api migration 132, which seeds the api-side trigger_type row. BOTH
+-- Pairs with api migration 134, which seeds the api-side trigger_type row. BOTH
 -- are required — the api resolves trigger.type via
 -- (SELECT id FROM trigger_type WHERE name = :type_name), which returns NULL and
 -- violates NOT NULL without its seed, SILENTLY from the operator's point of view.
