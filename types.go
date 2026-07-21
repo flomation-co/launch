@@ -59,6 +59,13 @@ const (
 	// loop. The name must match what the api derives from the executor node
 	// label: "trigger/database_row" → "database-row".
 	TriggerTypeDBRow = "database-row"
+
+	// TriggerTypeRDSEvent polls AWS RDS DescribeEvents on an interval and fires the
+	// flow once per newly-observed event (failover, backup complete, low storage,
+	// availability change). Like the S3 trigger nothing POSTs to Launch — the
+	// rdsevent service drives the loop. The name must match what the api derives
+	// from the executor node label: "trigger/rds_event" → "rds-event".
+	TriggerTypeRDSEvent = "rds-event"
 )
 
 type Trigger struct {

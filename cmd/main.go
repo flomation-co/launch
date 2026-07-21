@@ -18,6 +18,7 @@ import (
 	msmailpoll "flomation.app/automate/launch/internal/microsoft/mailpoll"
 	"flomation.app/automate/launch/internal/mqtt"
 	"flomation.app/automate/launch/internal/persistence"
+	"flomation.app/automate/launch/internal/rdsevent"
 	s3trigger "flomation.app/automate/launch/internal/s3"
 	"flomation.app/automate/launch/internal/schedule"
 	"flomation.app/automate/launch/internal/telegram"
@@ -75,6 +76,9 @@ func main() {
 
 	_ = dbrow.NewService(cfg, db, t)
 	log.Info("database row poll service started")
+
+	_ = rdsevent.NewService(cfg, db, t)
+	log.Info("rds event poll service started")
 
 	// Email trigger service is started after agent service (needs agent ref)
 	var emailSvc *emailtrigger.Service
