@@ -269,7 +269,9 @@ func (s *Service) checkMetricTrigger(tr *launch.Trigger) {
 		return
 	}
 	period := int32(300)
-	if p, err := strconv.Atoi(strings.TrimSpace(cfg.Period)); err == nil && p > 0 {
+	// ParseInt with bitSize 32 validates the value fits int32, so the conversion
+	// below cannot overflow (satisfies gosec G115/G109).
+	if p, err := strconv.ParseInt(strings.TrimSpace(cfg.Period), 10, 32); err == nil && p > 0 {
 		period = int32(p)
 	}
 	statistic := cfg.Statistic
