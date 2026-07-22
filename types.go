@@ -66,6 +66,13 @@ const (
 	// rdsevent service drives the loop. The name must match what the api derives
 	// from the executor node label: "trigger/rds_event" → "rds-event".
 	TriggerTypeRDSEvent = "rds-event"
+
+	// CloudWatch triggers — polled by internal/cloudwatch. Names must match what the
+	// api derives from the executor node label (underscores → hyphens):
+	// "trigger/cloudwatch_alarm" → "cloudwatch-alarm", etc.
+	TriggerTypeCloudWatchAlarm  = "cloudwatch-alarm"
+	TriggerTypeCloudWatchMetric = "cloudwatch-metric"
+	TriggerTypeCloudWatchLogs   = "cloudwatch-logs"
 )
 
 type Trigger struct {
