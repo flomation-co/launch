@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"flomation.app/automate/launch/internal/agent"
+	"flomation.app/automate/launch/internal/cloudwatch"
 	"flomation.app/automate/launch/internal/config"
 	"flomation.app/automate/launch/internal/dbrow"
 	emailtrigger "flomation.app/automate/launch/internal/email"
@@ -79,6 +80,9 @@ func main() {
 
 	_ = rdsevent.NewService(cfg, db, t)
 	log.Info("rds event poll service started")
+
+	_ = cloudwatch.NewService(cfg, db, t)
+	log.Info("cloudwatch poll service started")
 
 	// Email trigger service is started after agent service (needs agent ref)
 	var emailSvc *emailtrigger.Service
