@@ -11,6 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.64.0
 	github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.80.0
 	github.com/aws/aws-sdk-go-v2/service/rds v1.122.0
+	github.com/aws/aws-sdk-go-v2/service/route53 v1.65.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.97.3
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/flomation-co/sentinel-client v0.0.0-20260218162458-6cab108165b5
