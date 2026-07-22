@@ -73,6 +73,10 @@ const (
 	TriggerTypeCloudWatchAlarm  = "cloudwatch-alarm"
 	TriggerTypeCloudWatchMetric = "cloudwatch-metric"
 	TriggerTypeCloudWatchLogs   = "cloudwatch-logs"
+
+	// Route 53 Health Check trigger — polled by internal/route53health.
+	// "trigger/route53_health_check" → "route53-health-check".
+	TriggerTypeRoute53HealthCheck = "route53-health-check"
 )
 
 type Trigger struct {

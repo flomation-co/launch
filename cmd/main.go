@@ -20,6 +20,7 @@ import (
 	"flomation.app/automate/launch/internal/mqtt"
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/rdsevent"
+	"flomation.app/automate/launch/internal/route53health"
 	s3trigger "flomation.app/automate/launch/internal/s3"
 	"flomation.app/automate/launch/internal/schedule"
 	"flomation.app/automate/launch/internal/telegram"
@@ -83,6 +84,9 @@ func main() {
 
 	_ = cloudwatch.NewService(cfg, db, t)
 	log.Info("cloudwatch poll service started")
+
+	_ = route53health.NewService(cfg, db, t)
+	log.Info("route53 health check poll service started")
 
 	// Email trigger service is started after agent service (needs agent ref)
 	var emailSvc *emailtrigger.Service
