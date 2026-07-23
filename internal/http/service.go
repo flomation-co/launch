@@ -202,6 +202,7 @@ func (s *Service) configure() error {
 	// its computed value. Payment amounts are computed server-side at checkout,
 	// never here.
 	s.engine.POST("/form/:id/compute", s.computeFormField)
+	s.engine.GET("/form/:id/execution/:eid", s.handleFormExecution)
 	s.engine.POST("/form/:id", s.submitForm)
 	s.engine.PUT("/form/:id/submission/:sid", s.autosaveFormDraft)
 	s.engine.POST("/form/:id/upload", s.uploadFormBlob)
@@ -225,6 +226,7 @@ func (s *Service) configure() error {
 	embedForm.GET("/definition", s.handleEmbedFormDefinition)
 	embedForm.POST("/session", s.handleEmbedFormSession)
 	embedForm.GET("/data", s.handleFormData)
+	embedForm.GET("/execution/:eid", s.handleFormExecution)
 	embedForm.POST("", s.submitForm)
 	embedForm.POST("/compute", s.computeFormField)
 	embedForm.PUT("/submission/:sid", s.autosaveFormDraft)
@@ -242,6 +244,7 @@ func (s *Service) configure() error {
 	s.engine.OPTIONS("/v1/embed/form/:id/data", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/compute", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/execution/:eid", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/submission/:sid", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/upload", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/payment-intent", s.embedPreflight)
@@ -920,15 +923,75 @@ func (s *Service) submitForm(c *gin.Context) {
 		final["__field_states"] = fieldStates
 	}
 
-	go func() {
-		if err := s.trigger.TriggerAs(tr, final, userID); err != nil {
-			log.WithFields(log.Fields{
-				"error": err,
-			}).Error("unable to execute trigger")
-		}
-	}()
+	// Fire synchronously so we can hand the client the execution id — a form
+	// whose tail is a read-only "result page" polls this execution for its
+	// outputs (see handleFormExecution). The create call returns as soon as the
+	// execution row exists; the flow itself runs asynchronously on a runner, so
+	// this does not block on completion. On a fire failure we keep the historical
+	// contract (submission accepted, error logged) and simply omit the id.
+	executionID, terr := s.trigger.TriggerReturningExecution(tr, final, userID)
+	if terr != nil {
+		log.WithFields(log.Fields{
+			"error": terr,
+		}).Error("unable to execute trigger")
+		c.Status(http.StatusOK)
+		return
+	}
 
-	c.Status(http.StatusOK)
+	c.JSON(http.StatusOK, gin.H{"execution_id": executionID})
+}
+
+// handleFormExecution lets a form's read-only result page poll the single
+// execution its submission created (see submitForm) for the flow outputs it
+// displays. Serves both the native form (GET /form/:id/execution/:eid) and the
+// embed SDK (GET /v1/embed/form/:id/execution/:eid, under the embed gate).
+//
+// Security: the execution MUST belong to this form's own flow
+// (flo_id == trigger.FlowID). Without that check a caller holding a valid
+// pk_/session could read ANY execution by guessing/reusing an id. A mismatch (or
+// an unknown execution) is reported as 404 so we never confirm another flow's
+// execution id. Returns {status, outputs?} — outputs present only once executed.
+func (s *Service) handleFormExecution(c *gin.Context) {
+	id := c.Param("id")
+	tr, err := s.trigger.GetTriggerByID(id)
+	if err != nil || tr == nil || tr.Type != launch.TriggerTypeForm {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	eid := c.Param("eid")
+	if uuid.Validate(eid) != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	floID, status, outputs, ok := s.formData.FetchExecution(eid)
+	if !ok || floID == "" || floID != tr.FlowID {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	resp := gin.H{"status": status}
+	if outputs != nil {
+		resp["outputs"] = outputs
+		// Also expose the outputs mapped to computed FIELD names (via the same
+		// computeOutputKey /compute uses). The embed projection strips
+		// value_output, so the SDK can't map raw outputs itself — it fills its
+		// result-page fields from `values` by name. The native form can use
+		// either. Best-effort: a definition that won't parse just omits values.
+		if def, perr := parseFormDefinition(tr.Data); perr == nil {
+			values := map[string]interface{}{}
+			for _, page := range def.Pages {
+				for _, comp := range page.Components {
+					if strings.TrimSpace(comp.ValueSource) == "" {
+						continue
+					}
+					if v, has := outputs[computeOutputKey(comp)]; has {
+						values[comp.Name] = v
+					}
+				}
+			}
+			resp["values"] = values
+		}
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // extractSubmissionID pops the client-supplied draft submission id out of a
