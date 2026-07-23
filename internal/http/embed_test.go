@@ -63,6 +63,44 @@ func TestProjectDefinition_StripsSecrets(t *testing.T) {
 	Expect(pay["computed"]).To(Equal(true))
 }
 
+// TestProjectDefinition_SubstitutesUserVars is the regression for the embedded
+// login-gated form: once the SDK forwards the session token, the definition
+// endpoint must resolve ${user.X} before projecting — otherwise the field's
+// default_value (e.g. a Username pre-filled with ${user.email}) reaches the SDK
+// verbatim. handleEmbedFormDefinition composes resolveFormForRender then
+// projectDefinition; this asserts that composition on the pure functions.
+func TestProjectDefinition_SubstitutesUserVars(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{
+		Title: "Self Start",
+		Pages: []formPage{{Components: []formComponent{
+			{Name: "username", Label: "Username", Type: "text", DefaultValue: "${user.email}"},
+		}}},
+	}
+
+	// Authenticated: ${user.email} resolves in the projected default_value.
+	ctx := substitutionContext{UserVariables: map[string]string{"email": "jane@dwp.gov.uk"}}
+	proj := projectDefinition(resolveFormForRender(def, ctx))
+	raw, _ := json.Marshal(proj)
+	var payload struct {
+		Pages []struct {
+			Components []map[string]interface{} `json:"components"`
+		} `json:"pages"`
+	}
+	Expect(json.Unmarshal(raw, &payload)).To(Succeed())
+	Expect(payload.Pages[0].Components[0]["default_value"]).To(Equal("jane@dwp.gov.uk"))
+	Expect(string(raw)).ToNot(ContainSubstring("${user.email}"))
+
+	// Anonymous (no user vars): an unresolved ${user.X} collapses to empty (the
+	// existing substitution contract) rather than leaking the raw token to the
+	// client. The SDK still can't submit a require_login form until it presents a
+	// token, at which point the field pre-fills.
+	projAnon := projectDefinition(resolveFormForRender(def, substitutionContext{}))
+	rawAnon, _ := json.Marshal(projAnon)
+	Expect(string(rawAnon)).ToNot(ContainSubstring("${user."))
+}
+
 // TestEmbedRoutesRegister_NoConflict asserts the embed route shapes register on a
 // fresh gin engine without a radix-tree conflict (gin panics on conflict at
 // registration time, which a plain build won't catch).
