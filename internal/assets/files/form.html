@@ -1321,6 +1321,14 @@
         return c;
     }
     let currentPage = 0;
+    // The execution id the submission created (returned by POST /form/:id). A
+    // read-only results tail polls THIS single execution for its flow-computed
+    // values (see showSummaryTail) — the flow is never run a second time.
+    let SUBMISSION_EXECUTION_ID = null;
+    // True once the form has been submitted and we're showing the read-only
+    // results tail. Drives the nav chrome: no Previous/Submit on a result page,
+    // and a "Continue" button only when a further result page follows.
+    let SUBMITTED = false;
     // Names of components / indices of pages currently hidden by a
     // conditional-visibility rule. Recomputed by applyVisibility on every
     // answer change and page navigation. Hidden required fields are
@@ -4137,6 +4145,26 @@
     // hiddenPages is current.
     function refreshNavChrome(form) {
         const prev = document.getElementById("previous");
+        const next = document.getElementById("next");
+        const submit = document.getElementById("submit");
+        const indicator = document.getElementById("page-indicator");
+
+        // Post-submission: we're on the read-only results tail. No going Back
+        // (the answers are already submitted) and no Submit. A "Continue" button
+        // appears ONLY when a further visible result page follows — navigation
+        // between result pages, never a re-submit.
+        if (SUBMITTED) {
+            if (prev) prev.classList.add("hidden");
+            if (submit) submit.classList.add("hidden");
+            if (indicator) indicator.classList.add("hidden");
+            if (next) {
+                const moreResults = firstVisiblePageFrom(form, currentPage + 1, 1) >= 0;
+                next.disabled = !moreResults;
+                next.classList.toggle("hidden", !moreResults);
+            }
+            return;
+        }
+
         if (prev) prev.disabled = firstVisiblePageFrom(form, currentPage - 1, -1) < 0;
 
         // Submit lives on the LAST SUBMITTABLE page (the last visible page with
@@ -4148,14 +4176,12 @@
         // Hide the Next button once the user is on (or past) the submit page —
         // there is nothing further to fill in. This also removes Next on a
         // normal last page (where submitPage == last page).
-        const next = document.getElementById("next");
         if (next) {
             const noNext = currentPage >= submitPage;
             next.disabled = noNext;
             next.classList.toggle("hidden", noNext);
         }
 
-        const submit = document.getElementById("submit");
         if (submit) submit.classList.toggle("hidden", currentPage !== submitPage);
 
         renderPageIndicator(form);
@@ -4186,7 +4212,14 @@
         //  - value_source computed fields on this page (scheduleCompute now reads
         //    only the current page, so entering the page is what fires them).
         ensurePageData(form, currentPage);
-        scheduleCompute(form);
+        // A post-submission result page fills its flow-computed fields from the
+        // SINGLE submission execution (poll), never a second /compute run. Any
+        // other page computes reactively as usual.
+        if (SUBMITTED && SUBMISSION_EXECUTION_ID && !pageHasEditableInput(form.pages[currentPage])) {
+            pollSummaryExecution(form, SUBMISSION_EXECUTION_ID);
+        } else {
+            scheduleCompute(form);
+        }
 
         refreshNavChrome(form);
         // Re-evaluate the Submit enabled state for the new page. Navigation
@@ -4384,7 +4417,7 @@
             buttons.appendChild(prev);
 
             const next = document.createElement("button");
-            next.textContent = "Next";
+            next.textContent = "Continue";
             next.id = "next";
             next.classList.add("btn", "btn-secondary");
             next.onclick = () => setPage(form, currentPage + 1);
@@ -4496,7 +4529,12 @@
             if (!r.ok) return Promise.reject(new Error("submit failed"));
             // Submitted — drop the local cushion so a later visit starts clean.
             try { sessionStorage.removeItem(AUTOSAVE_KEY); } catch (e) { /* ignore */ }
-            handleSubmitSuccess(form);
+            // The response carries {execution_id} for the single submission
+            // execution; a results tail polls it. Tolerate an empty/absent body.
+            return r.json().catch(() => ({})).then((data) => {
+                SUBMISSION_EXECUTION_ID = (data && data.execution_id) || null;
+                handleSubmitSuccess(form);
+            });
         })
         .catch(() => {
             submit.disabled = false;
@@ -4552,16 +4590,10 @@
         while (p < form.pages.length && hiddenPages.has(p)) p++;
         if (p >= form.pages.length) { showThankYou(msg, ""); return; }
 
-        currentPage = p;
-        for (let i = 0; i < form.pages.length; i++) {
-            const el = document.getElementById("page-" + i);
-            if (el) el.classList.toggle("hidden", i !== currentPage);
-        }
-        // Remove all navigation — the form is complete.
-        ["button-row", "page-indicator"].forEach((id) => {
-            const el = document.getElementById(id);
-            if (el) el.classList.add("hidden");
-        });
+        // Enter results mode: refreshNavChrome now hides Previous/Submit and only
+        // offers "Continue" when a further result page follows.
+        SUBMITTED = true;
+
         // Success banner above the results.
         const body = document.getElementById("form-body");
         if (body && !document.getElementById("summary-banner")) {
@@ -4578,8 +4610,66 @@
             banner.appendChild(text);
             body.insertBefore(banner, body.firstChild);
         }
-        // Compute the summary page's flow-computed values with the final answers.
-        scheduleCompute(form);
+
+        // Navigate to the first results page. setPage handles page visibility,
+        // fills the flow-computed fields from the SINGLE submission execution
+        // (via pollSummaryExecution, because the page has no editable input and
+        // SUBMISSION_EXECUTION_ID is set), and renders the results-mode nav. If we
+        // somehow have no execution id (older server / trigger fire failed),
+        // setPage falls back to the legacy per-field compute so it still fills.
+        setPage(form, p);
+    }
+
+    // The compute-flow output key that holds a field's value: the author-chosen
+    // value_output, or the field's own name. Mirrors computeOutputKey server-side.
+    function computedOutputKey(comp) {
+        return (comp.value_output && String(comp.value_output).trim()) || comp.name;
+    }
+
+    // pollSummaryExecution fills the results tail's flow-computed fields from the
+    // submission's own execution outputs, polling until it completes. One
+    // execution feeds every result field — the flow is not re-run per field.
+    function pollSummaryExecution(form, executionID) {
+        const fields = computedFields(form); // current (results) page's value_source fields
+        if (fields.length === 0) return;
+        for (const c of fields) if (c.type !== "payment") setComputeSpinner(c.name, true);
+
+        const started = Date.now();
+        const TIMEOUT_MS = 120000; // give a long-running action flow room to finish
+        const INTERVAL_MS = 1500;
+
+        const tick = () => {
+            fetch("/form/" + FORM_ID + "/execution/" + encodeURIComponent(executionID))
+                .then((r) => (r.ok ? r.json() : null))
+                .then((data) => {
+                    const outputs = data && data.outputs;
+                    if (outputs) {
+                        for (const comp of fields) {
+                            setComputeSpinner(comp.name, false);
+                            const v = outputs[computedOutputKey(comp)];
+                            if (v === undefined || v === null) continue;
+                            const text = String(v);
+                            formValues[comp.name] = text;
+                            const el = document.getElementById("input-" + comp.name);
+                            if (el) el.value = text;
+                        }
+                        return; // executed — done
+                    }
+                    if (Date.now() - started > TIMEOUT_MS) {
+                        for (const c of fields) setComputeSpinner(c.name, false);
+                        return; // give up spinning; leave fields blank
+                    }
+                    setTimeout(tick, INTERVAL_MS);
+                })
+                .catch(() => {
+                    if (Date.now() - started > TIMEOUT_MS) {
+                        for (const c of fields) setComputeSpinner(c.name, false);
+                        return;
+                    }
+                    setTimeout(tick, INTERVAL_MS);
+                });
+        };
+        tick();
     }
 
     // showThankYou renders the success card. The message is author-controlled,
