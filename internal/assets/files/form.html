@@ -4642,11 +4642,16 @@
             fetch("/form/" + FORM_ID + "/execution/" + encodeURIComponent(executionID))
                 .then((r) => (r.ok ? r.json() : null))
                 .then((data) => {
+                    // Prefer server-mapped, field-keyed `values`; fall back to the
+                    // raw outputs keyed by the field's value_output (both present
+                    // once the execution has finished).
+                    const values = data && data.values;
                     const outputs = data && data.outputs;
-                    if (outputs) {
+                    if (values || outputs) {
                         for (const comp of fields) {
                             setComputeSpinner(comp.name, false);
-                            const v = outputs[computedOutputKey(comp)];
+                            let v = values ? values[comp.name] : undefined;
+                            if ((v === undefined || v === null) && outputs) v = outputs[computedOutputKey(comp)];
                             if (v === undefined || v === null) continue;
                             const text = String(v);
                             formValues[comp.name] = text;

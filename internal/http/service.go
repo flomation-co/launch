@@ -971,6 +971,25 @@ func (s *Service) handleFormExecution(c *gin.Context) {
 	resp := gin.H{"status": status}
 	if outputs != nil {
 		resp["outputs"] = outputs
+		// Also expose the outputs mapped to computed FIELD names (via the same
+		// computeOutputKey /compute uses). The embed projection strips
+		// value_output, so the SDK can't map raw outputs itself — it fills its
+		// result-page fields from `values` by name. The native form can use
+		// either. Best-effort: a definition that won't parse just omits values.
+		if def, perr := parseFormDefinition(tr.Data); perr == nil {
+			values := map[string]interface{}{}
+			for _, page := range def.Pages {
+				for _, comp := range page.Components {
+					if strings.TrimSpace(comp.ValueSource) == "" {
+						continue
+					}
+					if v, has := outputs[computeOutputKey(comp)]; has {
+						values[comp.Name] = v
+					}
+				}
+			}
+			resp["values"] = values
+		}
 	}
 	c.JSON(http.StatusOK, resp)
 }
