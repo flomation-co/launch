@@ -233,7 +233,14 @@ func projectDefinition(def formDefinition) map[string]interface{} {
 
 // handleEmbedFormDefinition serves the public projection of a form definition to
 // the SDK. The embed gate has already validated the key/origin/resource, so this
-// just loads the trigger, projects it, and returns JSON.
+// just loads the trigger, resolves render-time substitutions, and returns JSON.
+//
+// Render-time substitution mirrors the hosted form path (handleForm): a
+// logged-in user (Bearer token or flomation-token cookie — the SDK forwards the
+// former via getAuthToken) gets ${user.X} resolved, and ${query.X} comes from the
+// request URL regardless of auth state. ${data.X} is deliberately left intact for
+// the client to resolve lazily per page (DataVariables stays nil). Without this,
+// a login-gated embedded form projected ${user.email} etc. verbatim.
 func (s *Service) handleEmbedFormDefinition(c *gin.Context) {
 	id := c.Param("id")
 	tr, err := s.trigger.GetTriggerByID(id)
@@ -247,7 +254,19 @@ func (s *Service) handleEmbedFormDefinition(c *gin.Context) {
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-	c.JSON(http.StatusOK, projectDefinition(def))
+
+	cookie, _ := c.Cookie("flomation-token")
+	token := extractSessionToken(c.GetHeader("Authorization"), cookie)
+	userID := s.resolveSessionUser(token)
+	ctx := substitutionContext{QueryParams: queryParamsMap(c)}
+	if userID != "" {
+		if vars, verr := s.loadUserVariables(userID); verr == nil {
+			ctx.UserVariables = vars
+		} else {
+			log.WithError(verr).Warn("embed: failed to load user variables; projecting without ${user.X}")
+		}
+	}
+	c.JSON(http.StatusOK, projectDefinition(resolveFormForRender(def, ctx)))
 }
 
 // handleEmbedFormSession mints a server-side draft for an embedded form and
