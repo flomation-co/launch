@@ -157,9 +157,23 @@ func (s *Service) Trigger(trigger *launch.Trigger, data interface{}) error {
 // pass the form submitter; channel webhooks can pass the resolved
 // sender. Empty string preserves the historical behaviour where the
 // invocation owner falls back to the trigger row's author.
+//
+// It discards the resulting execution id — the common path for the ~40 fire
+// -and-forget trigger callers. Use TriggerReturningExecution when the caller
+// needs to poll the execution it created (e.g. a form's result pages).
 func (s *Service) TriggerAs(trigger *launch.Trigger, data interface{}, triggererUserID string) error {
+	_, err := s.TriggerReturningExecution(trigger, data, triggererUserID)
+	return err
+}
+
+// TriggerReturningExecution invokes the trigger like TriggerAs but returns the
+// execution id the API mints (the internal trigger-execute endpoint responds
+// 201 {"id": …}). The create returns as soon as the execution row exists — the
+// flow itself runs asynchronously on a runner — so this does NOT block on flow
+// completion. A disabled trigger is a no-op and returns ("", nil).
+func (s *Service) TriggerReturningExecution(trigger *launch.Trigger, data interface{}, triggererUserID string) (string, error) {
 	if trigger.DisabledAt != nil {
-		return nil
+		return "", nil
 	}
 
 	log.WithFields(log.Fields{
@@ -176,21 +190,17 @@ func (s *Service) TriggerAs(trigger *launch.Trigger, data interface{}, triggerer
 
 	b, err := json.Marshal(data)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	res, err := s.apiClient.Do(req)
 	if err != nil {
-		return err
-	}
-
-	if res.StatusCode < 200 || res.StatusCode > 299 {
-		return errors.New("invalid status code: " + res.Status)
+		return "", err
 	}
 
 	defer func() {
@@ -199,5 +209,19 @@ func (s *Service) TriggerAs(trigger *launch.Trigger, data interface{}, triggerer
 		}
 	}()
 
-	return nil
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		return "", errors.New("invalid status code: " + res.Status)
+	}
+
+	// The API returns {"id": "<executionID>"}. Decode best-effort: a body that
+	// doesn't carry an id (older API, or a non-JSON 2xx) leaves the id empty,
+	// which callers treat as "not pollable" rather than an error — the trigger
+	// still fired successfully.
+	var out struct {
+		ID string `json:"id"`
+	}
+	if res.Body != nil {
+		_ = json.NewDecoder(res.Body).Decode(&out)
+	}
+	return out.ID, nil
 }
