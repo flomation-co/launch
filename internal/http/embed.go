@@ -172,6 +172,11 @@ var publicComponentKeys = map[string]struct{}{
 	"capture_mode": {}, "auto_submit": {}, "confidence_threshold": {},
 	"privacy_notice": {}, "show_privacy_notice": {},
 	"amount": {}, "currency": {}, "allow_copy": {}, "visible_if": {},
+	// Table (data-grid) field. rows_source names a data-source OUTPUT key (safe,
+	// like options_source — not an internal flow id), so it is exposed. Manual
+	// table_rows are the display data. No internal ids here.
+	"table_columns": {}, "table_rows": {}, "rows_source": {}, "selection_mode": {},
+	"value_column": {}, "page_size": {}, "filterable": {},
 }
 
 // projectComponent reduces a component to its allowlisted keys plus derived

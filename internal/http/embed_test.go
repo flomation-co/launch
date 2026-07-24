@@ -63,6 +63,45 @@ func TestProjectDefinition_StripsSecrets(t *testing.T) {
 	Expect(pay["computed"]).To(Equal(true))
 }
 
+// TestProjectDefinition_ProjectsTableConfig asserts the table field's config
+// keys survive the default-deny allowlist so the SDK can render the grid.
+func TestProjectDefinition_ProjectsTableConfig(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{
+		Title: "Choose a claim",
+		Pages: []formPage{{Components: []formComponent{{
+			Name:          "claim",
+			Label:         "Claims",
+			Type:          "table",
+			SelectionMode: "single",
+			ValueColumn:   "ref",
+			PageSize:      10,
+			Filterable:    true,
+			RowsSource:    "claims",
+			TableColumns:  []tableColumn{{Key: "ref", Label: "Reference", Clickable: true}},
+			TableRows:     []map[string]interface{}{{"ref": "REF-1"}},
+		}}}},
+	}
+
+	proj := projectDefinition(def)
+	raw, _ := json.Marshal(proj)
+	var payload struct {
+		Pages []struct {
+			Components []map[string]interface{} `json:"components"`
+		} `json:"pages"`
+	}
+	Expect(json.Unmarshal(raw, &payload)).To(Succeed())
+	comp := payload.Pages[0].Components[0]
+	Expect(comp["type"]).To(Equal("table"))
+	Expect(comp["selection_mode"]).To(Equal("single"))
+	Expect(comp["value_column"]).To(Equal("ref"))
+	Expect(comp["rows_source"]).To(Equal("claims"))
+	Expect(comp["filterable"]).To(Equal(true))
+	Expect(comp["table_columns"]).ToNot(BeNil())
+	Expect(comp["table_rows"]).ToNot(BeNil())
+}
+
 // TestProjectDefinition_SubstitutesUserVars is the regression for the embedded
 // login-gated form: once the SDK forwards the session token, the definition
 // endpoint must resolve ${user.X} before projecting — otherwise the field's
