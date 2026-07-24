@@ -253,6 +253,20 @@ func (r *formDataResolver) pollResult(pollURL string) (map[string]interface{}, b
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// A client error (401/403 from an internal-auth misconfig, 404 not-found)
+	// will NEVER resolve by polling — surfacing it and stopping is far better
+	// than silently polling until the 20s timeout and returning empty (which
+	// makes a computed field / table appear to "spin forever" then go blank).
+	// A 5xx may be transient, so keep polling on those.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		log.WithFields(log.Fields{"status": resp.StatusCode, "url": pollURL}).
+			Warn("form data-source: internal execution poll was rejected — check launch→API internal (mTLS) auth")
+		return nil, true
+	}
+	if resp.StatusCode >= 500 {
+		return nil, false
+	}
+
 	var data struct {
 		ExecutionStatus string                 `json:"execution_status"`
 		Result          map[string]interface{} `json:"result"`
