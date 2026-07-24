@@ -4818,6 +4818,18 @@
             runCompute(fields);
         }, 800);
     }
+    // normalizeRowsValue coerces a table's computed value into a rows array. A
+    // flow commonly emits the rows as a JSON STRING (e.g. a Set Output typed as
+    // text, or a script returning JSON), so a string is parsed and used only if
+    // it decodes to an array. Anything else yields no rows.
+    function normalizeRowsValue(value) {
+        if (Array.isArray(value)) return value;
+        if (typeof value === "string" && value.trim() !== "") {
+            try { const p = JSON.parse(value); if (Array.isArray(p)) return p; } catch (e) { /* not JSON */ }
+        }
+        return [];
+    }
+
     // applyComputedValue applies a single field's computed value, dispatching by
     // type: a table's value is its ROWS, a payment's is its amount, everything
     // else is a read-only text value.
@@ -4828,7 +4840,7 @@
             // Update table_rows and re-render in place; the row selection stays.
             setComputeSpinner(comp.name, false);
             tableRowsResolved[comp.name] = true; // stop the loading spinner
-            comp.table_rows = Array.isArray(value) ? value : [];
+            comp.table_rows = normalizeRowsValue(value);
             const w = fieldWrapperFor(comp.name);
             if (w) { w.innerHTML = ""; renderComponentInto(form, w, comp); }
             applyVisibility(form);

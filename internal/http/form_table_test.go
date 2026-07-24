@@ -179,6 +179,24 @@ func TestRowsFromOutput_ArrayOfArrays_BindsByColumn(t *testing.T) {
 	Expect(rows[1]["name"]).To(Equal("Bob"))
 }
 
+func TestRowsFromOutput_JSONStringIsParsed(t *testing.T) {
+	RegisterTestingT(t)
+	cols := []tableColumn{{Key: "id"}, {Key: "name"}}
+	// A flow may emit the rows as a JSON string (Set Output typed as text).
+	rows := rowsFromOutput(`[[1, "Row 1"], [2, "Row 2"]]`, cols)
+	Expect(rows).To(HaveLen(2))
+	Expect(rows[0]["id"]).To(Equal(float64(1)))
+	Expect(rows[1]["name"]).To(Equal("Row 2"))
+
+	// Array-of-objects as a JSON string parses too.
+	rows = rowsFromOutput(`[{"id":"a","name":"Alice"}]`, cols)
+	Expect(rows).To(HaveLen(1))
+	Expect(rows[0]["name"]).To(Equal("Alice"))
+
+	// A non-JSON / malformed string yields no rows (not a crash).
+	Expect(rowsFromOutput(`not json`, cols)).To(BeNil())
+}
+
 func TestSanitiseTableSubmissions_NoneStripsValue(t *testing.T) {
 	RegisterTestingT(t)
 	def := tableDef("none", "ref")

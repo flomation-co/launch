@@ -525,6 +525,14 @@ func optionsFromOutput(val interface{}) []formOption {
 // rows. The result matches the manual TableRows shape so the rest of the table
 // pipeline (whitelist, render) treats computed and manual rows identically.
 func rowsFromOutput(val interface{}, columns []tableColumn) []map[string]interface{} {
+	// A flow may emit the rows as a JSON STRING (e.g. a Set Output typed as
+	// text) rather than an array — parse it and use the decoded value.
+	if s, ok := val.(string); ok {
+		var parsed interface{}
+		if json.Unmarshal([]byte(s), &parsed) == nil {
+			val = parsed
+		}
+	}
 	arr, ok := val.([]interface{})
 	if !ok {
 		return nil
