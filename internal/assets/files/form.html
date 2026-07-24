@@ -4818,6 +4818,53 @@
             runCompute(fields);
         }, 800);
     }
+    // applyComputedValue applies a single field's computed value, dispatching by
+    // type: a table's value is its ROWS, a payment's is its amount, everything
+    // else is a read-only text value.
+    function applyComputedValue(form, comp, value) {
+        const hasVal = value !== undefined && value !== null;
+        if (comp.type === "table") {
+            // A table's flow produces its ROWS (an array), not the field's value.
+            // Update table_rows and re-render in place; the row selection stays.
+            setComputeSpinner(comp.name, false);
+            tableRowsResolved[comp.name] = true; // stop the loading spinner
+            comp.table_rows = Array.isArray(value) ? value : [];
+            const w = fieldWrapperFor(comp.name);
+            if (w) { w.innerHTML = ""; renderComponentInto(form, w, comp); }
+            applyVisibility(form);
+            validateForm(form);
+            return;
+        }
+        const text = hasVal ? String(value) : null;
+        if (comp.type === "payment") {
+            // Payment amount: display only — the authoritative charge is
+            // recomputed + collected server-side at checkout.
+            paymentAmounts[comp.name] = text !== null ? text : "";
+            renderPaymentState(comp);
+            return;
+        }
+        setComputeSpinner(comp.name, false);
+        if (text === null) return;
+        formValues[comp.name] = text;
+        const el = document.getElementById("input-" + comp.name);
+        if (el) el.value = text;
+    }
+
+    // computeFailed clears the pending state for a field whose compute errored,
+    // so a payment widget / table spinner doesn't hang.
+    function computeFailed(form, comp) {
+        setComputeSpinner(comp.name, false);
+        if (comp.type === "payment" && !(comp.name in paymentAmounts)) {
+            paymentAmounts[comp.name] = "";
+            renderPaymentState(comp);
+        }
+        if (comp.type === "table" && !tableRowsResolved[comp.name]) {
+            tableRowsResolved[comp.name] = true;
+            const w = fieldWrapperFor(comp.name);
+            if (w) { w.innerHTML = ""; renderComponentInto(form, w, comp); }
+        }
+    }
+
     function runCompute(fields) {
         // Snapshot the answers once so every field computes against the same
         // state. The computed fields themselves read as empty in the snapshot
@@ -4826,67 +4873,24 @@
         for (const k in formValues) {
             if (Object.prototype.hasOwnProperty.call(formValues, k)) answers[k] = formValues[k];
         }
-        for (const comp of fields) {
-            fetch("/form/" + FORM_ID + "/compute", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({field: comp.name, answers: answers})
+        // ONE batch request for every computed field on the page. The server
+        // runs each distinct flow exactly once (fields sharing a flow collapse
+        // to a single execution), which is what stops two fields backed by the
+        // same flow from starting two flow instances.
+        fetch("/form/" + FORM_ID + "/compute", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({fields: fields.map(f => f.name), answers: answers})
+        })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+                const values = (data && data.values) || {};
+                for (const comp of fields) applyComputedValue(form, comp, values[comp.name]);
             })
-                .then((r) => (r.ok ? r.json() : null))
-                .then((data) => {
-                    const hasVal = data && data.value !== undefined && data.value !== null;
-                    if (comp.type === "table") {
-                        // A table's flow produces its ROWS (an array), not the
-                        // field's value. Update table_rows and re-render the field
-                        // in place; the answer (row selection) is untouched.
-                        setComputeSpinner(comp.name, false);
-                        tableRowsResolved[comp.name] = true; // stop the loading spinner
-                        comp.table_rows = Array.isArray(data && data.value) ? data.value : [];
-                        const w = fieldWrapperFor(comp.name);
-                        if (w) { w.innerHTML = ""; renderComponentInto(form, w, comp); }
-                        applyVisibility(form);
-                        validateForm(form);
-                        return;
-                    }
-                    const text = hasVal ? String(data.value) : null;
-                    if (comp.type === "payment") {
-                        // Payment amount: display only — the authoritative charge
-                        // is recomputed + collected server-side at checkout. Cache
-                        // the computed charge (or "" so a paid-less flow doesn't
-                        // hang on "Calculating…") and re-render so the amount line
-                        // AND the Pay button (label + enabled) reflect it.
-                        paymentAmounts[comp.name] = text !== null ? text : "";
-                        renderPaymentState(comp);
-                        return;
-                    }
-                    // Compute settled — stop the spinner whether or not a value
-                    // came back (a null result just means no value yet).
-                    setComputeSpinner(comp.name, false);
-                    if (text === null) return;
-                    formValues[comp.name] = text;
-                    const el = document.getElementById("input-" + comp.name);
-                    if (el) el.value = text;
-                })
-                .catch(() => {
-                    setComputeSpinner(comp.name, false);
-                    // Network/other failure: don't leave a payment widget stuck
-                    // on "Calculating…". Mark the amount unknown ("") and
-                    // re-render — the button enables (server resolves the amount
-                    // authoritatively at checkout) and the line stops calculating.
-                    if (comp.type === "payment" && !(comp.name in paymentAmounts)) {
-                        paymentAmounts[comp.name] = "";
-                        renderPaymentState(comp);
-                    }
-                    // A table whose rows flow failed: stop spinning and show the
-                    // (empty) grid rather than an indefinite spinner.
-                    if (comp.type === "table" && !tableRowsResolved[comp.name]) {
-                        tableRowsResolved[comp.name] = true;
-                        const w = fieldWrapperFor(comp.name);
-                        if (w) { w.innerHTML = ""; renderComponentInto(form, w, comp); }
-                    }
-                    /* best-effort — never block the form */
-                });
-        }
+            .catch(() => {
+                for (const comp of fields) computeFailed(form, comp);
+                /* best-effort — never block the form */
+            });
     }
 
     // hasOwnKeys reports whether a value is an object with at least one own key.
