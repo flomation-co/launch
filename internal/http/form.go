@@ -204,6 +204,44 @@ type formComponent struct {
 	// this struct so it survives the render-time re-marshal to the client —
 	// encoding/json drops any JSON key without a matching field.
 	AllowCopy bool `json:"allow_copy,omitempty"`
+
+	// Table (data-grid) field — type == "table". Renders a grid the
+	// respondent can read and, when SelectionMode is "single", select one row
+	// from (radio-like). TableColumns defines the columns (order, label,
+	// per-column formatting and sort/filter/clickable flags). TableRows holds
+	// MANUAL rows — each an object keyed by column Key — used when RowsSource
+	// is empty. RowsSource (Phase 2) names a data-source output that supplies
+	// computed rows. SelectionMode is "none" (display-only, no answer) or
+	// "single" (the answer is the selected row as an object keyed by column
+	// key). ValueColumn names the column whose value is the scalar
+	// whitelist/${field} key. PageSize > 0 enables client-side pagination;
+	// Filterable shows a global search box. The response for a single-select
+	// table is the selected row object (validated + reconstructed server-side
+	// against the authoritative rows); a "none" table contributes no answer.
+	TableColumns  []tableColumn            `json:"table_columns,omitempty"`
+	TableRows     []map[string]interface{} `json:"table_rows,omitempty"`
+	RowsSource    string                   `json:"rows_source,omitempty"`
+	SelectionMode string                   `json:"selection_mode,omitempty"`
+	ValueColumn   string                   `json:"value_column,omitempty"`
+	PageSize      int                      `json:"page_size,omitempty"`
+	Filterable    bool                     `json:"filterable,omitempty"`
+}
+
+// tableColumn defines one column of a table field: which row key it binds to,
+// its header label, how its cells are formatted (Type/Format/Align/Width) and
+// whether it participates in sorting/filtering or is Clickable (a clickable
+// cell selects the row — the table's radio-button affordance). Kept a plain
+// struct so it round-trips through the render-time re-marshal to the client.
+type tableColumn struct {
+	Key        string `json:"key"`
+	Label      string `json:"label,omitempty"`
+	Type       string `json:"type,omitempty"`  // text|number|date|currency|boolean|link (default text)
+	Align      string `json:"align,omitempty"` // left|right|center
+	Width      string `json:"width,omitempty"`
+	Format     string `json:"format,omitempty"`
+	Sortable   bool   `json:"sortable,omitempty"`
+	Filterable bool   `json:"filterable,omitempty"`
+	Clickable  bool   `json:"clickable,omitempty"`
 }
 
 // visibilityRule is a group of conditions combined with AND ("all") or OR
@@ -731,6 +769,102 @@ func sanitiseMatrixSubmissions(submission map[string]interface{}, resolved formD
 	return out
 }
 
+// sanitiseTableSubmissions enforces the trust boundary for table fields. A
+// single-select table's answer is the selected row; a crafted POST must not be
+// able to smuggle a row that was never in the table, nor tamper with a row's
+// non-key columns. For each table field it:
+//
+//   - builds the authoritative row set keyed by the field's ValueColumn (from
+//     the manual TableRows — Phase 2 will re-resolve RowsSource here);
+//   - reads the submitted answer's ValueColumn scalar and, if it is not a known
+//     key, DROPS the answer (mirrors the option-field whitelist);
+//   - REPLACES the kept answer with the server's authoritative row for that key,
+//     so tampering with other columns is discarded and the stored value is
+//     trustworthy.
+//
+// SelectionMode "none" (display-only) always strips any client value. A field
+// with no ValueColumn cannot be validated as a selection, so its value is
+// stripped rather than trusted. Returns a new map; does not mutate the input.
+func sanitiseTableSubmissions(submission map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	specs := map[string]formComponent{}
+	for _, page := range resolved.Pages {
+		for _, c := range page.Components {
+			if c.Type == "table" {
+				specs[c.Name] = c
+			}
+		}
+	}
+	if len(specs) == 0 {
+		return submission
+	}
+
+	out := make(map[string]interface{}, len(submission))
+	for k, v := range submission {
+		out[k] = v
+	}
+
+	for name, spec := range specs {
+		// Display-only tables and tables without a value column collect no
+		// answer — never let a client value through.
+		if spec.SelectionMode == "none" || strings.TrimSpace(spec.ValueColumn) == "" {
+			delete(out, name)
+			continue
+		}
+
+		// Authoritative rows keyed by the value column's string form.
+		authoritative := map[string]map[string]interface{}{}
+		for _, row := range spec.TableRows {
+			key := tableCellString(row[spec.ValueColumn])
+			if key == "" {
+				continue
+			}
+			if _, dupe := authoritative[key]; dupe {
+				continue // first row wins on a duplicate key
+			}
+			authoritative[key] = row
+		}
+
+		raw, ok := out[name].(map[string]interface{})
+		if !ok {
+			// Missing / wrong-shape selection → no answer (an unanswered
+			// single-select table). Drop rather than store a malformed value.
+			delete(out, name)
+			continue
+		}
+		key := tableCellString(raw[spec.ValueColumn])
+		authRow, known := authoritative[key]
+		if key == "" || !known {
+			delete(out, name)
+			continue
+		}
+		// Replace with the server's row so non-key columns can't be tampered.
+		out[name] = authRow
+	}
+	return out
+}
+
+// tableCellString renders a table cell value as the canonical string used for
+// value-column keys and whitelist comparison. Numbers are formatted without a
+// scientific-notation exponent (JSON unmarshals all numbers to float64), so an
+// integer id like 4471 compares as "4471", not "4471.000000" or "4.471e+03".
+func tableCellString(v interface{}) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
+
 // stripDisplayOnlySubmissions removes keys whose corresponding component
 // is a display-only type (section_header, divider, info_text). These
 // components exist to structure the form visually, not to collect input,
@@ -776,7 +910,7 @@ func stripReadOnlySubmissions(submission map[string]interface{}, resolved formDe
 			// DefaultValue — skipping them here means a hand-authored
 			// read_only: true is ignored rather than corrupting the
 			// response shape.
-			if c.Type == "location" || c.Type == "address" || c.Type == "contact_name" || c.Type == "matrix" {
+			if c.Type == "location" || c.Type == "address" || c.Type == "contact_name" || c.Type == "matrix" || c.Type == "table" {
 				continue
 			}
 			if c.ReadOnly {
@@ -1038,6 +1172,7 @@ func stripHiddenSubmissions(submission map[string]interface{}, resolved formDefi
 func sanitiseFormSubmission(body map[string]interface{}, resolved formDefinition) map[string]interface{} {
 	sanitised := sanitiseOptionSubmissions(body, resolved)
 	sanitised = sanitiseMatrixSubmissions(sanitised, resolved)
+	sanitised = sanitiseTableSubmissions(sanitised, resolved)
 	sanitised = stripDisplayOnlySubmissions(sanitised, resolved)
 	sanitised = stripComputedSubmissions(sanitised, resolved)
 	sanitised = stripReadOnlySubmissions(sanitised, resolved)

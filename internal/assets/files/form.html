@@ -1205,6 +1205,37 @@
         }
         .matrix-table.readonly { opacity: 0.7; }
         .matrix-table.readonly input { cursor: not-allowed; }
+
+        /* Data-table (grid) field */
+        .flo-table-controls { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+        .flo-table-search { flex: 1 1 200px; }
+        .flo-table-wrap { overflow-x: auto; border: 1px solid #e2e2e6; border-radius: 8px; }
+        .flo-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        .flo-table th, .flo-table td { padding: 9px 12px; text-align: left; border-bottom: 1px solid #ececed; }
+        .flo-table thead th { background: #f7f7f8; font-weight: 600; white-space: nowrap; }
+        .flo-table th.sortable { cursor: pointer; user-select: none; }
+        .flo-table th.sortable .sort-caret { color: #9a9aa2; margin-left: 4px; font-size: 11px; }
+        .flo-table th.sorted .sort-caret { color: #460070; }
+        .flo-table tbody tr.selected { background: #f2ecff; }
+        .flo-table tbody tr.selectable { cursor: pointer; }
+        .flo-table tbody tr.selectable:hover { background: #f7f4ff; }
+        .flo-table td.align-right { text-align: right; }
+        .flo-table td.align-center { text-align: center; }
+        .flo-table .cell-select-btn {
+            border: 1px solid #460070; background: #fff; color: #460070;
+            border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer;
+        }
+        .flo-table tr.selected .cell-select-btn { background: #460070; color: #fff; }
+        .flo-table .filter-row td { padding: 6px 8px; background: #fbfbfc; }
+        .flo-table .filter-row input { width: 100%; font-size: 13px; padding: 5px 7px; }
+        .flo-table-empty { padding: 16px; text-align: center; color: #77777f; font-size: 14px; }
+        .flo-table-pager { display: flex; align-items: center; gap: 12px; margin-top: 10px; justify-content: flex-end; }
+        .flo-table-pager button {
+            border: 1px solid #d5d5da; background: #fff; border-radius: 6px;
+            padding: 5px 12px; cursor: pointer; font-size: 13px;
+        }
+        .flo-table-pager button:disabled { opacity: 0.45; cursor: default; }
+        .flo-table-pager .page-info { color: #55555c; font-size: 13px; }
     </style>
 </head>
 <body>
@@ -3935,6 +3966,315 @@
         attachCopyButton(container.lastElementChild, component);
     }
 
+    // ---- Data-table (grid) field --------------------------------------
+    // Renders a grid the respondent can read and (when selection_mode is
+    // "single") select ONE row from — a clickable cell or a leading radio
+    // acts like a radio button. formValues[name] holds the SELECTED ROW as an
+    // object keyed by column key (or null when nothing is selected). Pagination,
+    // sorting and filtering are all client-side over the already-resolved rows.
+    // XSS-safe: every cell is written with textContent, never innerHTML; a
+    // "link" column only becomes an <a> when its value is an http(s) URL.
+
+    // tableColumnsFor returns the column defs, falling back to columns derived
+    // from the first row's keys when none are configured.
+    function tableColumnsFor(component, rows) {
+        const cols = Array.isArray(component.table_columns) ? component.table_columns : [];
+        if (cols.length > 0) return cols.filter(c => c && c.key);
+        if (rows.length > 0 && rows[0] && typeof rows[0] === "object") {
+            return Object.keys(rows[0]).map(k => ({key: k, label: k}));
+        }
+        return [];
+    }
+
+    // tableRowsFor normalises the manual rows into an array of objects. A row
+    // that is an array is mapped positionally onto the column keys; an object
+    // row is used as-is.
+    function tableRowsFor(component, columns) {
+        const raw = Array.isArray(component.table_rows) ? component.table_rows : [];
+        return raw.map(row => {
+            if (Array.isArray(row)) {
+                const obj = {};
+                columns.forEach((c, i) => { obj[c.key] = row[i]; });
+                return obj;
+            }
+            return (row && typeof row === "object") ? row : {};
+        });
+    }
+
+    // tableCellText renders a value as its display string (XSS-safe caller uses
+    // textContent). Numbers drop trailing noise; booleans read Yes/No.
+    function tableCellText(value, col) {
+        if (value === null || value === undefined) return "";
+        const type = col && col.type;
+        if (type === "boolean") return value ? "Yes" : "No";
+        if (type === "currency") {
+            const n = Number(value);
+            if (!isNaN(n)) {
+                try { return new Intl.NumberFormat(undefined, {style: "currency", currency: (col.format || "GBP")}).format(n); }
+                catch (e) { return String(value); }
+            }
+            return String(value);
+        }
+        if (type === "number") {
+            const n = Number(value);
+            return isNaN(n) ? String(value) : String(n);
+        }
+        return String(value);
+    }
+
+    // tableSortValue returns a comparable primitive for sorting by column type.
+    function tableSortValue(value, col) {
+        const type = col && col.type;
+        if (type === "number" || type === "currency") {
+            const n = Number(value); return isNaN(n) ? -Infinity : n;
+        }
+        if (type === "date") {
+            const t = Date.parse(value); return isNaN(t) ? -Infinity : t;
+        }
+        return String(value === null || value === undefined ? "" : value).toLowerCase();
+    }
+
+    // isHttpUrl guards "link" columns against javascript:/data: injection.
+    function isHttpUrl(s) {
+        if (typeof s !== "string") return false;
+        return /^https?:\/\//i.test(s.trim());
+    }
+
+    function renderTable(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const columns = tableColumnsFor(component, tableRowsFor(component, []));
+        const allRows = tableRowsFor(component, columns);
+        const mode = component.selection_mode || "none";
+        const selectable = mode === "single" && !component.read_only;
+        const valueCol = component.value_column || (columns[0] && columns[0].key) || "";
+        const clickableCols = columns.filter(c => c.clickable);
+        // When selection is on but the author marked no clickable column, add a
+        // leading radio column so a row can always be chosen.
+        const useLeadingRadio = selectable && clickableCols.length === 0;
+        const pageSize = Math.max(0, parseInt(component.page_size, 10) || 0);
+        const globalFilterable = !!component.filterable;
+        const perColFilterable = columns.some(c => c.filterable);
+
+        // Component-local view state.
+        const state = {sortKey: "", sortDir: 1, filter: "", colFilters: {}, page: 0, selectedKey: null};
+        // A single-select table starts unselected.
+        if (selectable) formValues[component.name] = null;
+
+        const rowKey = (row) => tableCellString(row[valueCol]);
+
+        function tableCellString(v) {
+            if (v === null || v === undefined) return "";
+            if (typeof v === "boolean") return v ? "true" : "false";
+            return String(v);
+        }
+
+        function filteredRows() {
+            let rows = allRows;
+            const q = state.filter.trim().toLowerCase();
+            if (q) {
+                rows = rows.filter(row => columns.some(c => tableCellText(row[c.key], c).toLowerCase().includes(q)));
+            }
+            for (const key in state.colFilters) {
+                const cq = (state.colFilters[key] || "").trim().toLowerCase();
+                if (!cq) continue;
+                const col = columns.find(c => c.key === key);
+                rows = rows.filter(row => tableCellText(row[key], col).toLowerCase().includes(cq));
+            }
+            if (state.sortKey) {
+                const col = columns.find(c => c.key === state.sortKey);
+                rows = rows.slice().sort((a, b) => {
+                    const av = tableSortValue(a[state.sortKey], col);
+                    const bv = tableSortValue(b[state.sortKey], col);
+                    if (av < bv) return -1 * state.sortDir;
+                    if (av > bv) return 1 * state.sortDir;
+                    return 0;
+                });
+            }
+            return rows;
+        }
+
+        // Controls (global search).
+        if (globalFilterable) {
+            const controls = document.createElement("div");
+            controls.classList.add("flo-table-controls");
+            const search = document.createElement("input");
+            search.type = "search";
+            search.className = "flo-table-search";
+            search.placeholder = "Search…";
+            search.oninput = (e) => { state.filter = e.target.value; state.page = 0; rebuild(); };
+            controls.appendChild(search);
+            group.appendChild(controls);
+        }
+
+        const wrap = document.createElement("div");
+        wrap.classList.add("flo-table-wrap");
+        const table = document.createElement("table");
+        table.classList.add("flo-table");
+        wrap.appendChild(table);
+        group.appendChild(wrap);
+
+        const pager = document.createElement("div");
+        pager.classList.add("flo-table-pager");
+        group.appendChild(pager);
+
+        function selectRow(row) {
+            if (!selectable) return;
+            state.selectedKey = rowKey(row);
+            formValues[component.name] = row;
+            rebuild();
+            validateForm(form);
+        }
+
+        function buildHeader() {
+            const thead = document.createElement("thead");
+            const tr = document.createElement("tr");
+            if (useLeadingRadio) {
+                const th = document.createElement("th");
+                th.style.width = "44px";
+                tr.appendChild(th);
+            }
+            columns.forEach(col => {
+                const th = document.createElement("th");
+                th.textContent = col.label || col.key;
+                if (col.align === "right") th.classList.add("align-right");
+                if (col.align === "center") th.classList.add("align-center");
+                if (col.width) th.style.width = col.width;
+                if (col.sortable) {
+                    th.classList.add("sortable");
+                    if (state.sortKey === col.key) th.classList.add("sorted");
+                    const caret = document.createElement("span");
+                    caret.className = "sort-caret";
+                    caret.textContent = state.sortKey === col.key ? (state.sortDir === 1 ? "▲" : "▼") : "↕";
+                    th.appendChild(caret);
+                    th.onclick = () => {
+                        if (state.sortKey === col.key) state.sortDir = -state.sortDir;
+                        else { state.sortKey = col.key; state.sortDir = 1; }
+                        rebuild();
+                    };
+                }
+                tr.appendChild(th);
+            });
+            thead.appendChild(tr);
+            if (perColFilterable) {
+                const ftr = document.createElement("tr");
+                ftr.classList.add("filter-row");
+                if (useLeadingRadio) ftr.appendChild(document.createElement("td"));
+                columns.forEach(col => {
+                    const td = document.createElement("td");
+                    if (col.filterable) {
+                        const inp = document.createElement("input");
+                        inp.type = "search";
+                        inp.placeholder = "Filter";
+                        inp.value = state.colFilters[col.key] || "";
+                        inp.oninput = (e) => { state.colFilters[col.key] = e.target.value; state.page = 0; rebuild(); };
+                        td.appendChild(inp);
+                    }
+                    ftr.appendChild(td);
+                });
+                thead.appendChild(ftr);
+            }
+            return thead;
+        }
+
+        function buildBody(rows) {
+            const tbody = document.createElement("tbody");
+            if (rows.length === 0) {
+                const tr = document.createElement("tr");
+                const td = document.createElement("td");
+                td.colSpan = columns.length + (useLeadingRadio ? 1 : 0);
+                td.className = "flo-table-empty";
+                td.textContent = "No matching rows";
+                tr.appendChild(td);
+                tbody.appendChild(tr);
+                return tbody;
+            }
+            rows.forEach(row => {
+                const tr = document.createElement("tr");
+                const isSel = selectable && state.selectedKey !== null && rowKey(row) === state.selectedKey;
+                if (isSel) tr.classList.add("selected");
+                // Whole-row click selects when a leading radio is in use.
+                if (useLeadingRadio) {
+                    tr.classList.add("selectable");
+                    tr.onclick = () => selectRow(row);
+                    const td = document.createElement("td");
+                    const radio = document.createElement("input");
+                    radio.type = "radio";
+                    radio.name = "table-" + component.name;
+                    radio.checked = isSel;
+                    radio.onclick = (e) => { e.stopPropagation(); selectRow(row); };
+                    td.appendChild(radio);
+                    tr.appendChild(td);
+                }
+                columns.forEach(col => {
+                    const td = document.createElement("td");
+                    if (col.align === "right") td.classList.add("align-right");
+                    if (col.align === "center") td.classList.add("align-center");
+                    const text = tableCellText(row[col.key], col);
+                    if (selectable && col.clickable) {
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.className = "cell-select-btn";
+                        btn.textContent = text || "Select";
+                        btn.onclick = (e) => { e.stopPropagation(); selectRow(row); };
+                        td.appendChild(btn);
+                    } else if (col.type === "link" && isHttpUrl(row[col.key])) {
+                        const a = document.createElement("a");
+                        a.href = String(row[col.key]).trim();
+                        a.target = "_blank";
+                        a.rel = "noopener noreferrer";
+                        a.textContent = text;
+                        td.appendChild(a);
+                    } else {
+                        td.textContent = text;
+                    }
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            return tbody;
+        }
+
+        function rebuild() {
+            const rows = filteredRows();
+            const total = rows.length;
+            let pageRows = rows;
+            let pageCount = 1;
+            if (pageSize > 0) {
+                pageCount = Math.max(1, Math.ceil(total / pageSize));
+                if (state.page >= pageCount) state.page = pageCount - 1;
+                if (state.page < 0) state.page = 0;
+                pageRows = rows.slice(state.page * pageSize, state.page * pageSize + pageSize);
+            }
+            table.textContent = "";
+            table.appendChild(buildHeader());
+            table.appendChild(buildBody(pageRows));
+
+            pager.textContent = "";
+            if (pageSize > 0 && total > pageSize) {
+                const prev = document.createElement("button");
+                prev.type = "button"; prev.textContent = "Previous";
+                prev.disabled = state.page <= 0;
+                prev.onclick = () => { state.page--; rebuild(); };
+                const info = document.createElement("span");
+                info.className = "page-info";
+                info.textContent = "Page " + (state.page + 1) + " of " + pageCount + " · " + total + " rows";
+                const next = document.createElement("button");
+                next.type = "button"; next.textContent = "Next";
+                next.disabled = state.page >= pageCount - 1;
+                next.onclick = () => { state.page++; rebuild(); };
+                pager.appendChild(prev);
+                pager.appendChild(info);
+                pager.appendChild(next);
+            }
+        }
+
+        rebuild();
+        container.appendChild(group);
+    }
+
     function renderByType(form, container, component) {
         switch (component.type) {
             case "text": renderTextbox(form, container, component); break;
@@ -3945,6 +4285,7 @@
             case "radio": renderRadio(form, container, component); break;
             case "checkboxes": renderCheckboxes(form, container, component); break;
             case "matrix": renderMatrix(form, container, component); break;
+            case "table": renderTable(form, container, component); break;
             case "picture_choice": renderPictureChoice(form, container, component); break;
             case "dropdown": renderDropdown(form, container, component); break;
             case "email": renderEmail(form, container, component); break;
@@ -4099,6 +4440,13 @@
                                 if (typeof cell !== "string" || cell === "") { valid = false; break; }
                             }
                         }
+                    }
+                } else if (comp.type === "table") {
+                    // A required single-select table is satisfied once a row is
+                    // selected (formValues holds the row object). Display-only
+                    // ("none") tables collect no value and never gate submit.
+                    if (comp.selection_mode === "single") {
+                        if (!v || typeof v !== "object" || Array.isArray(v)) valid = false;
                     }
                 } else if (comp.type === "picture_choice") {
                     // Single-select: "" / null / undefined means unchosen.
