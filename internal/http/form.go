@@ -480,7 +480,7 @@ func pageHasDynamicOptions(page formPage) bool {
 func pagesNeedingData(def formDefinition) []bool {
 	out := make([]bool, len(def.Pages))
 	for i, page := range def.Pages {
-		out[i] = pageUsesDataNamespace(page) || pageHasDynamicOptions(page)
+		out[i] = pageUsesDataNamespace(page) || pageHasDynamicOptions(page) || pageHasDynamicRows(page)
 	}
 	return out
 }
@@ -519,6 +519,55 @@ func optionsFromOutput(val interface{}) []formOption {
 	return out
 }
 
+// rowsFromOutput normalises a data-source output value into table rows. Accepts
+// an array of objects (each a row keyed by column key) or an array of arrays
+// (bound positionally onto the given column keys). Anything else yields no
+// rows. The result matches the manual TableRows shape so the rest of the table
+// pipeline (whitelist, render) treats computed and manual rows identically.
+func rowsFromOutput(val interface{}, columns []tableColumn) []map[string]interface{} {
+	arr, ok := val.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(arr))
+	for _, entry := range arr {
+		switch e := entry.(type) {
+		case map[string]interface{}:
+			out = append(out, e)
+		case []interface{}:
+			row := map[string]interface{}{}
+			for i, col := range columns {
+				if i < len(e) {
+					row[col.Key] = e[i]
+				}
+			}
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// pageHasDynamicRows reports whether a page has a table field sourcing its rows
+// from the data-source flow (rows_source set).
+func pageHasDynamicRows(page formPage) bool {
+	for _, c := range page.Components {
+		if c.Type == "table" && c.RowsSource != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// formHasDynamicRows reports whether any page sources table rows from the flow.
+func formHasDynamicRows(def formDefinition) bool {
+	for _, page := range def.Pages {
+		if pageHasDynamicRows(page) {
+			return true
+		}
+	}
+	return false
+}
+
 // bakeDynamicOptions returns a copy of def with each option_source field's
 // Options populated from the resolved data-source outputs. Used on submit so
 // the whitelist enforcement in sanitiseOptionSubmissions covers dynamically-
@@ -535,6 +584,12 @@ func bakeDynamicOptions(def formDefinition, outputs map[string]interface{}) form
 			comp := c
 			if comp.OptionsSource != "" {
 				comp.Options = optionsFromOutput(outputs[comp.OptionsSource])
+			}
+			// A computed table bakes its rows from the named data-source output
+			// so the submit-time whitelist (sanitiseTableSubmissions) is
+			// authoritative — exactly as options_source does for dropdowns.
+			if comp.Type == "table" && comp.RowsSource != "" {
+				comp.TableRows = rowsFromOutput(outputs[comp.RowsSource], comp.TableColumns)
 			}
 			comps[ci] = comp
 		}
@@ -811,7 +866,10 @@ func sanitiseTableSubmissions(submission map[string]interface{}, resolved formDe
 			continue
 		}
 
-		// Authoritative rows keyed by the value column's string form.
+		// Authoritative rows keyed by the value column's string form. By the
+		// time we run, a computed (rows_source) table has already had its
+		// TableRows baked from the re-resolved data source (bakeDynamicOptions),
+		// so this whitelist is authoritative for both manual and computed rows.
 		authoritative := map[string]map[string]interface{}{}
 		for _, row := range spec.TableRows {
 			key := tableCellString(row[spec.ValueColumn])
@@ -824,21 +882,61 @@ func sanitiseTableSubmissions(submission map[string]interface{}, resolved formDe
 			authoritative[key] = row
 		}
 
-		raw, ok := out[name].(map[string]interface{})
+		// authRowFor validates a submitted row object against the whitelist and
+		// returns the SERVER's row for that key so non-key columns can't be
+		// tampered. ok is false for a wrong shape or an unknown key.
+		authRowFor := func(v interface{}) (map[string]interface{}, bool) {
+			raw, isObj := v.(map[string]interface{})
+			if !isObj {
+				return nil, false
+			}
+			key := tableCellString(raw[spec.ValueColumn])
+			if key == "" {
+				return nil, false
+			}
+			row, known := authoritative[key]
+			return row, known
+		}
+
+		if spec.SelectionMode == "multiple" {
+			// The answer is an array of selected row objects; keep the known
+			// ones (reconstructed), de-duplicated by key, order preserved.
+			arr, isArr := out[name].([]interface{})
+			if !isArr {
+				delete(out, name)
+				continue
+			}
+			seen := map[string]struct{}{}
+			clean := make([]interface{}, 0, len(arr))
+			for _, entry := range arr {
+				row, ok := authRowFor(entry)
+				if !ok {
+					continue
+				}
+				key := tableCellString(row[spec.ValueColumn])
+				if _, dupe := seen[key]; dupe {
+					continue
+				}
+				seen[key] = struct{}{}
+				clean = append(clean, row)
+			}
+			if len(clean) == 0 {
+				// An empty multi-select contributes no answer, matching the
+				// single-select "nothing selected" behaviour.
+				delete(out, name)
+				continue
+			}
+			out[name] = clean
+			continue
+		}
+
+		// Single-select: the answer is one selected row object.
+		row, ok := authRowFor(out[name])
 		if !ok {
-			// Missing / wrong-shape selection → no answer (an unanswered
-			// single-select table). Drop rather than store a malformed value.
 			delete(out, name)
 			continue
 		}
-		key := tableCellString(raw[spec.ValueColumn])
-		authRow, known := authoritative[key]
-		if key == "" || !known {
-			delete(out, name)
-			continue
-		}
-		// Replace with the server's row so non-key columns can't be tampered.
-		out[name] = authRow
+		out[name] = row
 	}
 	return out
 }
@@ -930,6 +1028,56 @@ func stripReadOnlySubmissions(submission map[string]interface{}, resolved formDe
 		out[k] = v
 	}
 	return out
+}
+
+// tableComparableValues returns a copy of values in which each table field's
+// answer is replaced by its COMPARABLE form for visibility rules: a single-
+// select table becomes its value_column scalar; a multi-select becomes the
+// array of its rows' value_column values (so contains / one_of work). Non-table
+// fields pass through unchanged. This lets a visible_if rule reference a table
+// field by name and compare against the selected row's value_column — the Go
+// twin of the identical transform in form.html and the SDK's visibility.ts.
+func tableComparableValues(resolved formDefinition, values map[string]interface{}) map[string]interface{} {
+	tables := map[string]formComponent{}
+	for _, page := range resolved.Pages {
+		for _, c := range page.Components {
+			if c.Type == "table" && strings.TrimSpace(c.ValueColumn) != "" {
+				tables[c.Name] = c
+			}
+		}
+	}
+	if len(tables) == 0 {
+		return values
+	}
+	out := make(map[string]interface{}, len(values))
+	for k, v := range values {
+		if spec, ok := tables[k]; ok {
+			out[k] = tableComparable(spec.ValueColumn, v)
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// tableComparable extracts the comparable value from a table answer: the
+// value_column scalar of the selected row (single), or the array of value_column
+// values (multiple). A nil / other shape passes through so is_empty still works.
+func tableComparable(valueColumn string, v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		return t[valueColumn]
+	case []interface{}:
+		arr := make([]interface{}, 0, len(t))
+		for _, e := range t {
+			if row, ok := e.(map[string]interface{}); ok {
+				arr = append(arr, row[valueColumn])
+			}
+		}
+		return arr
+	default:
+		return v
+	}
 }
 
 // evalVisibility reports whether a component with the given rule should be
@@ -1137,8 +1285,10 @@ func stripHiddenSubmissions(submission map[string]interface{}, resolved formDefi
 
 	for pass := 0; pass <= len(units); pass++ {
 		changed := false
+		// Table answers compare by their value_column for visibility rules.
+		vis := tableComparableValues(resolved, out)
 		for _, u := range units {
-			if evalVisibility(u.rule, out) {
+			if evalVisibility(u.rule, vis) {
 				continue
 			}
 			for _, n := range u.names {

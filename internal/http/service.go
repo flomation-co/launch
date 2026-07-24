@@ -903,12 +903,12 @@ func (s *Service) submitForm(c *gin.Context) {
 	// so this reuses the page-enter execution in the common case.
 	var dataOutputs map[string]interface{}
 	if def.DataSource != nil && def.DataSource.FlowID != "" {
-		if formUsesDataNamespace(def) || formHasDynamicOptions(def) {
+		if formUsesDataNamespace(def) || formHasDynamicOptions(def) || formHasDynamicRows(def) {
 			dataOutputs = s.formData.ResolveComputed(def.DataSource.FlowID, body, def.DataSource.TimeoutSeconds)
 			ctx.DataVariables = flattenOutputs(dataOutputs)
 		}
 	}
-	if formHasDynamicOptions(def) {
+	if formHasDynamicOptions(def) || formHasDynamicRows(def) {
 		def = bakeDynamicOptions(def, dataOutputs)
 	}
 	resolved := resolveFormForRender(def, ctx)

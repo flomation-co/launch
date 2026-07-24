@@ -1462,10 +1462,28 @@
         form.pages.forEach((_, i) => (pageVisible[i] = true));
         for (const p of form.pages) for (const c of p.components) compVisible[c.name] = true;
 
+        // Table fields compare by their value_column in visibility rules: a
+        // single-select table resolves to the selected row's value_column
+        // scalar, a multi-select to the array of those values. Browser twin of
+        // tableComparableValues in launch/internal/http/form.go.
+        const tableSpecs = {};
+        for (const p of form.pages) for (const c of p.components) {
+            if (c.type === "table" && c.value_column) tableSpecs[c.name] = c;
+        }
+        const tableComparable = (spec, raw) => {
+            if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw[spec.value_column];
+            if (Array.isArray(raw)) return raw.map(r => (r && typeof r === "object") ? r[spec.value_column] : r);
+            return raw;
+        };
+
         // A field reads as empty while it (or its page) is currently deemed
         // hidden, so a hidden branch's lingering answer can't satisfy another
         // rule. compVisible mutates across passes — that's the fixed point.
-        const getVal = (name) => (compVisible[name] === false ? null : formValues[name]);
+        const getVal = (name) => {
+            if (compVisible[name] === false) return null;
+            const raw = formValues[name];
+            return tableSpecs[name] ? tableComparable(tableSpecs[name], raw) : raw;
+        };
 
         const maxIter = form.pages.length + Object.keys(compVisible).length + 1;
         let changed = true, guard = 0;
@@ -4048,22 +4066,26 @@
         const columns = tableColumnsFor(component, tableRowsFor(component, []));
         const allRows = tableRowsFor(component, columns);
         const mode = component.selection_mode || "none";
-        const selectable = mode === "single" && !component.read_only;
+        const multi = mode === "multiple";
+        const selectable = (mode === "single" || multi) && !component.read_only;
         const valueCol = component.value_column || (columns[0] && columns[0].key) || "";
         const clickableCols = columns.filter(c => c.clickable);
         // When selection is on but the author marked no clickable column, add a
-        // leading radio column so a row can always be chosen.
-        const useLeadingRadio = selectable && clickableCols.length === 0;
+        // leading control column (radio for single, checkbox for multiple) so a
+        // row can always be chosen.
+        const useLeadingControl = selectable && clickableCols.length === 0;
         const pageSize = Math.max(0, parseInt(component.page_size, 10) || 0);
         const globalFilterable = !!component.filterable;
         const perColFilterable = columns.some(c => c.filterable);
 
-        // Component-local view state.
-        const state = {sortKey: "", sortDir: 1, filter: "", colFilters: {}, page: 0, selectedKey: null};
-        // A single-select table starts unselected.
-        if (selectable) formValues[component.name] = null;
+        // Component-local view state. selectedKeys is a Set for multi-select.
+        const state = {sortKey: "", sortDir: 1, filter: "", colFilters: {}, page: 0, selectedKey: null, selectedKeys: new Set()};
+        // A single-select table starts unselected; a multi-select starts empty.
+        if (multi) formValues[component.name] = [];
+        else if (selectable) formValues[component.name] = null;
 
         const rowKey = (row) => tableCellString(row[valueCol]);
+        const isRowSelected = (row) => multi ? state.selectedKeys.has(rowKey(row)) : (state.selectedKey !== null && rowKey(row) === state.selectedKey);
 
         function tableCellString(v) {
             if (v === null || v === undefined) return "";
@@ -4122,8 +4144,17 @@
 
         function selectRow(row) {
             if (!selectable) return;
-            state.selectedKey = rowKey(row);
-            formValues[component.name] = row;
+            if (multi) {
+                const key = rowKey(row);
+                if (state.selectedKeys.has(key)) state.selectedKeys.delete(key);
+                else state.selectedKeys.add(key);
+                // Rebuild the value array in the current row order for the
+                // selected keys (stable, definition-ordered).
+                formValues[component.name] = allRows.filter(r => state.selectedKeys.has(rowKey(r)));
+            } else {
+                state.selectedKey = rowKey(row);
+                formValues[component.name] = row;
+            }
             rebuild();
             validateForm(form);
         }
@@ -4131,7 +4162,7 @@
         function buildHeader() {
             const thead = document.createElement("thead");
             const tr = document.createElement("tr");
-            if (useLeadingRadio) {
+            if (useLeadingControl) {
                 const th = document.createElement("th");
                 th.style.width = "44px";
                 tr.appendChild(th);
@@ -4161,7 +4192,7 @@
             if (perColFilterable) {
                 const ftr = document.createElement("tr");
                 ftr.classList.add("filter-row");
-                if (useLeadingRadio) ftr.appendChild(document.createElement("td"));
+                if (useLeadingControl) ftr.appendChild(document.createElement("td"));
                 columns.forEach(col => {
                     const td = document.createElement("td");
                     if (col.filterable) {
@@ -4184,7 +4215,7 @@
             if (rows.length === 0) {
                 const tr = document.createElement("tr");
                 const td = document.createElement("td");
-                td.colSpan = columns.length + (useLeadingRadio ? 1 : 0);
+                td.colSpan = columns.length + (useLeadingControl ? 1 : 0);
                 td.className = "flo-table-empty";
                 td.textContent = "No matching rows";
                 tr.appendChild(td);
@@ -4193,19 +4224,20 @@
             }
             rows.forEach(row => {
                 const tr = document.createElement("tr");
-                const isSel = selectable && state.selectedKey !== null && rowKey(row) === state.selectedKey;
+                const isSel = selectable && isRowSelected(row);
                 if (isSel) tr.classList.add("selected");
-                // Whole-row click selects when a leading radio is in use.
-                if (useLeadingRadio) {
+                // Whole-row click selects when a leading control is in use. The
+                // control is a radio for single-select, a checkbox for multiple.
+                if (useLeadingControl) {
                     tr.classList.add("selectable");
                     tr.onclick = () => selectRow(row);
                     const td = document.createElement("td");
-                    const radio = document.createElement("input");
-                    radio.type = "radio";
-                    radio.name = "table-" + component.name;
-                    radio.checked = isSel;
-                    radio.onclick = (e) => { e.stopPropagation(); selectRow(row); };
-                    td.appendChild(radio);
+                    const ctl = document.createElement("input");
+                    ctl.type = multi ? "checkbox" : "radio";
+                    ctl.name = "table-" + component.name;
+                    ctl.checked = isSel;
+                    ctl.onclick = (e) => { e.stopPropagation(); selectRow(row); };
+                    td.appendChild(ctl);
                     tr.appendChild(td);
                 }
                 columns.forEach(col => {
@@ -4374,9 +4406,14 @@
                 for (const k in data) {
                     if (Object.prototype.hasOwnProperty.call(data, k)) DATA_VARS[k] = flattenDataValue(data[k]);
                 }
-                // Bake dynamic option lists for this page's option-source fields.
+                // Bake dynamic option lists for this page's option-source fields,
+                // and computed table rows for table fields with a rows_source.
                 for (const comp of form.pages[pageNumber].components) {
                     if (comp.options_source) comp.options = normalizeOptions(data[comp.options_source]);
+                    if (comp.type === "table" && comp.rows_source) {
+                        const raw = data[comp.rows_source];
+                        comp.table_rows = Array.isArray(raw) ? raw : [];
+                    }
                 }
                 renderPage(form, pageNumber); // re-render in place with resolved ${data.X} + options
                 if (pageEl) pageEl.classList.remove("page-data-loading");
@@ -4443,10 +4480,13 @@
                     }
                 } else if (comp.type === "table") {
                     // A required single-select table is satisfied once a row is
-                    // selected (formValues holds the row object). Display-only
+                    // selected (formValues holds the row object); a multi-select
+                    // once at least one row is selected (an array). Display-only
                     // ("none") tables collect no value and never gate submit.
                     if (comp.selection_mode === "single") {
                         if (!v || typeof v !== "object" || Array.isArray(v)) valid = false;
+                    } else if (comp.selection_mode === "multiple") {
+                        if (!Array.isArray(v) || v.length === 0) valid = false;
                     }
                 } else if (comp.type === "picture_choice") {
                     // Single-select: "" / null / undefined means unchosen.
