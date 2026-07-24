@@ -171,7 +171,7 @@ var publicComponentKeys = map[string]struct{}{
 	"accept_mime": {}, "max_size_bytes": {}, "allow_gallery": {},
 	"capture_mode": {}, "auto_submit": {}, "confidence_threshold": {},
 	"privacy_notice": {}, "show_privacy_notice": {},
-	"amount": {}, "currency": {}, "visible_if": {},
+	"amount": {}, "currency": {}, "allow_copy": {}, "visible_if": {},
 }
 
 // projectComponent reduces a component to its allowlisted keys plus derived
