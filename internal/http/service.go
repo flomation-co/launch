@@ -226,6 +226,11 @@ func (s *Service) configure() error {
 	embedForm.GET("/definition", s.handleEmbedFormDefinition)
 	embedForm.POST("/session", s.handleEmbedFormSession)
 	embedForm.GET("/data", s.handleFormData)
+	// POST /data runs the data-source flow WITH the answers so far, for a source
+	// that depends on earlier fields (mirrors the public GET+POST /form/:id/data).
+	// handleFormData branches on the method; the OPTIONS preflight + setEmbedCORS
+	// already allow POST.
+	embedForm.POST("/data", s.handleFormData)
 	embedForm.GET("/execution/:eid", s.handleFormExecution)
 	embedForm.POST("", s.submitForm)
 	embedForm.POST("/compute", s.computeFormField)
