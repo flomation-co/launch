@@ -1206,36 +1206,56 @@
         .matrix-table.readonly { opacity: 0.7; }
         .matrix-table.readonly input { cursor: not-allowed; }
 
-        /* Data-table (grid) field */
+        /* Data-table (grid) field — matches the form's dark theme */
         .flo-table-controls { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-        .flo-table-search { flex: 1 1 200px; }
-        .flo-table-wrap { overflow-x: auto; border: 1px solid #e2e2e6; border-radius: 8px; }
-        .flo-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-        .flo-table th, .flo-table td { padding: 9px 12px; text-align: left; border-bottom: 1px solid #ececed; }
-        .flo-table thead th { background: #f7f7f8; font-weight: 600; white-space: nowrap; }
+        .flo-table-search {
+            flex: 1 1 200px; padding: 9px 12px; font-size: 14px; color: var(--text);
+            background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px;
+            outline: none; font-family: inherit; transition: border-color 0.15s;
+        }
+        .flo-table-search:focus { border-color: var(--border-focus); }
+        .flo-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+        .flo-table { width: 100%; border-collapse: collapse; font-size: 14px; color: var(--text); }
+        .flo-table th, .flo-table td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
+        .flo-table tbody tr:last-child td { border-bottom: none; }
+        .flo-table thead th {
+            background: rgba(255,255,255,0.03); font-weight: 600; white-space: nowrap;
+            color: var(--text-muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.4px;
+        }
         .flo-table th.sortable { cursor: pointer; user-select: none; }
-        .flo-table th.sortable .sort-caret { color: #9a9aa2; margin-left: 4px; font-size: 11px; }
-        .flo-table th.sorted .sort-caret { color: #460070; }
-        .flo-table tbody tr.selected { background: #f2ecff; }
+        .flo-table th.sortable:hover { color: var(--text); }
+        .flo-table th.sortable .sort-caret { color: rgba(255,255,255,0.35); margin-left: 4px; font-size: 11px; }
+        .flo-table th.sorted { color: var(--text); }
+        .flo-table th.sorted .sort-caret { color: #a78bfa; }
+        .flo-table tbody tr.selected { background: rgba(139,92,246,0.16); }
         .flo-table tbody tr.selectable { cursor: pointer; }
-        .flo-table tbody tr.selectable:hover { background: #f7f4ff; }
+        .flo-table tbody tr.selectable:hover { background: rgba(255,255,255,0.04); }
         .flo-table td.align-right { text-align: right; }
         .flo-table td.align-center { text-align: center; }
+        .flo-table a { color: #a78bfa; }
         .flo-table .cell-select-btn {
-            border: 1px solid #460070; background: #fff; color: #460070;
-            border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer;
+            border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text);
+            border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; font-family: inherit;
+            transition: background 0.15s, border-color 0.15s;
         }
-        .flo-table tr.selected .cell-select-btn { background: #460070; color: #fff; }
-        .flo-table .filter-row td { padding: 6px 8px; background: #fbfbfc; }
-        .flo-table .filter-row input { width: 100%; font-size: 13px; padding: 5px 7px; }
-        .flo-table-empty { padding: 16px; text-align: center; color: #77777f; font-size: 14px; }
+        .flo-table .cell-select-btn:hover { border-color: var(--border-focus); background: rgba(139,92,246,0.12); }
+        .flo-table tr.selected .cell-select-btn { background: var(--primary); border-color: var(--primary); color: #fff; }
+        .flo-table input[type="radio"], .flo-table input[type="checkbox"] { accent-color: var(--primary); cursor: pointer; }
+        .flo-table .filter-row td { padding: 6px 10px; background: rgba(0,0,0,0.15); }
+        .flo-table .filter-row input {
+            width: 100%; font-size: 13px; padding: 6px 8px; color: var(--text);
+            background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; outline: none;
+        }
+        .flo-table .filter-row input:focus { border-color: var(--border-focus); }
+        .flo-table-empty { padding: 18px; text-align: center; color: var(--text-muted); font-size: 14px; }
         .flo-table-pager { display: flex; align-items: center; gap: 12px; margin-top: 10px; justify-content: flex-end; }
         .flo-table-pager button {
-            border: 1px solid #d5d5da; background: #fff; border-radius: 6px;
-            padding: 5px 12px; cursor: pointer; font-size: 13px;
+            border: 1px solid var(--border); background: var(--surface); color: var(--text);
+            border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; font-family: inherit;
         }
-        .flo-table-pager button:disabled { opacity: 0.45; cursor: default; }
-        .flo-table-pager .page-info { color: #55555c; font-size: 13px; }
+        .flo-table-pager button:hover:not(:disabled) { border-color: var(--border-focus); }
+        .flo-table-pager button:disabled { opacity: 0.4; cursor: default; }
+        .flo-table-pager .page-info { color: var(--text-muted); font-size: 13px; }
     </style>
 </head>
 <body>
