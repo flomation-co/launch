@@ -899,6 +899,21 @@
         .computed-spinner { display: none; align-items: center; }
         .computed-spinner.active { display: inline-flex; }
 
+        /* Password field: masked input + Show/Hide toggle in a row. */
+        .password-wrap { display: flex; align-items: stretch; gap: 8px; }
+        .password-wrap input { flex: 1 1 auto; }
+        .password-toggle {
+            flex: 0 0 auto;
+            font: inherit;
+            padding: 0 14px;
+            color: var(--text);
+            background: rgba(255,255,255,0.06);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .password-toggle:hover { background: rgba(255,255,255,0.12); }
+
         .success-message {
             text-align: center;
             padding: 40px 20px;
@@ -1629,6 +1644,47 @@
         applyReadOnly(el, component);
 
         group.appendChild(el);
+        container.appendChild(group);
+    }
+
+    // A masked password input with a Show/Hide reveal toggle. Works for an
+    // editable password and for a read-only / flow-computed value (the compute
+    // fills #input-<name> as usual; type="password" keeps it masked until
+    // revealed). A Copy affordance is attached generically by attachCopyButton
+    // when the field opts in via allow_copy.
+    function renderPassword(form, container, component) {
+        const group = document.createElement("div");
+        group.classList.add("field-group");
+        group.appendChild(renderLabel(component));
+
+        const wrap = document.createElement("div");
+        wrap.classList.add("password-wrap");
+
+        const el = document.createElement("input");
+        el.type = "password";
+        el.placeholder = component.placeholder || "";
+        el.required = !!component.required;
+        el.id = "input-" + component.name;
+        el.autocomplete = "off";
+        if (component.default_value) el.value = component.default_value;
+        el.oninput = (e) => { formValues[component.name] = e.target.value; validateForm(form); };
+        applyReadOnly(el, component);
+        wrap.appendChild(el);
+
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.classList.add("password-toggle");
+        toggle.textContent = "Show";
+        toggle.setAttribute("aria-pressed", "false");
+        toggle.onclick = () => {
+            const masked = el.type === "password";
+            el.type = masked ? "text" : "password";
+            toggle.textContent = masked ? "Hide" : "Show";
+            toggle.setAttribute("aria-pressed", masked ? "true" : "false");
+        };
+        wrap.appendChild(toggle);
+
+        group.appendChild(wrap);
         container.appendChild(group);
     }
 
@@ -3882,6 +3938,7 @@
     function renderByType(form, container, component) {
         switch (component.type) {
             case "text": renderTextbox(form, container, component); break;
+            case "password": renderPassword(form, container, component); break;
             case "multiline": renderMultiline(form, container, component); break;
             case "number": renderNumber(form, container, component); break;
             case "boolean": renderCheckbox(form, container, component); break;
