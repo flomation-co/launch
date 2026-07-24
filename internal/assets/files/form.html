@@ -1248,6 +1248,11 @@
         }
         .flo-table .filter-row input:focus { border-color: var(--border-focus); }
         .flo-table-empty { padding: 18px; text-align: center; color: var(--text-muted); font-size: 14px; }
+        .flo-table-loading {
+            display: flex; align-items: center; gap: 10px; padding: 16px 14px;
+            color: var(--text-muted); font-size: 14px;
+            border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+        }
         .flo-table-pager { display: flex; align-items: center; gap: 12px; margin-top: 10px; justify-content: flex-end; }
         .flo-table-pager button {
             border: 1px solid var(--border); background: var(--surface); color: var(--text);
@@ -3690,6 +3695,11 @@
     // The authoritative charge is always re-resolved server-side at checkout.
     let paymentAmounts = {};
 
+    // tableRowsResolved records which computed tables have had their first
+    // /compute settle, so the loading spinner shows only until rows arrive (and
+    // not again on later recomputes).
+    let tableRowsResolved = {};
+
     // renderPayment renders a payment field as a mid-form action: an amount line
     // plus a "Pay £X" button (or, once the field's server-recorded state is
     // complete, a "Paid ✓ · £X" chip). It collects no typed input — the card is
@@ -4085,6 +4095,23 @@
         const group = document.createElement("div");
         group.classList.add("field-group");
         group.appendChild(renderLabel(component));
+
+        // A computed table (rows come from a value_source flow) shows a spinner
+        // until its first /compute settles, so the grid never flashes an empty
+        // "No matching rows" while the flow is still running.
+        if (component.value_source && !tableRowsResolved[component.name]) {
+            const loading = document.createElement("div");
+            loading.classList.add("flo-table-loading");
+            const spin = document.createElement("span");
+            spin.classList.add("flo-spinner");
+            const txt = document.createElement("span");
+            txt.textContent = "Loading rows…";
+            loading.appendChild(spin);
+            loading.appendChild(txt);
+            group.appendChild(loading);
+            container.appendChild(group);
+            return;
+        }
 
         const columns = tableColumnsFor(component, tableRowsFor(component, []));
         const allRows = tableRowsFor(component, columns);
@@ -4813,6 +4840,7 @@
                         // field's value. Update table_rows and re-render the field
                         // in place; the answer (row selection) is untouched.
                         setComputeSpinner(comp.name, false);
+                        tableRowsResolved[comp.name] = true; // stop the loading spinner
                         comp.table_rows = Array.isArray(data && data.value) ? data.value : [];
                         const w = fieldWrapperFor(comp.name);
                         if (w) { w.innerHTML = ""; renderComponentInto(form, w, comp); }
@@ -4848,6 +4876,13 @@
                     if (comp.type === "payment" && !(comp.name in paymentAmounts)) {
                         paymentAmounts[comp.name] = "";
                         renderPaymentState(comp);
+                    }
+                    // A table whose rows flow failed: stop spinning and show the
+                    // (empty) grid rather than an indefinite spinner.
+                    if (comp.type === "table" && !tableRowsResolved[comp.name]) {
+                        tableRowsResolved[comp.name] = true;
+                        const w = fieldWrapperFor(comp.name);
+                        if (w) { w.innerHTML = ""; renderComponentInto(form, w, comp); }
                     }
                     /* best-effort — never block the form */
                 });
