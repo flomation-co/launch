@@ -206,21 +206,21 @@ type formComponent struct {
 	AllowCopy bool `json:"allow_copy,omitempty"`
 
 	// Table (data-grid) field — type == "table". Renders a grid the
-	// respondent can read and, when SelectionMode is "single", select one row
-	// from (radio-like). TableColumns defines the columns (order, label,
-	// per-column formatting and sort/filter/clickable flags). TableRows holds
-	// MANUAL rows — each an object keyed by column Key — used when RowsSource
-	// is empty. RowsSource (Phase 2) names a data-source output that supplies
-	// computed rows. SelectionMode is "none" (display-only, no answer) or
-	// "single" (the answer is the selected row as an object keyed by column
-	// key). ValueColumn names the column whose value is the scalar
-	// whitelist/${field} key. PageSize > 0 enables client-side pagination;
-	// Filterable shows a global search box. The response for a single-select
-	// table is the selected row object (validated + reconstructed server-side
-	// against the authoritative rows); a "none" table contributes no answer.
+	// respondent can read and, when SelectionMode is "single"/"multiple", select
+	// row(s) from (radio/checkbox-like). TableColumns defines the columns (order,
+	// label, per-column formatting and sort/filter/clickable flags). TableRows
+	// holds MANUAL rows — each an object keyed by column Key. To populate rows
+	// from a flow instead, set the field's ValueSource (+ ValueOutput) like any
+	// other computed field: the flow's output is the rows array and is baked into
+	// TableRows at submit (bakeComputedTableRows). SelectionMode is "none"
+	// (display-only, no answer), "single" (the answer is the selected row object)
+	// or "multiple" (an array of selected row objects). ValueColumn names the
+	// column whose value is the scalar whitelist/${field} key. PageSize > 0
+	// enables client-side pagination; Filterable shows a global search box. The
+	// stored answer is validated + reconstructed server-side against the
+	// authoritative rows; a "none" table contributes no answer.
 	TableColumns  []tableColumn            `json:"table_columns,omitempty"`
 	TableRows     []map[string]interface{} `json:"table_rows,omitempty"`
-	RowsSource    string                   `json:"rows_source,omitempty"`
 	SelectionMode string                   `json:"selection_mode,omitempty"`
 	ValueColumn   string                   `json:"value_column,omitempty"`
 	PageSize      int                      `json:"page_size,omitempty"`
@@ -480,7 +480,7 @@ func pageHasDynamicOptions(page formPage) bool {
 func pagesNeedingData(def formDefinition) []bool {
 	out := make([]bool, len(def.Pages))
 	for i, page := range def.Pages {
-		out[i] = pageUsesDataNamespace(page) || pageHasDynamicOptions(page) || pageHasDynamicRows(page)
+		out[i] = pageUsesDataNamespace(page) || pageHasDynamicOptions(page)
 	}
 	return out
 }
@@ -547,25 +547,43 @@ func rowsFromOutput(val interface{}, columns []tableColumn) []map[string]interfa
 	return out
 }
 
-// pageHasDynamicRows reports whether a page has a table field sourcing its rows
-// from the data-source flow (rows_source set).
-func pageHasDynamicRows(page formPage) bool {
-	for _, c := range page.Components {
-		if c.Type == "table" && c.RowsSource != "" {
-			return true
+// formHasComputedTableRows reports whether any table populates its rows from a
+// per-field value_source flow (the same mechanism computed fields use).
+func formHasComputedTableRows(def formDefinition) bool {
+	for _, page := range def.Pages {
+		for _, c := range page.Components {
+			if c.Type == "table" && strings.TrimSpace(c.ValueSource) != "" {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// formHasDynamicRows reports whether any page sources table rows from the flow.
-func formHasDynamicRows(def formDefinition) bool {
-	for _, page := range def.Pages {
-		if pageHasDynamicRows(page) {
-			return true
-		}
+// bakeComputedTableRows populates each computed table's TableRows by running its
+// value_source flow with the submitted answers, so the submit-time whitelist in
+// sanitiseTableSubmissions is authoritative for computed rows — the per-field
+// twin of bakeDynamicOptions for option lists. `resolve` runs a flow by id and
+// returns its outputs (cached upstream). Returns a copy; does not mutate def.
+func bakeComputedTableRows(def formDefinition, resolve func(flowID string) map[string]interface{}) formDefinition {
+	if !formHasComputedTableRows(def) {
+		return def
 	}
-	return false
+	baked := def
+	baked.Pages = make([]formPage, len(def.Pages))
+	for pi, page := range def.Pages {
+		comps := make([]formComponent, len(page.Components))
+		for ci, c := range page.Components {
+			comp := c
+			if comp.Type == "table" && strings.TrimSpace(comp.ValueSource) != "" {
+				outputs := resolve(comp.ValueSource)
+				comp.TableRows = rowsFromOutput(outputs[computeOutputKey(comp)], comp.TableColumns)
+			}
+			comps[ci] = comp
+		}
+		baked.Pages[pi] = formPage{Components: comps, VisibleIf: page.VisibleIf}
+	}
+	return baked
 }
 
 // bakeDynamicOptions returns a copy of def with each option_source field's
@@ -584,12 +602,6 @@ func bakeDynamicOptions(def formDefinition, outputs map[string]interface{}) form
 			comp := c
 			if comp.OptionsSource != "" {
 				comp.Options = optionsFromOutput(outputs[comp.OptionsSource])
-			}
-			// A computed table bakes its rows from the named data-source output
-			// so the submit-time whitelist (sanitiseTableSubmissions) is
-			// authoritative — exactly as options_source does for dropdowns.
-			if comp.Type == "table" && comp.RowsSource != "" {
-				comp.TableRows = rowsFromOutput(outputs[comp.RowsSource], comp.TableColumns)
 			}
 			comps[ci] = comp
 		}
@@ -830,7 +842,8 @@ func sanitiseMatrixSubmissions(submission map[string]interface{}, resolved formD
 // non-key columns. For each table field it:
 //
 //   - builds the authoritative row set keyed by the field's ValueColumn (from
-//     the manual TableRows — Phase 2 will re-resolve RowsSource here);
+//     the manual/baked TableRows — a computed table has already had its rows
+//     baked from its value_source flow by bakeComputedTableRows;
 //   - reads the submitted answer's ValueColumn scalar and, if it is not a known
 //     key, DROPS the answer (mirrors the option-field whitelist);
 //   - REPLACES the kept answer with the server's authoritative row for that key,
@@ -867,7 +880,7 @@ func sanitiseTableSubmissions(submission map[string]interface{}, resolved formDe
 		}
 
 		// Authoritative rows keyed by the value column's string form. By the
-		// time we run, a computed (rows_source) table has already had its
+		// time we run, a computed (value_source) table has already had its
 		// TableRows baked from the re-resolved data source (bakeDynamicOptions),
 		// so this whitelist is authoritative for both manual and computed rows.
 		authoritative := map[string]map[string]interface{}{}
@@ -1350,6 +1363,13 @@ func stripComputedSubmissions(submission map[string]interface{}, resolved formDe
 	computed := map[string]struct{}{}
 	for _, page := range resolved.Pages {
 		for _, c := range page.Components {
+			// A table with a value_source uses that flow to populate its ROWS,
+			// not the field's value — its answer is the row selection, which
+			// must survive (sanitiseTableSubmissions validates it). So a table
+			// is never a "computed value" field to strip.
+			if c.Type == "table" {
+				continue
+			}
 			if strings.TrimSpace(c.ValueSource) != "" {
 				computed[c.Name] = struct{}{}
 			}

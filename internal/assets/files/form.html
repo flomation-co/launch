@@ -3679,7 +3679,10 @@
     // computes reactively (see computedFields/runCompute) to show its live
     // amount, and is re-verified server-side at checkout.
     function isComputedField(component) {
-        return !!component.value_source && component.type !== "payment";
+        // Payment renders as its own widget; a table renders as a grid whose
+        // ROWS (not value) come from the flow — both are computed reactively
+        // (see runCompute) but neither renders as a read-only text input.
+        return !!component.value_source && component.type !== "payment" && component.type !== "table";
     }
 
     // paymentAmounts caches each computed payment field's latest client-known
@@ -4100,9 +4103,6 @@
 
         // Component-local view state. selectedKeys is a Set for multi-select.
         const state = {sortKey: "", sortDir: 1, filter: "", colFilters: {}, page: 0, selectedKey: null, selectedKeys: new Set()};
-        // A single-select table starts unselected; a multi-select starts empty.
-        if (multi) formValues[component.name] = [];
-        else if (selectable) formValues[component.name] = null;
 
         const rowKey = (row) => tableCellString(row[valueCol]);
         const isRowSelected = (row) => multi ? state.selectedKeys.has(rowKey(row)) : (state.selectedKey !== null && rowKey(row) === state.selectedKey);
@@ -4111,6 +4111,23 @@
             if (v === null || v === undefined) return "";
             if (typeof v === "boolean") return v ? "true" : "false";
             return String(v);
+        }
+
+        // Seed the selection from any existing answer so a re-render (e.g. when
+        // computed rows reload) preserves what the user already picked, keeping
+        // only selections whose value_column key is still present in the rows.
+        if (selectable) {
+            const known = new Set(allRows.map(rowKey));
+            const existing = formValues[component.name];
+            if (multi) {
+                const arr = (Array.isArray(existing) ? existing : []).filter(r => r && typeof r === "object" && known.has(rowKey(r)));
+                arr.forEach(r => state.selectedKeys.add(rowKey(r)));
+                formValues[component.name] = arr;
+            } else if (existing && typeof existing === "object" && !Array.isArray(existing) && known.has(rowKey(existing))) {
+                state.selectedKey = rowKey(existing);
+            } else {
+                formValues[component.name] = null;
+            }
         }
 
         function filteredRows() {
@@ -4426,14 +4443,11 @@
                 for (const k in data) {
                     if (Object.prototype.hasOwnProperty.call(data, k)) DATA_VARS[k] = flattenDataValue(data[k]);
                 }
-                // Bake dynamic option lists for this page's option-source fields,
-                // and computed table rows for table fields with a rows_source.
+                // Bake dynamic option lists for this page's option-source fields.
+                // (A computed table's rows come from its own value_source flow,
+                // fetched via runCompute — not the form-level data source.)
                 for (const comp of form.pages[pageNumber].components) {
                     if (comp.options_source) comp.options = normalizeOptions(data[comp.options_source]);
-                    if (comp.type === "table" && comp.rows_source) {
-                        const raw = data[comp.rows_source];
-                        comp.table_rows = Array.isArray(raw) ? raw : [];
-                    }
                 }
                 renderPage(form, pageNumber); // re-render in place with resolved ${data.X} + options
                 if (pageEl) pageEl.classList.remove("page-data-loading");
@@ -4773,7 +4787,7 @@
         // to run — for read-only computed fields; payment widgets show their own
         // spinner on the amount line via renderPaymentState.
         _computeTimer = setTimeout(() => {
-            for (const c of fields) if (c.type !== "payment") setComputeSpinner(c.name, true);
+            for (const c of fields) if (c.type !== "payment" && c.type !== "table") setComputeSpinner(c.name, true);
             runCompute(fields);
         }, 800);
     }
@@ -4794,6 +4808,18 @@
                 .then((r) => (r.ok ? r.json() : null))
                 .then((data) => {
                     const hasVal = data && data.value !== undefined && data.value !== null;
+                    if (comp.type === "table") {
+                        // A table's flow produces its ROWS (an array), not the
+                        // field's value. Update table_rows and re-render the field
+                        // in place; the answer (row selection) is untouched.
+                        setComputeSpinner(comp.name, false);
+                        comp.table_rows = Array.isArray(data && data.value) ? data.value : [];
+                        const w = fieldWrapperFor(comp.name);
+                        if (w) { w.innerHTML = ""; renderComponentInto(form, w, comp); }
+                        applyVisibility(form);
+                        validateForm(form);
+                        return;
+                    }
                     const text = hasVal ? String(data.value) : null;
                     if (comp.type === "payment") {
                         // Payment amount: display only — the authoritative charge

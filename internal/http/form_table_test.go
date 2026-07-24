@@ -113,7 +113,7 @@ func TestSanitiseTableSubmissions_Multiple_EmptyStrips(t *testing.T) {
 	Expect(present).To(BeFalse())
 }
 
-func TestBakeDynamicOptions_BakesComputedTableRows(t *testing.T) {
+func TestBakeComputedTableRows_FromValueSourceFlow(t *testing.T) {
 	RegisterTestingT(t)
 	def := formDefinition{
 		Pages: []formPage{{Components: []formComponent{{
@@ -121,28 +121,50 @@ func TestBakeDynamicOptions_BakesComputedTableRows(t *testing.T) {
 			Type:          "table",
 			SelectionMode: "single",
 			ValueColumn:   "ref",
-			RowsSource:    "claims",
+			ValueSource:   "rows-flow-id",
+			ValueOutput:   "claims",
 			TableColumns:  []tableColumn{{Key: "ref"}, {Key: "status"}},
 		}}}},
 	}
-	// Data-source output: an array of objects.
-	outputs := map[string]interface{}{
-		"claims": []interface{}{
-			map[string]interface{}{"ref": "REF-1", "status": "Open"},
-			map[string]interface{}{"ref": "REF-2", "status": "Closed"},
-		},
+	// The per-field flow returns an array of objects under its "claims" output.
+	resolve := func(flowID string) map[string]interface{} {
+		Expect(flowID).To(Equal("rows-flow-id"))
+		return map[string]interface{}{
+			"claims": []interface{}{
+				map[string]interface{}{"ref": "REF-1", "status": "Open"},
+				map[string]interface{}{"ref": "REF-2", "status": "Closed"},
+			},
+		}
 	}
-	baked := bakeDynamicOptions(def, outputs)
+	baked := bakeComputedTableRows(def, resolve)
 	rows := baked.Pages[0].Components[0].TableRows
 	Expect(rows).To(HaveLen(2))
 	Expect(rows[0]["status"]).To(Equal("Open"))
 
-	// A selection is then validated against the BAKED rows.
+	// A selection is then validated + reconstructed against the BAKED rows.
 	san := sanitiseTableSubmissions(map[string]interface{}{
 		"claim": map[string]interface{}{"ref": "REF-2", "status": "tampered"},
 	}, baked)
 	row := san["claim"].(map[string]interface{})
 	Expect(row["status"]).To(Equal("Closed"))
+}
+
+func TestStripComputed_KeepsTableSelection(t *testing.T) {
+	RegisterTestingT(t)
+	// A value_source table's answer (the selection) must survive the computed
+	// strip — only its ROWS come from the flow, not its value.
+	def := formDefinition{
+		Pages: []formPage{{Components: []formComponent{{
+			Name: "claim", Type: "table", SelectionMode: "single", ValueColumn: "ref",
+			ValueSource: "rows-flow-id", ValueOutput: "claims",
+		}}}},
+	}
+	out := stripComputedSubmissions(map[string]interface{}{
+		"claim": map[string]interface{}{"ref": "REF-1"},
+	}, def)
+	row, ok := out["claim"].(map[string]interface{})
+	Expect(ok).To(BeTrue())
+	Expect(row["ref"]).To(Equal("REF-1"))
 }
 
 func TestRowsFromOutput_ArrayOfArrays_BindsByColumn(t *testing.T) {

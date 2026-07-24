@@ -903,13 +903,21 @@ func (s *Service) submitForm(c *gin.Context) {
 	// so this reuses the page-enter execution in the common case.
 	var dataOutputs map[string]interface{}
 	if def.DataSource != nil && def.DataSource.FlowID != "" {
-		if formUsesDataNamespace(def) || formHasDynamicOptions(def) || formHasDynamicRows(def) {
+		if formUsesDataNamespace(def) || formHasDynamicOptions(def) {
 			dataOutputs = s.formData.ResolveComputed(def.DataSource.FlowID, body, def.DataSource.TimeoutSeconds)
 			ctx.DataVariables = flattenOutputs(dataOutputs)
 		}
 	}
-	if formHasDynamicOptions(def) || formHasDynamicRows(def) {
+	if formHasDynamicOptions(def) {
 		def = bakeDynamicOptions(def, dataOutputs)
+	}
+	// A table populates its rows from its own value_source flow (per-field, like
+	// every other computed field). Re-run each such flow at submit so the row
+	// whitelist in sanitiseTableSubmissions is authoritative for computed rows.
+	if formHasComputedTableRows(def) {
+		def = bakeComputedTableRows(def, func(flowID string) map[string]interface{} {
+			return s.formData.ResolveComputed(flowID, body, 0)
+		})
 	}
 	resolved := resolveFormForRender(def, ctx)
 	// Sanitisation pipeline (option whitelist → matrix whitelist → strip

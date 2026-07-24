@@ -172,10 +172,10 @@ var publicComponentKeys = map[string]struct{}{
 	"capture_mode": {}, "auto_submit": {}, "confidence_threshold": {},
 	"privacy_notice": {}, "show_privacy_notice": {},
 	"amount": {}, "currency": {}, "allow_copy": {}, "visible_if": {},
-	// Table (data-grid) field. rows_source names a data-source OUTPUT key (safe,
-	// like options_source — not an internal flow id), so it is exposed. Manual
-	// table_rows are the display data. No internal ids here.
-	"table_columns": {}, "table_rows": {}, "rows_source": {}, "selection_mode": {},
+	// Table (data-grid) field. Manual table_rows are the display data; a computed
+	// table's rows arrive via the field's value_source flow, exposed to the SDK
+	// through the derived "computed" flag (never the internal flow id).
+	"table_columns": {}, "table_rows": {}, "selection_mode": {},
 	"value_column": {}, "page_size": {}, "filterable": {},
 }
 
