@@ -60,6 +60,11 @@ const (
 	// label: "trigger/database_row" → "database-row".
 	TriggerTypeDBRow = "database-row"
 
+	// TriggerTypeSalesforcePoll polls a Salesforce object for records created or
+	// changed since the last check. Second-granular timestamps mean the cursor has
+	// to tolerate ties — see internal/salesforcepoll.
+	TriggerTypeSalesforcePoll = "salesforce-poll"
+
 	// TriggerTypeRDSEvent polls AWS RDS DescribeEvents on an interval and fires the
 	// flow once per newly-observed event (failover, backup complete, low storage,
 	// availability change). Like the S3 trigger nothing POSTs to Launch — the
