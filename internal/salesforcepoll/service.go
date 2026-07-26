@@ -378,7 +378,9 @@ func (s *Service) query(host, token, soql string) ([]map[string]interface{}, err
 		// Salesforce's error envelope is a JSON ARRAY of {message, errorCode}. Pull
 		// the first message out so the log says what is wrong rather than dumping
 		// the body — and never echo the token.
-		return nil, fmt.Errorf("Salesforce API error (%d): %s", resp.StatusCode, firstErrorMessage(body))
+		// Lower case and without the provider name: Go error strings get wrapped,
+		// and every caller here already says which provider it was querying.
+		return nil, fmt.Errorf("query failed (%d): %s", resp.StatusCode, firstErrorMessage(body))
 	}
 
 	var out struct {
