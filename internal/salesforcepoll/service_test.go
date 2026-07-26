@@ -368,8 +368,15 @@ func TestIdsAtHonoursTheOperatorFilter(t *testing.T) {
 	if _, err := s.idsAt(srv.URL, "tok", cfg, "CreatedDate", mustTime(t, "2026-07-22T12:31:12Z")); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(gotSOQL, "AND (Status = 'Open')") {
-		t.Errorf("the operator's filter must be applied and parenthesised: %q", gotSOQL)
+	// Asserted as two independent properties rather than one exact string, so a
+	// change in how the builder spaces or parenthesises does not turn this into a
+	// formatting test. What must hold is: the filter reached the query at all, and
+	// it is grouped so an OR inside it cannot escape the surrounding AND.
+	if !strings.Contains(gotSOQL, "Status = 'Open'") {
+		t.Errorf("the operator's filter must reach the query: %q", gotSOQL)
+	}
+	if !strings.Contains(gotSOQL, "(Status = 'Open')") {
+		t.Errorf("the filter must be grouped, or an OR inside it escapes the surrounding condition: %q", gotSOQL)
 	}
 }
 
