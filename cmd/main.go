@@ -22,6 +22,7 @@ import (
 	"flomation.app/automate/launch/internal/rdsevent"
 	"flomation.app/automate/launch/internal/route53health"
 	s3trigger "flomation.app/automate/launch/internal/s3"
+	"flomation.app/automate/launch/internal/salesforcepoll"
 	"flomation.app/automate/launch/internal/schedule"
 	"flomation.app/automate/launch/internal/telegram"
 	"flomation.app/automate/launch/internal/trigger"
@@ -77,6 +78,7 @@ func main() {
 	log.Info("s3 trigger service started")
 
 	_ = dbrow.NewService(cfg, db, t)
+	_ = salesforcepoll.NewService(cfg, db, t)
 	log.Info("database row poll service started")
 
 	_ = rdsevent.NewService(cfg, db, t)
