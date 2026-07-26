@@ -2,6 +2,8 @@ package salesforcepoll
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -231,8 +233,19 @@ func TestIntervalDefaultsToFifteenMinutesAndCannotGoBelowTheFloor(t *testing.T) 
 	if got := parseInterval("not a duration"); got != 15*time.Minute {
 		t.Errorf("unparseable interval must default to 15m, got %v", got)
 	}
+	// Assert the CONSTANT, not just that clamping reaches it. Comparing
+	// parseInterval("1s") against MinPollInterval is self-referential: drop the
+	// floor to a second and the test still passes while the API budget quietly
+	// blows up. The floor is a product decision, so pin the number.
+	if MinPollInterval != time.Minute {
+		t.Errorf("MinPollInterval is %v, want 1m — a lower floor lets one trigger spend 1,440+ API calls a day", MinPollInterval)
+	}
 	if got := parseInterval("1s"); got != MinPollInterval {
 		t.Errorf("a sub-floor interval must clamp to %v, got %v", MinPollInterval, got)
+	}
+	// Same reasoning for the default, which is the number almost everyone runs.
+	if TriggerDefaultInterval != 15*time.Minute {
+		t.Errorf("TriggerDefaultInterval is %v, want 15m", TriggerDefaultInterval)
 	}
 	if got := parseInterval("30m"); got != 30*time.Minute {
 		t.Errorf("a longer interval must be honoured, got %v", got)
@@ -297,5 +310,94 @@ func TestFirstErrorMessageHandlesBothSalesforceShapes(t *testing.T) {
 	}
 	if got := firstErrorMessage([]byte("<html>502</html>")); got == "" {
 		t.Error("an unrecognised body must still produce something loggable")
+	}
+}
+
+// Dan asked whether baseline writes the fired-ID set as well as the watermark.
+// It does — and this is the query behind it, which had no coverage.
+//
+// It matters because the watermark comparison is INCLUSIVE. Baseline stores the
+// newest timestamp, so without also recording the ids already sitting at that
+// exact second, the first real poll would re-fire every one of them. In this
+// org that would be twelve Accounts on the very first run.
+func TestIdsAtQueriesOneExactSecondAndExtractsTheIds(t *testing.T) {
+	var gotSOQL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSOQL = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"totalSize": 3, "done": true,
+			"records": []map[string]interface{}{
+				{"Id": "001aaa"}, {"Id": "001bbb"}, {"Id": "001ccc"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	s := &Service{client: srv.Client()}
+	stamp := mustTime(t, "2026-07-22T12:31:12Z")
+	ids, err := s.idsAt(srv.URL, "tok", triggerConfig{Object: "Account"}, "SystemModstamp", stamp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// EQUALITY on the exact second — not >= — because this is asking "who is
+	// already at the boundary", not "what is new".
+	if !strings.Contains(gotSOQL, "SystemModstamp = 2026-07-22T12:31:12Z") {
+		t.Errorf("must query the exact second: %q", gotSOQL)
+	}
+	if len(ids) != 3 || !ids["001aaa"] || !ids["001bbb"] || !ids["001ccc"] {
+		t.Errorf("all ids at that second must be captured, got %v", ids)
+	}
+}
+
+// The operator's filter has to apply here too. Without it, baseline would record
+// ids that the poll query itself will never return, and the suppression set
+// would be quietly wrong.
+func TestIdsAtHonoursTheOperatorFilter(t *testing.T) {
+	var gotSOQL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSOQL = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"totalSize": 0, "done": true, "records": []map[string]interface{}{}})
+	}))
+	defer srv.Close()
+
+	s := &Service{client: srv.Client()}
+	cfg := triggerConfig{Object: "Lead", Where: "Status = 'Open'"}
+	if _, err := s.idsAt(srv.URL, "tok", cfg, "CreatedDate", mustTime(t, "2026-07-22T12:31:12Z")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Asserted as two independent properties rather than one exact string, so a
+	// change in how the builder spaces or parenthesises does not turn this into a
+	// formatting test. What must hold is: the filter reached the query at all, and
+	// it is grouped so an OR inside it cannot escape the surrounding AND.
+	if !strings.Contains(gotSOQL, "Status = 'Open'") {
+		t.Errorf("the operator's filter must reach the query: %q", gotSOQL)
+	}
+	if !strings.Contains(gotSOQL, "(Status = 'Open')") {
+		t.Errorf("the filter must be grouped, or an OR inside it escapes the surrounding condition: %q", gotSOQL)
+	}
+}
+
+// A failure here must be reported to the caller, not swallowed — baseline logs a
+// warning and accepts that the first poll may re-fire, which is a decision it can
+// only make if it is told.
+func TestIdsAtReportsFailureRatherThanReturningAnEmptySet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+			{"message": "Session expired", "errorCode": "INVALID_SESSION_ID"},
+		})
+	}))
+	defer srv.Close()
+
+	s := &Service{client: srv.Client()}
+	ids, err := s.idsAt(srv.URL, "tok", triggerConfig{Object: "Account"}, "SystemModstamp", mustTime(t, "2026-07-22T12:31:12Z"))
+	if err == nil {
+		t.Fatal("a failed lookup must report an error, or baseline cannot know the set is incomplete")
+	}
+	if ids != nil {
+		t.Errorf("a failed lookup must not return a partial set that would suppress real records: %v", ids)
 	}
 }
