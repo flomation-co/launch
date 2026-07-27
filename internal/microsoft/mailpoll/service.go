@@ -19,6 +19,7 @@ import (
 	"flomation.app/automate/launch"
 	"flomation.app/automate/launch/internal/config"
 	"flomation.app/automate/launch/internal/microsoft"
+	"flomation.app/automate/launch/internal/mtls"
 	"flomation.app/automate/launch/internal/persistence"
 	"flomation.app/automate/launch/internal/trigger"
 )
@@ -74,16 +75,27 @@ type Service struct {
 	trigger    *trigger.Service
 	microsoft  *microsoft.Service
 	instanceID string
+	// client talks to the API's internal endpoints; it presents the service's
+	// mTLS client cert when tls.enabled (else a plain client), matching the
+	// trigger service. Internal calls MUST go via InternalAPIURL(), not the
+	// public URL, since internal routes move to the mTLS engine under mTLS.
+	client *http.Client
 }
 
 // NewService creates a mail polling service and starts the background goroutine.
 func NewService(cfg *config.Config, db *persistence.Service, triggerSvc *trigger.Service, msSvc *microsoft.Service) *Service {
+	client, err := mtls.ClientOrDefault(cfg.TLS, 15*time.Second)
+	if err != nil {
+		log.WithError(err).Warn("mailpoll: could not build mTLS API client; falling back to a plain HTTP client")
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
 	s := &Service{
 		config:     cfg,
 		db:         db,
 		trigger:    triggerSvc,
 		microsoft:  msSvc,
 		instanceID: uuid.New().String(),
+		client:     client,
 	}
 
 	go s.watch()
@@ -285,15 +297,14 @@ func (s *Service) fetchMessages(accessToken, endpoint string) ([]emailMessage, e
 
 func (s *Service) fetchToken(triggerID, accountFilter string) (string, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/trigger/%s/resolve",
-		s.config.Automate.URL, triggerID)
+		s.config.InternalAPIURL(), triggerID)
 
 	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
 	if err != nil {
 		return "", err
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -301,14 +312,14 @@ func (s *Service) fetchToken(triggerID, accountFilter string) (string, error) {
 
 	// Try the internal Microsoft token endpoint.
 	tokenEndpoint := fmt.Sprintf("%s/api/v1/internal/trigger/%s/microsoft-tokens?purpose=mail_read",
-		s.config.Automate.URL, triggerID)
+		s.config.InternalAPIURL(), triggerID)
 
 	tokenReq, err := http.NewRequest(http.MethodGet, tokenEndpoint, nil)
 	if err != nil {
 		return "", err
 	}
 
-	tokenResp, err := client.Do(tokenReq)
+	tokenResp, err := s.client.Do(tokenReq)
 	if err != nil {
 		return "", err
 	}

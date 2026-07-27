@@ -172,6 +172,11 @@ var publicComponentKeys = map[string]struct{}{
 	"capture_mode": {}, "auto_submit": {}, "confidence_threshold": {},
 	"privacy_notice": {}, "show_privacy_notice": {},
 	"amount": {}, "currency": {}, "allow_copy": {}, "visible_if": {},
+	// Table (data-grid) field. Manual table_rows are the display data; a computed
+	// table's rows arrive via the field's value_source flow, exposed to the SDK
+	// through the derived "computed" flag (never the internal flow id).
+	"table_columns": {}, "table_rows": {}, "selection_mode": {},
+	"value_column": {}, "page_size": {}, "filterable": {},
 }
 
 // projectComponent reduces a component to its allowlisted keys plus derived

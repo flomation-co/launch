@@ -771,6 +771,58 @@ func (s *Service) handleQr(c *gin.Context) {
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Flomation</title><style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#161019;color:#fff;text-align:center;}</style></head><body><div><h2>QR Code Scanned</h2><p>Your request has been received.</p></div></body></html>`))
 }
 
+// formSubmitMaxMemory bounds how much of a multipart form is buffered in memory
+// while parsing (the rest spills to temp files, which we don't read this pass).
+const formSubmitMaxMemory int64 = 10 << 20 // 10 MB
+
+// isBrowserFormPost reports whether a form was submitted as a plain HTML form
+// (application/x-www-form-urlencoded or multipart/form-data) rather than the
+// JS/SDK JSON body. Such a submit expects an HTML/redirect response, not JSON.
+func isBrowserFormPost(c *gin.Context) bool {
+	ct := c.ContentType()
+	return ct == "application/x-www-form-urlencoded" || ct == "multipart/form-data"
+}
+
+// parseFormPostBody reads a plain HTML form submission (urlencoded or multipart)
+// into the answer map. A field sent once becomes a string; a field sent multiple
+// times (a checkbox group) becomes an array — the shape the sanitise pipeline
+// already expects. Multipart FILE parts are ignored in this pass: structured /
+// file fields (matrix, table, address, file upload, …) need the JS form or SDK.
+func parseFormPostBody(c *gin.Context) map[string]interface{} {
+	if strings.HasPrefix(c.ContentType(), "multipart/form-data") {
+		_ = c.Request.ParseMultipartForm(formSubmitMaxMemory)
+	} else {
+		_ = c.Request.ParseForm()
+	}
+	out := make(map[string]interface{}, len(c.Request.PostForm))
+	for k, vals := range c.Request.PostForm {
+		if len(vals) == 1 {
+			out[k] = vals[0]
+			continue
+		}
+		arr := make([]interface{}, len(vals))
+		for i, v := range vals {
+			arr[i] = v
+		}
+		out[k] = arr
+	}
+	return out
+}
+
+// formSubmitRedirectDest returns where to send the browser after a plain HTML
+// form submit: the author's configured redirect URL (redirect mode, http(s)
+// only) if set, otherwise back to the hosted form with ?submitted=1 so it can
+// show a success banner. Post/Redirect/Get — a refresh won't resubmit.
+func formSubmitRedirectDest(id string, def formDefinition) string {
+	if def.Submit != nil && def.Submit.OnSubmit == "redirect" {
+		u := strings.TrimSpace(def.Submit.RedirectURL)
+		if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+			return u
+		}
+	}
+	return fmt.Sprintf("/form/%s?submitted=1", id)
+}
+
 func (s *Service) submitForm(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -822,8 +874,14 @@ func (s *Service) submitForm(c *gin.Context) {
 		return
 	}
 
+	// A plain HTML form (urlencoded/multipart) posts field=value pairs and
+	// expects a redirect, not JSON; the JS form and SDK post a JSON answer map.
+	// Both feed the same sanitise + fire pipeline below (server-authoritative).
+	browserForm := isBrowserFormPost(c)
 	var body map[string]interface{}
-	if err := c.BindJSON(&body); err != nil {
+	if browserForm {
+		body = parseFormPostBody(c)
+	} else if err := c.BindJSON(&body); err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
 		}).Error("unable to bind json")
@@ -911,6 +969,14 @@ func (s *Service) submitForm(c *gin.Context) {
 	if formHasDynamicOptions(def) {
 		def = bakeDynamicOptions(def, dataOutputs)
 	}
+	// A table populates its rows from its own value_source flow (per-field, like
+	// every other computed field). Re-run each such flow at submit so the row
+	// whitelist in sanitiseTableSubmissions is authoritative for computed rows.
+	if formHasComputedTableRows(def) {
+		def = bakeComputedTableRows(def, func(flowID string) map[string]interface{} {
+			return s.formData.ResolveComputed(flowID, body, 0)
+		})
+	}
 	resolved := resolveFormForRender(def, ctx)
 	// Sanitisation pipeline (option whitelist → matrix whitelist → strip
 	// display-only → restore read-only defaults → strip hidden). Read-only
@@ -939,10 +1005,21 @@ func (s *Service) submitForm(c *gin.Context) {
 		log.WithFields(log.Fields{
 			"error": terr,
 		}).Error("unable to execute trigger")
+		// Historical contract: the submission is accepted even if the fire fails.
+		if browserForm {
+			c.Redirect(http.StatusSeeOther, formSubmitRedirectDest(id, def))
+			return
+		}
 		c.Status(http.StatusOK)
 		return
 	}
 
+	if browserForm {
+		// Post/Redirect/Get for a plain HTML form — the browser follows a 303 to
+		// the author's redirect URL, or back to the form with ?submitted=1.
+		c.Redirect(http.StatusSeeOther, formSubmitRedirectDest(id, def))
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"execution_id": executionID})
 }
 
