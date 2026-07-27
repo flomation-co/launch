@@ -5259,7 +5259,22 @@
     // Capture the blank form skeleton before first render so restartForm can
     // rebuild it after a submission replaces the container with the thank-you.
     const FORM_SKELETON = document.getElementById("form-container").innerHTML;
-    renderForm();
+
+    // A plain HTML form (urlencoded/multipart) posts to /form/:id and the server
+    // redirects the browser back here with ?submitted=1. Show the same thank-you
+    // card the JS submit shows (with the author's success message) rather than
+    // re-rendering an empty form — Post/Redirect/Get, so a refresh won't resubmit.
+    let __justSubmitted = false;
+    try { __justSubmitted = new URLSearchParams(window.location.search).get("submitted") === "1"; } catch (_) {}
+    if (__justSubmitted) {
+        const __def = JSON.parse(formData) || {};
+        const __msg = (__def.submit && __def.submit.success_message && __def.submit.success_message.trim())
+            ? __def.submit.success_message
+            : "Your response has been submitted successfully.";
+        showThankYou(__msg);
+    } else {
+        renderForm();
+    }
 </script>
 {{ end }}
 </body>
