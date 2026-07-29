@@ -233,15 +233,25 @@ type formComponent struct {
 // cell selects the row — the table's radio-button affordance). Kept a plain
 // struct so it round-trips through the render-time re-marshal to the client.
 type tableColumn struct {
-	Key        string `json:"key"`
-	Label      string `json:"label,omitempty"`
-	Type       string `json:"type,omitempty"`  // text|number|date|currency|boolean|link (default text)
-	Align      string `json:"align,omitempty"` // left|right|center
-	Width      string `json:"width,omitempty"`
-	Format     string `json:"format,omitempty"`
-	Sortable   bool   `json:"sortable,omitempty"`
-	Filterable bool   `json:"filterable,omitempty"`
-	Clickable  bool   `json:"clickable,omitempty"`
+	Key        string      `json:"key"`
+	Label      string      `json:"label,omitempty"`
+	Type       string      `json:"type,omitempty"`  // text|number|date|currency|boolean|link|enum (default text)
+	Align      string      `json:"align,omitempty"` // left|right|center
+	Width      string      `json:"width,omitempty"`
+	Format     string      `json:"format,omitempty"`
+	Sortable   bool        `json:"sortable,omitempty"`
+	Filterable bool        `json:"filterable,omitempty"`
+	Clickable  bool        `json:"clickable,omitempty"`
+	Pills      []tablePill `json:"pills,omitempty"` // for Type=="enum": value→coloured badge
+}
+
+// tablePill is one enum-column badge: a cell whose value equals Value renders as
+// a pill with Label (default: the value) and the given colours.
+type tablePill struct {
+	Value string `json:"value"`
+	Label string `json:"label,omitempty"`
+	Bg    string `json:"bg,omitempty"`
+	Fg    string `json:"fg,omitempty"`
 }
 
 // visibilityRule is a group of conditions combined with AND ("all") or OR
