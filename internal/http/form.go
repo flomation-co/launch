@@ -1585,3 +1585,18 @@ func parseFormDefinition(data []byte) (formDefinition, error) {
 	}
 	return def, nil
 }
+
+// formTriggerNodeID extracts the form trigger's flow node id (__node_id, stamped
+// onto the trigger data by the API sync) so a form submission can be routed to
+// the correct trigger node in a multi-trigger flow. Returns "" when absent (an
+// older trigger not yet re-synced) — the executor then falls back to its default.
+func formTriggerNodeID(data []byte) string {
+	var m map[string]interface{}
+	if json.Unmarshal(data, &m) != nil {
+		return ""
+	}
+	if s, ok := m["__node_id"].(string); ok {
+		return s
+	}
+	return ""
+}

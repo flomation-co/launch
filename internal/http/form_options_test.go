@@ -45,3 +45,12 @@ func TestStripComputed_KeepsOptionSelection(t *testing.T) {
 	out := stripComputedSubmissions(map[string]interface{}{"version": "0.0.2"}, def)
 	Expect(out["version"]).To(Equal("0.0.2"))
 }
+
+func TestFormTriggerNodeID(t *testing.T) {
+	RegisterTestingT(t)
+	// The API sync stamps __node_id onto the form definition JSON so a form
+	// submission routes to the correct trigger node in a multi-trigger flow.
+	Expect(formTriggerNodeID([]byte(`{"title":"T","__node_id":"node-123","pages":[]}`))).To(Equal("node-123"))
+	Expect(formTriggerNodeID([]byte(`{"title":"T","pages":[]}`))).To(Equal("")) // absent → default
+	Expect(formTriggerNodeID([]byte(`not json`))).To(Equal(""))                 // malformed → default
+}

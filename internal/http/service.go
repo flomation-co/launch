@@ -995,6 +995,14 @@ func (s *Service) submitForm(c *gin.Context) {
 	if userID != "" {
 		final["user_id"] = userID
 	}
+	// Carry the form trigger's flow node id so the executor injects the answers
+	// into THIS trigger node — a flow may have several triggers (e.g. a Manual
+	// trigger for testing alongside the Form trigger). The API sync stamps
+	// __node_id onto the form trigger's data. Reserved key: routing only, never
+	// injected as an answer.
+	if nodeID := formTriggerNodeID(tr.Data); nodeID != "" {
+		final["__node_id"] = nodeID
+	}
 	// Surface the per-field mid-state (what was paid/verified out-of-band) to
 	// the flow so downstream steps can act on it. Prefixed like the fire-once
 	// marker so it can never collide with a real answer key.
