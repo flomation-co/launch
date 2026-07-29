@@ -3683,11 +3683,20 @@
     // it renders via renderPayment, not a read-only input — but it still
     // computes reactively (see computedFields/runCompute) to show its live
     // amount, and is re-verified server-side at checkout.
+    // isOptionField: a field presenting a fixed option list whose OPTIONS may be
+    // flow-computed (value_source) — the field-level equivalent of options_source.
+    function isOptionField(type) {
+        return type === "radio" || type === "dropdown" || type === "select" ||
+            type === "checkboxes" || type === "multiple_choice" || type === "ranking" ||
+            type === "opinion_scale" || type === "picture_choice";
+    }
     function isComputedField(component) {
         // Payment renders as its own widget; a table renders as a grid whose
-        // ROWS (not value) come from the flow — both are computed reactively
-        // (see runCompute) but neither renders as a read-only text input.
-        return !!component.value_source && component.type !== "payment" && component.type !== "table";
+        // ROWS come from the flow; an option field's flow produces its OPTIONS
+        // (not its value) and renders as a normal dropdown/radio. All compute
+        // reactively (see runCompute) but none renders as a read-only text input.
+        return !!component.value_source && component.type !== "payment" &&
+            component.type !== "table" && !isOptionField(component.type);
     }
 
     // paymentAmounts caches each computed payment field's latest client-known
@@ -3699,6 +3708,10 @@
     // /compute settle, so the loading spinner shows only until rows arrive (and
     // not again on later recomputes).
     let tableRowsResolved = {};
+    // optionsResolved records which computed option fields have had their first
+    // /compute settle, so the dropdown/radio shows a "Loading options…" disabled
+    // state only until its options arrive.
+    let optionsResolved = {};
 
     // renderPayment renders a payment field as a mid-form action: an amount line
     // plus a "Pay £X" button (or, once the field's server-recorded state is
@@ -3873,6 +3886,11 @@
         el.id = "input-" + component.name;
         el.required = !!component.required;
 
+        // Options may be flow-computed (value_source): disable the select and
+        // show a "Loading options…" placeholder until its first /compute settles.
+        const loadingOpts = !!component.value_source && !optionsResolved[component.name];
+        if (loadingOpts) el.disabled = true;
+
         // A blank leading option gives the user a "no selection" state and
         // keeps required-field validation honest — without it, the first
         // real option is auto-selected on load and Submit unlocks before
@@ -3889,7 +3907,7 @@
         const hasDefault = optionsList(component).some(o => o.value === component.default_value);
         const placeholderOption = document.createElement("option");
         placeholderOption.value = "";
-        placeholderOption.textContent = component.placeholder || "-- Select --";
+        placeholderOption.textContent = loadingOpts ? "Loading options…" : (component.placeholder || "-- Select --");
         placeholderOption.disabled = !!component.required;
         if (!hasDefault) placeholderOption.selected = true;
         el.appendChild(placeholderOption);
@@ -4863,7 +4881,7 @@
         // to run — for read-only computed fields; payment widgets show their own
         // spinner on the amount line via renderPaymentState.
         _computeTimer = setTimeout(() => {
-            for (const c of fields) if (c.type !== "payment" && c.type !== "table") setComputeSpinner(c.name, true);
+            for (const c of fields) if (c.type !== "payment" && c.type !== "table" && !isOptionField(c.type)) setComputeSpinner(c.name, true);
             runCompute(fields);
         }, 800);
     }
@@ -4890,6 +4908,19 @@
             setComputeSpinner(comp.name, false);
             tableRowsResolved[comp.name] = true; // stop the loading spinner
             comp.table_rows = normalizeRowsValue(value);
+            const w = fieldWrapperFor(comp.name);
+            if (w) { w.innerHTML = ""; renderComponentInto(form, w, comp); }
+            applyVisibility(form);
+            validateForm(form);
+            return;
+        }
+        if (isOptionField(comp.type)) {
+            // A flow-computed option field's flow produces its OPTION LIST, not
+            // the field's value. Populate options and re-render in place; the
+            // user's selection (if any) stays in formValues.
+            setComputeSpinner(comp.name, false);
+            optionsResolved[comp.name] = true;
+            comp.options = normalizeOptions(normalizeRowsValue(value));
             const w = fieldWrapperFor(comp.name);
             if (w) { w.innerHTML = ""; renderComponentInto(form, w, comp); }
             applyVisibility(form);

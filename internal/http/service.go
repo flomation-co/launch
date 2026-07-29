@@ -977,6 +977,14 @@ func (s *Service) submitForm(c *gin.Context) {
 			return s.formData.ResolveComputed(flowID, body, 0)
 		})
 	}
+	// An option field populates its OPTIONS from its own value_source flow (the
+	// field-level equivalent of options_source). Re-run each such flow at submit
+	// so the option whitelist in sanitiseFormSubmission is authoritative.
+	if formHasComputedOptions(def) {
+		def = bakeComputedOptions(def, func(flowID string) map[string]interface{} {
+			return s.formData.ResolveComputed(flowID, body, 0)
+		})
+	}
 	resolved := resolveFormForRender(def, ctx)
 	// Sanitisation pipeline (option whitelist → matrix whitelist → strip
 	// display-only → restore read-only defaults → strip hidden). Read-only

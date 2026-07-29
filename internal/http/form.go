@@ -594,6 +594,55 @@ func bakeComputedTableRows(def formDefinition, resolve func(flowID string) map[s
 	return baked
 }
 
+// isOptionField reports whether a field presents a fixed option list (whose
+// options may be flow-computed via a per-field value_source).
+func isOptionField(t string) bool {
+	switch t {
+	case "radio", "dropdown", "select", "checkboxes", "multiple_choice", "ranking", "opinion_scale", "picture_choice":
+		return true
+	}
+	return false
+}
+
+// formHasComputedOptions reports whether any option field draws its OPTIONS from
+// a per-field value_source flow — the field-level equivalent of options_source,
+// and the option-list twin of formHasComputedTableRows.
+func formHasComputedOptions(def formDefinition) bool {
+	for _, page := range def.Pages {
+		for _, c := range page.Components {
+			if isOptionField(c.Type) && strings.TrimSpace(c.ValueSource) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// bakeComputedOptions populates each computed option field's Options by running
+// its value_source flow with the submitted answers, so the submit-time option
+// whitelist is authoritative for field-level computed options — the option-list
+// twin of bakeComputedTableRows. Returns a copy; does not mutate def.
+func bakeComputedOptions(def formDefinition, resolve func(flowID string) map[string]interface{}) formDefinition {
+	if !formHasComputedOptions(def) {
+		return def
+	}
+	baked := def
+	baked.Pages = make([]formPage, len(def.Pages))
+	for pi, page := range def.Pages {
+		comps := make([]formComponent, len(page.Components))
+		for ci, c := range page.Components {
+			comp := c
+			if isOptionField(comp.Type) && strings.TrimSpace(comp.ValueSource) != "" {
+				outputs := resolve(comp.ValueSource)
+				comp.Options = optionsFromOutput(outputs[computeOutputKey(comp)])
+			}
+			comps[ci] = comp
+		}
+		baked.Pages[pi] = formPage{Components: comps, VisibleIf: page.VisibleIf}
+	}
+	return baked
+}
+
 // bakeDynamicOptions returns a copy of def with each option_source field's
 // Options populated from the resolved data-source outputs. Used on submit so
 // the whitelist enforcement in sanitiseOptionSubmissions covers dynamically-
@@ -1371,11 +1420,13 @@ func stripComputedSubmissions(submission map[string]interface{}, resolved formDe
 	computed := map[string]struct{}{}
 	for _, page := range resolved.Pages {
 		for _, c := range page.Components {
-			// A table with a value_source uses that flow to populate its ROWS,
-			// not the field's value — its answer is the row selection, which
-			// must survive (sanitiseTableSubmissions validates it). So a table
-			// is never a "computed value" field to strip.
-			if c.Type == "table" {
+			// A table's value_source populates its ROWS (answer = row selection),
+			// and an option field's value_source populates its OPTIONS (answer =
+			// the chosen option). Neither is a "computed value" — their answers
+			// are user selections that must survive (validated against the baked
+			// rows/options whitelist). Only genuine computed-VALUE fields are
+			// stripped here.
+			if c.Type == "table" || isOptionField(c.Type) {
 				continue
 			}
 			if strings.TrimSpace(c.ValueSource) != "" {
