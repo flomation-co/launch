@@ -4197,7 +4197,10 @@
         const multi = mode === "multiple";
         const selectable = (mode === "single" || multi) && !component.read_only;
         const valueCol = component.value_column || (columns[0] && columns[0].key) || "";
-        const clickableCols = columns.filter(c => c.clickable);
+        // A "link" column always navigates to its URL — never a row-select cell,
+        // so it doesn't count as a clickable selector (otherwise it would suppress
+        // the leading control and fail to select).
+        const clickableCols = columns.filter(c => c.clickable && c.type !== "link");
         // When selection is on but the author marked no clickable column, add a
         // leading control column (radio for single, checkbox for multiple) so a
         // row can always be chosen.
@@ -4387,7 +4390,8 @@
                     if (col.align === "right") td.classList.add("align-right");
                     if (col.align === "center") td.classList.add("align-center");
                     const text = tableCellText(row[col.key], col);
-                    if (selectable && col.clickable) {
+                    td.title = text;
+                    if (selectable && col.clickable && !(col.type === "link" && isHttpUrl(row[col.key]))) {
                         const btn = document.createElement("button");
                         btn.type = "button";
                         btn.className = "cell-select-btn";
