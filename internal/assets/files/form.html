@@ -1248,6 +1248,9 @@
         }
         .flo-table .filter-row input:focus { border-color: var(--border-focus); }
         .flo-table-empty { padding: 18px; text-align: center; color: var(--text-muted); font-size: 14px; }
+        /* Enum-column pill: shape + typography only; colours are set inline from
+           the column's pill definition. */
+        .flo-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 13px; font-weight: 600; line-height: 1.4; white-space: nowrap; }
         .flo-table-loading {
             display: flex; align-items: center; gap: 10px; padding: 16px 14px;
             color: var(--text-muted); font-size: 14px;
@@ -4140,6 +4143,14 @@
         return String(value);
     }
 
+    // cellPill returns the enum-column pill definition matching a cell value, or
+    // null (not an enum column / no match). The renderer draws a coloured badge.
+    function cellPill(value, col) {
+        if (!col || col.type !== "enum" || !Array.isArray(col.pills)) return null;
+        const v = value === null || value === undefined ? "" : String(value);
+        return col.pills.find(p => p && p.value === v) || null;
+    }
+
     // tableSortValue returns a comparable primitive for sorting by column type.
     function tableSortValue(value, col) {
         const type = col && col.type;
@@ -4390,6 +4401,18 @@
                         a.rel = "noopener noreferrer";
                         a.textContent = text;
                         td.appendChild(a);
+                    } else if (col.type === "enum") {
+                        const pill = cellPill(row[col.key], col);
+                        if (pill) {
+                            const span = document.createElement("span");
+                            span.className = "flo-pill";
+                            span.textContent = pill.label || text;
+                            if (pill.bg) span.style.background = pill.bg;
+                            if (pill.fg) span.style.color = pill.fg;
+                            td.appendChild(span);
+                        } else {
+                            td.textContent = text;
+                        }
                     } else {
                         td.textContent = text;
                     }
