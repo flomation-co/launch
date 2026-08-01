@@ -531,6 +531,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeStripeWebhook:
 		s.handleStripeWebhook(c, tr)
 		return
+	case launch.TriggerTypeApolloWebhook:
+		s.handleApolloWebhook(c, tr)
+		return
 	case launch.TriggerTypeQuickBooksWebhook:
 		s.handleQuickBooksWebhook(c, tr)
 		return
