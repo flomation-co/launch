@@ -22,7 +22,7 @@ import (
 
 // SecretHeader is the fallback header carrying the shared secret when it is not
 // supplied as the `secret` query parameter.
-const SecretHeader = "X-Flomation-Webhook-Secret"
+const SecretHeader = "X-Flomation-Webhook-Secret" // #nosec G101 — HTTP header name, not a credential
 
 // VerifyAndParse checks the presented shared secret against the configured one
 // in constant time, then parses the JSON body. A missing/empty configured
