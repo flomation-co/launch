@@ -323,6 +323,12 @@
             opacity: 0.7;
             cursor: not-allowed;
         }
+        /* A single disabled option (not the whole field) reads as more muted. */
+        .option-row.option-disabled,
+        .picture-choice-tile.option-disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
 
         /* Picture Choice — a responsive grid of selectable image tiles.
            Single-select behaves like radio; multi-select like checkboxes. */
@@ -1870,9 +1876,10 @@
                 if (e.target.checked) formValues[component.name] = opt.value;
                 validateForm(form);
             };
-            if (component.read_only) {
+            if (component.read_only || opt.disabled) {
                 radio.disabled = true;
                 row.classList.add("readonly");
+                if (opt.disabled) row.classList.add("option-disabled");
             }
 
             const labelText = document.createElement("span");
@@ -1930,9 +1937,10 @@
                     .filter(v => selected.has(v));
                 validateForm(form);
             };
-            if (component.read_only) {
+            if (component.read_only || opt.disabled) {
                 box.disabled = true;
                 row.classList.add("readonly");
+                if (opt.disabled) row.classList.add("option-disabled");
             }
 
             const labelText = document.createElement("span");
@@ -2110,8 +2118,9 @@
             caption.textContent = opt.label;
             tile.appendChild(caption);
 
-            if (component.read_only) {
+            if (component.read_only || opt.disabled) {
                 tile.classList.add("readonly");
+                if (opt.disabled) tile.classList.add("option-disabled");
             } else {
                 tile.onclick = () => {
                     if (multiple) {
@@ -3919,6 +3928,7 @@
             const o = document.createElement("option");
             o.value = opt.value;
             o.textContent = opt.label;
+            if (opt.disabled) o.disabled = true;
             if (component.default_value === opt.value) o.selected = true;
             el.appendChild(o);
         });
