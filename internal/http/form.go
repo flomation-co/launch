@@ -293,6 +293,9 @@ type formOption struct {
 	// Image is an option-tile image URL used by the picture_choice field.
 	// Empty means the option renders as a text fallback tile.
 	Image string `json:"image,omitempty"`
+	// Disabled shows the option but makes it non-selectable. It is excluded
+	// from the submission whitelist so a crafted POST can't smuggle its value.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // substitutionContext bundles the inputs to ${X} substitution at render time.
@@ -712,6 +715,11 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 	for name, spec := range specs {
 		whitelist := map[string]struct{}{}
 		for _, o := range spec.Options {
+			// A disabled option is not a valid choice; leaving it out of the
+			// whitelist strips a crafted submission that carries its value.
+			if o.Disabled {
+				continue
+			}
 			whitelist[o.Value] = struct{}{}
 		}
 

@@ -211,6 +211,39 @@ func TestSanitiseOptionSubmissions_RadioAndDropdown_WhitelistEnforced(t *testing
 	Expect(sanitised["size"]).To(Equal(""))
 }
 
+func TestSanitiseOptionSubmissions_DisabledOptionsRejected(t *testing.T) {
+	RegisterTestingT(t)
+
+	resolved := formDefinition{
+		Pages: []formPage{{
+			Components: []formComponent{
+				{Name: "role", Type: "radio", Options: []formOption{
+					{Label: "Admin", Value: "admin", Disabled: true},
+					{Label: "Member", Value: "member"},
+				}},
+				{Name: "perks", Type: "checkboxes", Options: []formOption{
+					{Label: "Gym", Value: "gym"},
+					{Label: "Car", Value: "car", Disabled: true},
+				}},
+			},
+		}},
+	}
+
+	// A disabled option is not a valid choice — a crafted radio submission of
+	// its value is wiped, exactly like an off-whitelist value.
+	sanitised := sanitiseOptionSubmissions(map[string]interface{}{
+		"role":  "admin",
+		"perks": []interface{}{"gym", "car"},
+	}, resolved)
+	Expect(sanitised["role"]).To(Equal(""))
+	// The disabled checkbox value is filtered out; the enabled one survives.
+	Expect(sanitised["perks"]).To(Equal([]interface{}{"gym"}))
+
+	// The enabled radio option still passes through.
+	sanitised = sanitiseOptionSubmissions(map[string]interface{}{"role": "member"}, resolved)
+	Expect(sanitised["role"]).To(Equal("member"))
+}
+
 func TestSanitiseOptionSubmissions_Checkboxes_FiltersToWhitelist(t *testing.T) {
 	RegisterTestingT(t)
 
