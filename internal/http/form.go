@@ -16,11 +16,29 @@ import (
 // formDefinition mirrors the editor's FormDefinition shape. Pure superset of
 // the older shape (no migrations) — older saved forms have nil RequireLogin
 // and missing per-field flags which decode cleanly to zero values.
+// i18nMap holds translations of a single display string, keyed by BCP-47
+// language code. The base field (e.g. Title) is the default-language value; a
+// missing/empty entry falls back to it. Canonical data (field name, option
+// value) is never translated. This is the Go twin of the SDK's tString. See
+// PLAN-multilingual-forms.md.
+type i18nMap map[string]string
+
 type formDefinition struct {
 	Title        string     `json:"title"`
 	Description  string     `json:"description"`
 	Pages        []formPage `json:"pages"`
 	RequireLogin bool       `json:"require_login,omitempty"`
+
+	// Multi-lingual authoring. DefaultLanguage is the language the base strings
+	// are written in (default "en" when empty); Languages lists every language
+	// the form was authored in (default: just the default language). DisplayMode
+	// is "switch" (default) or "sideBySide". TitleI18n/DescriptionI18n translate
+	// the header. A monolingual form leaves all of these unset.
+	DefaultLanguage string   `json:"default_language,omitempty"`
+	Languages       []string `json:"languages,omitempty"`
+	DisplayMode     string   `json:"display_mode,omitempty"`
+	TitleI18n       i18nMap  `json:"title_i18n,omitempty"`
+	DescriptionI18n i18nMap  `json:"description_i18n,omitempty"`
 
 	// DataSource, when set, names a flow that is run when the form loads;
 	// its outputs become ${data.X} substitution values usable in labels,
@@ -38,6 +56,8 @@ type formSubmit struct {
 	// SuccessMessage overrides the default "Your response has been submitted
 	// successfully." text. Shown for the "message" and "restart" modes.
 	SuccessMessage string `json:"success_message,omitempty"`
+	// SuccessMessageI18n translates SuccessMessage per language.
+	SuccessMessageI18n i18nMap `json:"success_message_i18n,omitempty"`
 	// OnSubmit selects the behaviour: "message" (default — a thank-you card),
 	// "restart" (reset the form for another response — kiosk loop), or
 	// "redirect" (send the browser to RedirectURL).
@@ -85,6 +105,12 @@ type formComponent struct {
 	ReadOnly     bool         `json:"read_only,omitempty"`
 	DefaultValue string       `json:"default_value,omitempty"`
 	Options      []formOption `json:"options,omitempty"`
+
+	// Translations of this component's display strings, keyed by language. The
+	// base Label/Placeholder/DisplayText remain the default-language values.
+	LabelI18n       i18nMap `json:"label_i18n,omitempty"`
+	PlaceholderI18n i18nMap `json:"placeholder_i18n,omitempty"`
+	DisplayTextI18n i18nMap `json:"display_text_i18n,omitempty"`
 
 	// OptionsSource, when set on an option-based field (radio, dropdown,
 	// checkboxes, ranking), names a key in the data-source flow's outputs
@@ -296,6 +322,8 @@ type formOption struct {
 	// Disabled shows the option but makes it non-selectable. It is excluded
 	// from the submission whitelist so a crafted POST can't smuggle its value.
 	Disabled bool `json:"disabled,omitempty"`
+	// LabelI18n translates the option Label per language. Value never translates.
+	LabelI18n i18nMap `json:"label_i18n,omitempty"`
 }
 
 // substitutionContext bundles the inputs to ${X} substitution at render time.
@@ -388,6 +416,94 @@ func metaText(s string) string {
 	s = boldMarker.ReplaceAllString(s, "$1")
 	s = italicMarker.ReplaceAllString(s, "$1")
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// ── Multi-lingual resolution (the Go twin of the SDK i18n.ts / form.html) ──
+
+// formLanguages returns the form's language config with monolingual defaults:
+// default language "en" and a single-entry language list.
+func formLanguages(def formDefinition) (langs []string, defaultLang string) {
+	defaultLang = def.DefaultLanguage
+	if defaultLang == "" {
+		defaultLang = "en"
+	}
+	if len(def.Languages) > 0 {
+		langs = def.Languages
+	} else {
+		langs = []string{defaultLang}
+	}
+	return langs, defaultLang
+}
+
+// resolveLanguage narrows a requested language to one the form offers, honouring
+// base subtags in both directions ("cy-GB" ↔ "cy"), else the default language.
+func resolveLanguage(requested string, langs []string, defaultLang string) string {
+	if requested == "" {
+		return defaultLang
+	}
+	norm := strings.ToLower(strings.TrimSpace(requested))
+	for _, l := range langs {
+		if strings.ToLower(l) == norm {
+			return l
+		}
+	}
+	base := norm
+	if i := strings.IndexByte(norm, '-'); i >= 0 {
+		base = norm[:i]
+	}
+	for _, l := range langs {
+		ll := strings.ToLower(l)
+		if i := strings.IndexByte(ll, '-'); i >= 0 {
+			ll = ll[:i]
+		}
+		if ll == base {
+			return l
+		}
+	}
+	return defaultLang
+}
+
+// resolveLanguageFromHeader picks the best form language from an explicit
+// request (?lang) then an Accept-Language header, falling back to the default.
+func resolveLanguageFromHeader(requested, acceptLanguage string, langs []string, defaultLang string) string {
+	if r := resolveLanguage(requested, langs, defaultLang); requested != "" && r != defaultLang {
+		return r
+	} else if requested != "" && baseSubtag(requested) == baseSubtag(defaultLang) {
+		return defaultLang
+	}
+	// Accept-Language: "cy-GB,cy;q=0.9,en;q=0.8" — try each tag in order.
+	for _, part := range strings.Split(acceptLanguage, ",") {
+		tag := strings.TrimSpace(part)
+		if i := strings.IndexByte(tag, ';'); i >= 0 {
+			tag = strings.TrimSpace(tag[:i])
+		}
+		if tag == "" || tag == "*" {
+			continue
+		}
+		if r := resolveLanguage(tag, langs, defaultLang); r != defaultLang || baseSubtag(tag) == baseSubtag(defaultLang) {
+			return r
+		}
+	}
+	return defaultLang
+}
+
+func baseSubtag(s string) string {
+	s = strings.ToLower(s)
+	if i := strings.IndexByte(s, '-'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// tI18n resolves a translatable string for a locale, falling back to the base
+// (default-language) value when there's no non-empty translation.
+func tI18n(base string, m i18nMap, locale, defaultLang string) string {
+	if locale != "" && locale != defaultLang && m != nil {
+		if v, ok := m[locale]; ok && v != "" {
+			return v
+		}
+	}
+	return base
 }
 
 // resolveFormForRender walks the form definition, resolving all

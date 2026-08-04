@@ -1482,6 +1482,15 @@ func (s *Service) handleForm(c *gin.Context) {
 		}
 	}
 
+	// Multi-lingual: resolve the viewer's language (?lang → Accept-Language →
+	// default) so the server-rendered <title>/OG meta — which crawlers see
+	// without running our JS — is in the right language. The client seeds its
+	// active locale from this too (see SERVER_LANG in form.html).
+	langs, defaultLang := formLanguages(resolved)
+	lang := resolveLanguageFromHeader(c.Query("lang"), c.GetHeader("Accept-Language"), langs, defaultLang)
+	metaTitle := metaText(tI18n(resolved.Title, resolved.TitleI18n, lang, defaultLang))
+	metaDescription := metaText(tI18n(resolved.Description, resolved.DescriptionI18n, lang, defaultLang))
+
 	resolvedBytes, _ := json.Marshal(resolved)
 	c.HTML(http.StatusOK, "form.html", gin.H{
 		"Form":            base64.StdEncoding.EncodeToString(resolvedBytes),
@@ -1489,8 +1498,9 @@ func (s *Service) handleForm(c *gin.Context) {
 		"SubmissionID":    submissionID,
 		"ResumePayload":   resumePayload,
 		"FieldStates":     fieldStatesPayload,
-		"MetaTitle":       metaText(resolved.Title),
-		"MetaDescription": metaText(resolved.Description),
+		"MetaTitle":       metaTitle,
+		"MetaDescription": metaDescription,
+		"Lang":            lang,
 		"PageNeedsData":   base64.StdEncoding.EncodeToString(pageNeedsDataJSON),
 	})
 }

@@ -177,6 +177,9 @@ var publicComponentKeys = map[string]struct{}{
 	// through the derived "computed" flag (never the internal flow id).
 	"table_columns": {}, "table_rows": {}, "selection_mode": {},
 	"value_column": {}, "page_size": {}, "filterable": {},
+	// Multi-lingual display-string translations. Option-level label_i18n rides
+	// along inside the "options" array (a passthrough of the formOption structs).
+	"label_i18n": {}, "placeholder_i18n": {}, "display_text_i18n": {},
 }
 
 // projectComponent reduces a component to its allowlisted keys plus derived
@@ -229,6 +232,23 @@ func projectDefinition(def formDefinition) map[string]interface{} {
 		// has_data_source tells the client to GET /data for ${data.X} values and
 		// dynamic options — without ever exposing the data-source flow id.
 		"has_data_source": def.DataSource != nil && def.DataSource.FlowID != "",
+	}
+	// Multi-lingual metadata (all omitted for a monolingual form). These are safe
+	// to expose — they're display strings and language codes, no ids or secrets.
+	if def.DefaultLanguage != "" {
+		out["default_language"] = def.DefaultLanguage
+	}
+	if len(def.Languages) > 0 {
+		out["languages"] = def.Languages
+	}
+	if def.DisplayMode != "" {
+		out["display_mode"] = def.DisplayMode
+	}
+	if len(def.TitleI18n) > 0 {
+		out["title_i18n"] = def.TitleI18n
+	}
+	if len(def.DescriptionI18n) > 0 {
+		out["description_i18n"] = def.DescriptionI18n
 	}
 	if def.Submit != nil {
 		out["submit"] = def.Submit

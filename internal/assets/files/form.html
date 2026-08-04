@@ -69,6 +69,21 @@
             margin-bottom: 8px;
         }
 
+        .lang-switcher {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 12px;
+        }
+        .lang-switcher-select {
+            font-size: 13px;
+            padding: 6px 10px;
+            border: 1px solid var(--border, #d0d0d8);
+            border-radius: 8px;
+            background: var(--surface, #fff);
+            color: var(--text, #1a1a22);
+            cursor: pointer;
+        }
+
         .form-description {
             font-size: 14px;
             color: var(--text-muted);
@@ -1290,6 +1305,7 @@
     </div>
     {{ else }}
     <div class="form-card" id="form-container">
+        <div id="lang-switcher" class="lang-switcher hidden"></div>
         <div class="form-title" id="form-header">Form</div>
         <div class="form-description" id="form-description"></div>
         <div id="page-indicator"></div>
@@ -1310,6 +1326,87 @@
     // submit fetch — relying on form.id failed because the form
     // definition doesn't carry one, which caused POST /form/undefined.
     const FORM_ID = "{{ .FormID }}";
+
+    // ---- Multi-lingual support (the twin of the SDK i18n.ts + form.go) -------
+    // SERVER_LANG is the language the server resolved for the <title>/OG meta
+    // (?lang → Accept-Language → default). FORM_LOCALE is the active display
+    // language; FORM_LANGS/FORM_DEFAULT_LANG come from the definition once parsed.
+    const SERVER_LANG = "{{ .Lang }}";
+    let FORM_LOCALE = "";
+    let FORM_DEFAULT_LANG = "en";
+    let FORM_LANGS = ["en"];
+    // Endonyms for the switcher (each language's own name).
+    const LANG_ENDONYM = {
+        en: "English", fr: "Français", de: "Deutsch", it: "Italiano", es: "Español",
+        pt: "Português", cy: "Cymraeg", uk: "Українська", pl: "Polski", da: "Dansk",
+        sv: "Svenska", no: "Norsk", fi: "Suomi"
+    };
+    // Nav/submit chrome per language; falls back to English for anything missing.
+    const CHROME_STRINGS = {
+        en: { previous: "Previous", next: "Continue", submit: "Submit" },
+        fr: { previous: "Retour", next: "Continuer", submit: "Envoyer" },
+        de: { previous: "Zurück", next: "Weiter", submit: "Absenden" },
+        it: { previous: "Indietro", next: "Continua", submit: "Invia" },
+        es: { previous: "Atrás", next: "Continuar", submit: "Enviar" },
+        pt: { previous: "Voltar", next: "Continuar", submit: "Enviar" },
+        cy: { previous: "Yn ôl", next: "Parhau", submit: "Cyflwyno" },
+        uk: { previous: "Назад", next: "Продовжити", submit: "Надіслати" },
+        pl: { previous: "Wstecz", next: "Dalej", submit: "Wyślij" },
+        da: { previous: "Tilbage", next: "Fortsæt", submit: "Send" },
+        sv: { previous: "Tillbaka", next: "Fortsätt", submit: "Skicka" },
+        no: { previous: "Tilbake", next: "Fortsett", submit: "Send" },
+        fi: { previous: "Takaisin", next: "Jatka", submit: "Lähetä" }
+    };
+    function baseSubtag(s) { return String(s || "").toLowerCase().split("-")[0]; }
+    function chromeStrings() {
+        return CHROME_STRINGS[FORM_LOCALE] || CHROME_STRINGS[baseSubtag(FORM_LOCALE)] || CHROME_STRINGS.en;
+    }
+    function langEndonym(code) { return LANG_ENDONYM[code] || LANG_ENDONYM[baseSubtag(code)] || code; }
+    // tI18n resolves a translatable string for the active locale, falling back to
+    // the base (default-language) value when there's no non-empty translation.
+    function tI18n(base, i18n) {
+        if (FORM_LOCALE && FORM_LOCALE !== FORM_DEFAULT_LANG && i18n && typeof i18n === "object") {
+            const v = i18n[FORM_LOCALE];
+            if (v != null && v !== "") return v;
+        }
+        return base == null ? "" : base;
+    }
+    function resolveLang(requested, langs, def) {
+        if (!requested) return def;
+        const norm = String(requested).toLowerCase();
+        for (const l of langs) if (l.toLowerCase() === norm) return l;
+        const base = baseSubtag(norm);
+        for (const l of langs) if (baseSubtag(l) === base) return l;
+        return def;
+    }
+    // initLanguages reads the definition's language config and picks the active
+    // locale: ?lang → server Accept-Language pick → navigator languages → default.
+    function initLanguages(form) {
+        FORM_DEFAULT_LANG = form.default_language || "en";
+        FORM_LANGS = (Array.isArray(form.languages) && form.languages.length) ? form.languages : [FORM_DEFAULT_LANG];
+        let candidates = [];
+        try { candidates.push(new URLSearchParams(location.search).get("lang")); } catch (e) { /* ignore */ }
+        candidates.push(SERVER_LANG);
+        candidates = candidates.concat(navigator.languages || [navigator.language || ""]);
+        let picked = FORM_DEFAULT_LANG;
+        for (const c of candidates) {
+            if (!c) continue;
+            const r = resolveLang(c, FORM_LANGS, FORM_DEFAULT_LANG);
+            if (r !== FORM_DEFAULT_LANG || baseSubtag(c) === baseSubtag(FORM_DEFAULT_LANG)) { picked = r; break; }
+        }
+        FORM_LOCALE = picked;
+        try { document.documentElement.setAttribute("lang", FORM_LOCALE); } catch (e) { /* ignore */ }
+    }
+    // A viewer switching language reloads with ?lang=<code>. Answers survive the
+    // reload via the server draft / sessionStorage resume, so no in-place re-render
+    // (which would have to rebuild every input) is needed.
+    function switchLanguage(code) {
+        try {
+            const url = new URL(location.href);
+            url.searchParams.set("lang", code);
+            location.assign(url.toString());
+        } catch (e) { location.search = "?lang=" + encodeURIComponent(code); }
+    }
     // Server-minted draft id for this render + any previously-saved answers to
     // resume. RESUME_PAYLOAD arrives base64-encoded (like the form definition
     // above) and is atob+JSON.parse'd here — never injected raw, since the draft
@@ -1386,18 +1483,24 @@
     function substituteComponentData(component) {
         if (!component) return component;
         const c = Object.assign({}, component);
-        c.label = subData(c.label);
-        c.placeholder = subData(c.placeholder);
+        // Translate for the active language first (falling back to the base
+        // value), THEN resolve ${data.X} — a translation may itself contain a
+        // ${data.X} token. Canonical option values are never translated.
+        c.label = subData(tI18n(component.label, component.label_i18n));
+        c.placeholder = subData(tI18n(component.placeholder, component.placeholder_i18n));
         c.default_value = subData(c.default_value);
-        c.display_text = subData(c.display_text);
-        if (Array.isArray(c.options)) {
-            c.options = c.options.map(function (o) {
+        c.display_text = subData(tI18n(component.display_text, component.display_text_i18n));
+        const localiseOpts = function (arr) {
+            return arr.map(function (o) {
                 if (o && typeof o === "object") {
-                    return Object.assign({}, o, { label: subData(o.label), value: subData(o.value) });
+                    return Object.assign({}, o, { label: subData(tI18n(o.label, o.label_i18n)), value: subData(o.value) });
                 }
                 return o;
             });
-        }
+        };
+        if (Array.isArray(c.options)) c.options = localiseOpts(c.options);
+        if (Array.isArray(c.matrix_rows)) c.matrix_rows = localiseOpts(c.matrix_rows);
+        if (Array.isArray(c.matrix_columns)) c.matrix_columns = localiseOpts(c.matrix_columns);
         return c;
     }
     let currentPage = 0;
@@ -1597,7 +1700,7 @@
     // submit_label), defaulting to "Submit".
     function submitLabel(form) {
         const l = form && form.submit && form.submit.submit_label;
-        return (typeof l === "string" && l.trim()) ? l.trim() : "Submit";
+        return (typeof l === "string" && l.trim()) ? l.trim() : chromeStrings().submit;
     }
 
     function renderLabel(component) {
@@ -5049,14 +5152,43 @@
         validateForm(form);
     }
 
+    // renderLanguageSwitcher populates the switcher control with the form's
+    // languages (by endonym) and reloads with ?lang= on change.
+    function renderLanguageSwitcher() {
+        const host = document.getElementById("lang-switcher");
+        if (!host) return;
+        host.textContent = "";
+        const sel = document.createElement("select");
+        sel.className = "lang-switcher-select";
+        sel.setAttribute("aria-label", "Language");
+        FORM_LANGS.forEach(function (code) {
+            const opt = document.createElement("option");
+            opt.value = code;
+            opt.textContent = langEndonym(code);
+            if (code === FORM_LOCALE) opt.selected = true;
+            sel.appendChild(opt);
+        });
+        sel.onchange = function () { switchLanguage(sel.value); };
+        host.appendChild(sel);
+        host.classList.remove("hidden");
+    }
+
     function renderForm() {
         const form = JSON.parse(formData);
         if (!form) return;
 
-        document.getElementById("form-header").textContent = form.title || "Form";
+        // Resolve the active language before rendering any translatable string.
+        initLanguages(form);
+
+        document.getElementById("form-header").textContent = tI18n(form.title, form.title_i18n) || "Form";
         const desc = document.getElementById("form-description");
-        if (form.description) desc.innerHTML = renderRichText(form.description);
+        const descText = tI18n(form.description, form.description_i18n);
+        if (descText) desc.innerHTML = renderRichText(descText);
         else desc.style.display = "none";
+
+        // Language switcher (only for a multi-lingual form). Rendered above the
+        // header; switching reloads with ?lang=<code>.
+        if (Array.isArray(FORM_LANGS) && FORM_LANGS.length > 1) renderLanguageSwitcher();
 
         for (let p = 0; p < form.pages.length; p++) renderPage(form, p);
 
@@ -5069,14 +5201,14 @@
 
         if (form.pages.length > 1) {
             const prev = document.createElement("button");
-            prev.textContent = "Previous";
+            prev.textContent = chromeStrings().previous;
             prev.id = "previous";
             prev.classList.add("btn", "btn-secondary");
             prev.onclick = () => setPage(form, currentPage - 1);
             buttons.appendChild(prev);
 
             const next = document.createElement("button");
-            next.textContent = "Continue";
+            next.textContent = chromeStrings().next;
             next.id = "next";
             next.classList.add("btn", "btn-secondary");
             next.onclick = () => setPage(form, currentPage + 1);
@@ -5207,8 +5339,9 @@
     function handleSubmitSuccess(form) {
         const cfg = (form && form.submit) || {};
         const mode = cfg.on_submit || "message";
-        const msg = (cfg.success_message && cfg.success_message.trim())
-            ? cfg.success_message
+        const localised = tI18n(cfg.success_message, cfg.success_message_i18n);
+        const msg = (localised && localised.trim())
+            ? localised
             : "Your response has been submitted successfully.";
 
         if (mode === "redirect") {
@@ -5385,8 +5518,10 @@
     try { __justSubmitted = new URLSearchParams(window.location.search).get("submitted") === "1"; } catch (_) {}
     if (__justSubmitted) {
         const __def = JSON.parse(formData) || {};
-        const __msg = (__def.submit && __def.submit.success_message && __def.submit.success_message.trim())
-            ? __def.submit.success_message
+        initLanguages(__def); // resolve locale before localising the message
+        const __localised = __def.submit ? tI18n(__def.submit.success_message, __def.submit.success_message_i18n) : "";
+        const __msg = (__localised && __localised.trim())
+            ? __localised
             : "Your response has been submitted successfully.";
         showThankYou(__msg);
     } else {
