@@ -4,19 +4,25 @@ FROM dhi.io/alpine-base:3.23-alpine3.23-dev
 # Install ca-certificates for HTTPS support
 RUN apk add --no-cache ca-certificates
 
-# Create flomation user and group
-RUN addgroup -S flomation && adduser -S flomation -G flomation
+# Create the flomation user and group, pinned to an explicit uid/gid.
+# Pinning matters: `adduser -S` with no -u takes the first free system id, which
+# collides with package-provided accounts — that is how the runner image ended
+# up on uid 101, because `apk add clamav` claimed 100 first. 10001 is outside
+# the range apk allocates from and is free in every base image we use.
+RUN addgroup -g 10001 -S flomation && \
+    adduser  -u 10001 -S flomation -G flomation
 
-# Copy the binary into the container
+# Copy the binary into the container.
+# Owned by root and mode 0555: the application cannot rewrite its own
+# executable, and one COPY replaces COPY + chmod + chown, which previously
+# rewrote every byte of the binary into a second image layer.
 ARG BINARY_FILE
-COPY ${BINARY_FILE} /usr/local/bin/flomation-launch
+COPY --chown=root:root --chmod=0555 ${BINARY_FILE} /usr/local/bin/flomation-launch
 
-# Make the binary executable and change ownership to flomation user
-RUN chmod +x /usr/local/bin/flomation-launch && \
-    chown flomation:flomation /usr/local/bin/flomation-launch
-
-# Switch to flomation user
-USER flomation
+# Numeric rather than a name: with `runAsNonRoot: true` the kubelet refuses an
+# image whose USER is a name, because it cannot verify the name is not root.
+# The account is still called `flomation`, so `ps` and `ls -l` stay readable.
+USER 10001:10001
 
 # Expose any ports if needed (adjust as necessary)
 # EXPOSE 8080
