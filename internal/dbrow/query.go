@@ -99,6 +99,14 @@ func driverName(dialect string) (string, error) {
 // buildDSN assembles the driver name and connection string for a dialect from
 // already variable-resolved connection fields. sslMode is the node's generic
 // disable/require/verify choice, mapped to each driver's own encryption knob.
+//
+// An unset mode means "require". It used to mean "disable", which is the wrong
+// way round twice over: it put the database password on the wire in clear
+// whenever the author did not notice the field, and it fails outright against
+// every managed Postgres, because they all refuse an unencrypted connection.
+// The failure was invisible too — the trigger stayed registered and leased,
+// polling once a minute forever, and the only trace was a pg_hba line in the
+// Launch log. Turning encryption off is still available, but has to be chosen.
 func buildDSN(dialect, host, port, user, pass, database, sslMode string) (string, string, error) {
 	drv, err := driverName(dialect)
 	if err != nil {
@@ -110,10 +118,10 @@ func buildDSN(dialect, host, port, user, pass, database, sslMode string) (string
 
 	switch dialect {
 	case dialectPostgres:
-		mode := "disable"
+		mode := "require"
 		switch sslMode {
-		case "require":
-			mode = "require"
+		case "disable":
+			mode = "disable"
 		case "verify":
 			mode = "verify-full"
 		}
@@ -122,10 +130,10 @@ func buildDSN(dialect, host, port, user, pass, database, sslMode string) (string
 		return drv, dsn, nil
 
 	case dialectMySQL:
-		tls := "false"
+		tls := "skip-verify"
 		switch sslMode {
-		case "require":
-			tls = "skip-verify"
+		case "disable":
+			tls = "false"
 		case "verify":
 			tls = "true"
 		}
@@ -139,13 +147,13 @@ func buildDSN(dialect, host, port, user, pass, database, sslMode string) (string
 		q := url.Values{}
 		q.Set("database", database)
 		switch sslMode {
-		case "require":
-			q.Set("encrypt", "true")
-			q.Set("trustservercertificate", "true")
+		case "disable":
+			q.Set("encrypt", "disable")
 		case "verify":
 			q.Set("encrypt", "true")
 		default:
-			q.Set("encrypt", "disable")
+			q.Set("encrypt", "true")
+			q.Set("trustservercertificate", "true")
 		}
 		dsn := fmt.Sprintf("sqlserver://%s:%s@%s:%s?%s",
 			url.QueryEscape(user), url.QueryEscape(pass), host, port, q.Encode())
