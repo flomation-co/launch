@@ -105,8 +105,9 @@ func TestBuildDSN(t *testing.T) {
 		t.Errorf("unexpected mysql dsn prefix %q", dsn)
 	}
 
-	// SQL Server, disable maps to encrypt=disable.
-	drv, dsn, err = buildDSN(dialectSQLServer, "db.local", "1433", "sa", "secret", "app", "")
+	// SQL Server, an explicit disable maps to encrypt=disable. It has to be
+	// explicit now: an unset mode encrypts (TestBuildDSN_EncryptsByDefault).
+	drv, dsn, err = buildDSN(dialectSQLServer, "db.local", "1433", "sa", "secret", "app", "disable")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -271,5 +272,68 @@ func TestShouldSkipForInterval(t *testing.T) {
 	// Never polled → poll.
 	if shouldSkipForInterval(map[string]json.RawMessage{}, 5*time.Minute, now) {
 		t.Error("expected no skip when never polled")
+	}
+}
+
+// TestBuildDSN_EncryptsByDefault is the regression for the trigger that polled
+// once a minute for twelve days without ever firing. ssl_mode is optional, the
+// author left it blank, and blank used to mean "disable" — so every poll opened
+// an unencrypted connection to a managed Postgres, which refused it with
+// "no pg_hba.conf entry ... no encryption". Nothing surfaced: the trigger stayed
+// registered, kept taking its lease, and wrote no state at all.
+func TestBuildDSN_EncryptsByDefault(t *testing.T) {
+	for _, mode := range []string{"", "require", "unrecognised"} {
+		_, dsn, err := buildDSN(dialectPostgres, "db.local", "5432", "u", "p", "app", mode)
+		if err != nil {
+			t.Fatalf("postgres %q: unexpected error: %v", mode, err)
+		}
+		if !strings.Contains(dsn, "sslmode=require") {
+			t.Errorf("postgres ssl_mode=%q produced %q, want sslmode=require", mode, dsn)
+		}
+
+		_, dsn, err = buildDSN(dialectMySQL, "db.local", "3306", "u", "p", "app", mode)
+		if err != nil {
+			t.Fatalf("mysql %q: unexpected error: %v", mode, err)
+		}
+		if !strings.Contains(dsn, "tls=skip-verify") {
+			t.Errorf("mysql ssl_mode=%q produced %q, want tls=skip-verify", mode, dsn)
+		}
+
+		_, dsn, err = buildDSN(dialectSQLServer, "db.local", "1433", "u", "p", "app", mode)
+		if err != nil {
+			t.Fatalf("sqlserver %q: unexpected error: %v", mode, err)
+		}
+		if !strings.Contains(dsn, "encrypt=true") {
+			t.Errorf("sqlserver ssl_mode=%q produced %q, want encrypt=true", mode, dsn)
+		}
+	}
+}
+
+// TestBuildDSN_DisableStaysAvailable keeps the escape hatch working: a local
+// database with no TLS is a legitimate thing to poll, it just has to be asked
+// for rather than fallen into.
+func TestBuildDSN_DisableStaysAvailable(t *testing.T) {
+	_, dsn, err := buildDSN(dialectPostgres, "db.local", "5432", "u", "p", "app", "disable")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(dsn, "sslmode=disable") {
+		t.Errorf("expected sslmode=disable in %q", dsn)
+	}
+
+	_, dsn, err = buildDSN(dialectMySQL, "db.local", "3306", "u", "p", "app", "disable")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(dsn, "tls=false") {
+		t.Errorf("expected tls=false in %q", dsn)
+	}
+
+	_, dsn, err = buildDSN(dialectSQLServer, "db.local", "1433", "u", "p", "app", "disable")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(dsn, "encrypt=disable") {
+		t.Errorf("expected encrypt=disable in %q", dsn)
 	}
 }
