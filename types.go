@@ -45,6 +45,7 @@ const (
 	TriggerTypeSurveyMonkeyWebhook = "surveymonkey-webhook" // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeAWXWebhook          = "awx-webhook"          // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeApolloWebhook       = "apollo-webhook"       // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeFreshsalesWebhook   = "freshsales-webhook"   // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeHeyGenWebhook       = "heygen-webhook"       // #nosec G101 — trigger type identifier, not a credential
 
 	// TriggerTypeMQTT is not a webhook: nothing POSTs to Launch. The mqtt service
