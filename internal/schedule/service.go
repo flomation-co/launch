@@ -38,20 +38,75 @@ type lastFiredState struct {
 	At time.Time `json:"at"`
 }
 
+// FlexBool is a boolean that accepts either shape the editor can store.
+//
+// Every other field on ScheduleConfig is a string, because the editor stored
+// all trigger config as strings. exclude_bank_holidays is the one input the
+// executor declares as ConnectionTypeBoolean, so it can arrive as a real JSON
+// boolean OR, from an older flow, as the string "true".
+//
+// That mattered more than a type mismatch usually does. json.Unmarshal fails on
+// the WHOLE config when one field disagrees, and checkTrigger returns on that
+// error, so a single boolean silently stopped the entire schedule from ever
+// firing — every fifteen seconds, forever, with only a log line to show for it.
+// It did not even need the box to be ticked: a stored "false" broke it just as
+// completely as a "true".
+type FlexBool bool
+
+// Bool reads the value.
+func (f FlexBool) Bool() bool { return bool(f) }
+
+// UnmarshalJSON accepts true, false, "true", "false", "1", "0" and "", so both
+// the boolean the editor stores now and the string older flows stored parse
+// without either side having to be migrated.
+func (f *FlexBool) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	switch trimmed {
+	case "true":
+		*f = true
+		return nil
+	case "false", "null", "":
+		*f = false
+		return nil
+	}
+
+	// A quoted string: unquote and read it as a boolean word.
+	var asString string
+	if err := json.Unmarshal(data, &asString); err != nil {
+		return fmt.Errorf("exclude_bank_holidays must be a boolean or a boolean string, got %s", trimmed)
+	}
+	switch strings.ToLower(strings.TrimSpace(asString)) {
+	case "true", "1", "yes", "on":
+		*f = true
+	default:
+		*f = false
+	}
+	return nil
+}
+
+// MarshalJSON writes a real boolean, so anything Launch round-trips comes back
+// in the shape the executor declares.
+func (f FlexBool) MarshalJSON() ([]byte, error) {
+	if f {
+		return []byte("true"), nil
+	}
+	return []byte("false"), nil
+}
+
 // ScheduleConfig represents the configuration stored in a schedule trigger's Data field.
 type ScheduleConfig struct {
-	Mode                string `json:"mode"`                            // "interval", "daily", "weekly", "monthly", "monthly_weekday", "yearly"
-	Interval            string `json:"interval,omitempty"`              // e.g. "15"
-	Unit                string `json:"unit,omitempty"`                  // "minutes", "hours", "days"
-	TimeOfDay           string `json:"time_of_day,omitempty"`           // "HH:MM" 24-hour format
-	DaysOfWeek          string `json:"days_of_week,omitempty"`          // "monday,wednesday"
-	DaysOfMonth         string `json:"days_of_month,omitempty"`         // "1,15,28" or "last" (monthly mode)
-	WeekOrdinal         string `json:"week_ordinal,omitempty"`          // "first".."fifth" or "last" (monthly_weekday mode)
-	Weekday             string `json:"weekday,omitempty"`               // "monday".."sunday" (monthly_weekday mode)
-	MonthOfYear         string `json:"month_of_year,omitempty"`         // "1".."12" (yearly mode)
-	DayOfMonth          string `json:"day_of_month,omitempty"`          // "1".."31" (yearly mode)
-	Timezone            string `json:"timezone,omitempty"`              // IANA timezone e.g. "Europe/London"
-	ExcludeBankHolidays string `json:"exclude_bank_holidays,omitempty"` // "true" to skip UK bank holidays
+	Mode                string   `json:"mode"`                            // "interval", "daily", "weekly", "monthly", "monthly_weekday", "yearly"
+	Interval            string   `json:"interval,omitempty"`              // e.g. "15"
+	Unit                string   `json:"unit,omitempty"`                  // "minutes", "hours", "days"
+	TimeOfDay           string   `json:"time_of_day,omitempty"`           // "HH:MM" 24-hour format
+	DaysOfWeek          string   `json:"days_of_week,omitempty"`          // "monday,wednesday"
+	DaysOfMonth         string   `json:"days_of_month,omitempty"`         // "1,15,28" or "last" (monthly mode)
+	WeekOrdinal         string   `json:"week_ordinal,omitempty"`          // "first".."fifth" or "last" (monthly_weekday mode)
+	Weekday             string   `json:"weekday,omitempty"`               // "monday".."sunday" (monthly_weekday mode)
+	MonthOfYear         string   `json:"month_of_year,omitempty"`         // "1".."12" (yearly mode)
+	DayOfMonth          string   `json:"day_of_month,omitempty"`          // "1".."31" (yearly mode)
+	Timezone            string   `json:"timezone,omitempty"`              // IANA timezone e.g. "Europe/London"
+	ExcludeBankHolidays FlexBool `json:"exclude_bank_holidays,omitempty"` // true or "true" — see FlexBool
 }
 
 // SchedulePayload is the payload sent when a schedule trigger fires.
@@ -222,7 +277,7 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 	}
 
 	// Check bank holiday exclusion
-	if cfg.ExcludeBankHolidays == "true" && s.isBankHoliday(now) {
+	if cfg.ExcludeBankHolidays.Bool() && s.isBankHoliday(now) {
 		log.WithFields(log.Fields{
 			"trigger_id": tr.ID,
 			"date":       now.Format("2006-01-02"),
