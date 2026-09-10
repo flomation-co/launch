@@ -253,6 +253,20 @@ func (r *formDataResolver) pollResult(pollURL string) (map[string]interface{}, b
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// A client error (401/403 from an internal-auth misconfig, 404 not-found)
+	// will NEVER resolve by polling — surfacing it and stopping is far better
+	// than silently polling until the 20s timeout and returning empty (which
+	// makes a computed field / table appear to "spin forever" then go blank).
+	// A 5xx may be transient, so keep polling on those.
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		log.WithFields(log.Fields{"status": resp.StatusCode, "url": pollURL}).
+			Warn("form data-source: internal execution poll was rejected — check launch→API internal (mTLS) auth")
+		return nil, true
+	}
+	if resp.StatusCode >= 500 {
+		return nil, false
+	}
+
 	var data struct {
 		ExecutionStatus string                 `json:"execution_status"`
 		Result          map[string]interface{} `json:"result"`
@@ -274,6 +288,47 @@ func (r *formDataResolver) pollResult(pollURL string) (map[string]interface{}, b
 		return data.Result, true
 	}
 	return nil, false
+}
+
+// FetchExecution fetches a single execution by id from the internal API, for a
+// form's result-page polling (see handleFormExecution). It returns the
+// execution's flow id (so the caller can verify ownership — the execution must
+// belong to the form's own flow), its status, and — once "executed" — the flow's
+// Set-Output values (the inner result.outputs map, mirroring pollResult). ok is
+// false on a nil resolver, a transport/decode failure, or a non-2xx response;
+// outputs is nil until the execution completes.
+func (r *formDataResolver) FetchExecution(executionID string) (floID, status string, outputs map[string]interface{}, ok bool) {
+	if r == nil || executionID == "" {
+		return "", "", nil, false
+	}
+	url := fmt.Sprintf("%s/api/v1/internal/execution/%s", r.apiURL, executionID)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", "", nil, false
+	}
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return "", "", nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return "", "", nil, false
+	}
+	var data struct {
+		FloID           string                 `json:"flo_id"`
+		ExecutionStatus string                 `json:"execution_status"`
+		Result          map[string]interface{} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", "", nil, false
+	}
+	if data.ExecutionStatus == "executed" {
+		if o, inner := data.Result["outputs"].(map[string]interface{}); inner {
+			return data.FloID, data.ExecutionStatus, o, true
+		}
+		return data.FloID, data.ExecutionStatus, data.Result, true
+	}
+	return data.FloID, data.ExecutionStatus, nil, true
 }
 
 // flattenOutputs turns a flow's output map into ${data.X} string values.

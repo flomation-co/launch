@@ -1,0 +1,19 @@
+-- Add the salesforce-poll trigger type to launch's TriggerType enum. Without it,
+-- CreateTrigger's INSERT INTO trigger (type) ... = 'salesforce-poll' is rejected
+-- by Postgres (invalid enum value), the trigger silently fails to register, and
+-- the salesforcepoll service never sees it (GetTriggersByType returns nothing).
+--
+-- Pairs with api migration 139, which seeds the api-side trigger_type row. BOTH
+-- are required — the api resolves trigger.type via
+-- (SELECT id FROM trigger_type WHERE name = :type_name), which returns NULL and
+-- violates NOT NULL without its seed, and does so SILENTLY from the operator's
+-- point of view: the flow saves 201, no trigger row is written, nothing is
+-- logged. The name must match the executor node id exactly: the api turns
+-- 'trigger/salesforce_poll' into 'salesforce-poll' (underscores -> hyphens).
+--
+-- NUMBERING: 51. main is at 50 (50_AddRoute53HealthCheckTriggerType) when this is
+-- written. golang-migrate SILENTLY SKIPS a version once a HIGHER one has been
+-- applied, and a DUPLICATE version makes the service fail to boot. If a
+-- concurrent branch also claims 51, RENUMBER to max+1 after rebasing rather than
+-- assuming the gap is free.
+ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'salesforce-poll';

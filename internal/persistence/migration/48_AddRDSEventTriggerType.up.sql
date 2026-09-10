@@ -1,0 +1,18 @@
+-- Add the rds-event poll trigger type to launch's TriggerType enum. Without it,
+-- CreateTrigger's INSERT INTO trigger (type) ... = 'rds-event' is rejected by
+-- Postgres (invalid enum value), the trigger silently fails to register, and the
+-- rdsevent poll service never sees it (GetTriggersByType returns nothing).
+--
+-- Pairs with api migration 134, which seeds the api-side trigger_type row. BOTH
+-- are required — the api resolves trigger.type via
+-- (SELECT id FROM trigger_type WHERE name = :type_name), which returns NULL and
+-- violates NOT NULL without its seed, SILENTLY from the operator's point of view.
+-- The name must match the executor node id exactly: the api turns
+-- 'trigger/rds_event' into 'rds-event'.
+--
+-- NUMBERING: 48. main is at 47 (47_AddDatabaseRowTriggerType) when this is
+-- written. golang-migrate SILENTLY SKIPS a version once a HIGHER one has been
+-- applied, and a DUPLICATE version makes the service fail to boot. If a concurrent
+-- branch also claims 48, RENUMBER to max+1 after rebasing rather than assuming the
+-- gap is free.
+ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'rds-event';

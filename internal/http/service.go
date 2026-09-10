@@ -194,11 +194,15 @@ func (s *Service) configure() error {
 	s.engine.GET("/qr/:id", s.handleQr)
 	s.engine.GET("/form/:id", s.handleForm)
 	s.engine.GET("/form/:id/data", s.handleFormData)
+	// POST carries the answers gathered so far, so a page's data can depend on
+	// earlier fields (resolved lazily on page entry).
+	s.engine.POST("/form/:id/data", s.handleFormData)
 	// Per-field flow compute for NON-payment display fields: runs the flow the
 	// author bound to a field with the current answers as input and returns
 	// its computed value. Payment amounts are computed server-side at checkout,
 	// never here.
 	s.engine.POST("/form/:id/compute", s.computeFormField)
+	s.engine.GET("/form/:id/execution/:eid", s.handleFormExecution)
 	s.engine.POST("/form/:id", s.submitForm)
 	s.engine.PUT("/form/:id/submission/:sid", s.autosaveFormDraft)
 	s.engine.POST("/form/:id/upload", s.uploadFormBlob)
@@ -222,6 +226,12 @@ func (s *Service) configure() error {
 	embedForm.GET("/definition", s.handleEmbedFormDefinition)
 	embedForm.POST("/session", s.handleEmbedFormSession)
 	embedForm.GET("/data", s.handleFormData)
+	// POST /data runs the data-source flow WITH the answers so far, for a source
+	// that depends on earlier fields (mirrors the public GET+POST /form/:id/data).
+	// handleFormData branches on the method; the OPTIONS preflight + setEmbedCORS
+	// already allow POST.
+	embedForm.POST("/data", s.handleFormData)
+	embedForm.GET("/execution/:eid", s.handleFormExecution)
 	embedForm.POST("", s.submitForm)
 	embedForm.POST("/compute", s.computeFormField)
 	embedForm.PUT("/submission/:sid", s.autosaveFormDraft)
@@ -239,6 +249,7 @@ func (s *Service) configure() error {
 	s.engine.OPTIONS("/v1/embed/form/:id/data", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/compute", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/form/:id/execution/:eid", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/submission/:sid", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/upload", s.embedPreflight)
 	s.engine.OPTIONS("/v1/embed/form/:id/payment-intent", s.embedPreflight)
@@ -254,7 +265,12 @@ func (s *Service) configure() error {
 	embedFlow.PUT("/invoke", s.handleEmbedFlowInvoke)
 	embedFlow.PATCH("/invoke", s.handleEmbedFlowInvoke)
 	embedFlow.DELETE("/invoke", s.handleEmbedFlowInvoke)
-	s.engine.OPTIONS("/v1/embed/flow/:id/invoke", s.embedPreflight)
+	s.engine.OPTIONS("/v1/embed/flow/:id/invoke", s.embedFlowPreflight)
+
+	// Flomation Gateway — developer-defined HTTP APIs. ANY method + any sub-path
+	// under a short api id; the handler resolves the API, matches the route, runs
+	// the pluggable authenticator, and dispatches the endpoint's flow.
+	s.engine.Any("/gateway/:apiId/*path", s.handleGateway)
 
 	// Internal routes — service-to-service calls from the API.
 	// When mTLS is enabled, these register on a separate Gin engine
@@ -516,6 +532,15 @@ func (s *Service) handleWebhook(c *gin.Context) {
 	case launch.TriggerTypeStripeWebhook:
 		s.handleStripeWebhook(c, tr)
 		return
+	case launch.TriggerTypeApolloWebhook:
+		s.handleApolloWebhook(c, tr)
+		return
+	case launch.TriggerTypeFreshsalesWebhook:
+		s.handleFreshsalesWebhook(c, tr)
+		return
+	case launch.TriggerTypeHeyGenWebhook:
+		s.handleHeyGenWebhook(c, tr)
+		return
 	case launch.TriggerTypeQuickBooksWebhook:
 		s.handleQuickBooksWebhook(c, tr)
 		return
@@ -566,6 +591,9 @@ func (s *Service) handleWebhook(c *gin.Context) {
 		return
 	case launch.TriggerTypeSurveyMonkeyWebhook:
 		s.handleSurveyMonkeyWebhook(c, tr)
+		return
+	case launch.TriggerTypeAWXWebhook:
+		s.handleAWXWebhook(c, tr)
 		return
 	case launch.TriggerTypeWebhook:
 		// Continue with generic webhook handling below
@@ -753,6 +781,58 @@ func (s *Service) handleQr(c *gin.Context) {
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Flomation</title><style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#161019;color:#fff;text-align:center;}</style></head><body><div><h2>QR Code Scanned</h2><p>Your request has been received.</p></div></body></html>`))
 }
 
+// formSubmitMaxMemory bounds how much of a multipart form is buffered in memory
+// while parsing (the rest spills to temp files, which we don't read this pass).
+const formSubmitMaxMemory int64 = 10 << 20 // 10 MB
+
+// isBrowserFormPost reports whether a form was submitted as a plain HTML form
+// (application/x-www-form-urlencoded or multipart/form-data) rather than the
+// JS/SDK JSON body. Such a submit expects an HTML/redirect response, not JSON.
+func isBrowserFormPost(c *gin.Context) bool {
+	ct := c.ContentType()
+	return ct == "application/x-www-form-urlencoded" || ct == "multipart/form-data"
+}
+
+// parseFormPostBody reads a plain HTML form submission (urlencoded or multipart)
+// into the answer map. A field sent once becomes a string; a field sent multiple
+// times (a checkbox group) becomes an array — the shape the sanitise pipeline
+// already expects. Multipart FILE parts are ignored in this pass: structured /
+// file fields (matrix, table, address, file upload, …) need the JS form or SDK.
+func parseFormPostBody(c *gin.Context) map[string]interface{} {
+	if strings.HasPrefix(c.ContentType(), "multipart/form-data") {
+		_ = c.Request.ParseMultipartForm(formSubmitMaxMemory)
+	} else {
+		_ = c.Request.ParseForm()
+	}
+	out := make(map[string]interface{}, len(c.Request.PostForm))
+	for k, vals := range c.Request.PostForm {
+		if len(vals) == 1 {
+			out[k] = vals[0]
+			continue
+		}
+		arr := make([]interface{}, len(vals))
+		for i, v := range vals {
+			arr[i] = v
+		}
+		out[k] = arr
+	}
+	return out
+}
+
+// formSubmitRedirectDest returns where to send the browser after a plain HTML
+// form submit: the author's configured redirect URL (redirect mode, http(s)
+// only) if set, otherwise back to the hosted form with ?submitted=1 so it can
+// show a success banner. Post/Redirect/Get — a refresh won't resubmit.
+func formSubmitRedirectDest(id string, def formDefinition) string {
+	if def.Submit != nil && def.Submit.OnSubmit == "redirect" {
+		u := strings.TrimSpace(def.Submit.RedirectURL)
+		if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+			return u
+		}
+	}
+	return fmt.Sprintf("/form/%s?submitted=1", id)
+}
+
 func (s *Service) submitForm(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -804,8 +884,14 @@ func (s *Service) submitForm(c *gin.Context) {
 		return
 	}
 
+	// A plain HTML form (urlencoded/multipart) posts field=value pairs and
+	// expects a redirect, not JSON; the JS form and SDK post a JSON answer map.
+	// Both feed the same sanitise + fire pipeline below (server-authoritative).
+	browserForm := isBrowserFormPost(c)
 	var body map[string]interface{}
-	if err := c.BindJSON(&body); err != nil {
+	if browserForm {
+		body = parseFormPostBody(c)
+	} else if err := c.BindJSON(&body); err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
 		}).Error("unable to bind json")
@@ -876,20 +962,38 @@ func (s *Service) submitForm(c *gin.Context) {
 			ctx.UserVariables = vars
 		}
 	}
-	// Re-resolve the data source on submit (served from the render-time
-	// cache in the common case). Its outputs are used two ways: as ${data.X}
-	// values so a read-only field bakes the same value it showed, and to
-	// bake dynamic option lists into the definition so the whitelist below
-	// covers dynamically-sourced options exactly as it does static ones.
+	// Re-resolve the data source on submit, WITH the submitted answers, so the
+	// authoritative baking matches what the (answer-aware) client showed. Its
+	// outputs are used two ways: as ${data.X} values so a read-only field bakes
+	// the same value it displayed, and to bake dynamic option lists into the
+	// definition so the whitelist below covers dynamically-sourced options
+	// exactly as it does static ones. The resolver caches keyed on the answers,
+	// so this reuses the page-enter execution in the common case.
 	var dataOutputs map[string]interface{}
 	if def.DataSource != nil && def.DataSource.FlowID != "" {
 		if formUsesDataNamespace(def) || formHasDynamicOptions(def) {
-			dataOutputs = s.formData.ResolveRaw(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
+			dataOutputs = s.formData.ResolveComputed(def.DataSource.FlowID, body, def.DataSource.TimeoutSeconds)
 			ctx.DataVariables = flattenOutputs(dataOutputs)
 		}
 	}
 	if formHasDynamicOptions(def) {
 		def = bakeDynamicOptions(def, dataOutputs)
+	}
+	// A table populates its rows from its own value_source flow (per-field, like
+	// every other computed field). Re-run each such flow at submit so the row
+	// whitelist in sanitiseTableSubmissions is authoritative for computed rows.
+	if formHasComputedTableRows(def) {
+		def = bakeComputedTableRows(def, func(flowID string) map[string]interface{} {
+			return s.formData.ResolveComputed(flowID, body, 0)
+		})
+	}
+	// An option field populates its OPTIONS from its own value_source flow (the
+	// field-level equivalent of options_source). Re-run each such flow at submit
+	// so the option whitelist in sanitiseFormSubmission is authoritative.
+	if formHasComputedOptions(def) {
+		def = bakeComputedOptions(def, func(flowID string) map[string]interface{} {
+			return s.formData.ResolveComputed(flowID, body, 0)
+		})
 	}
 	resolved := resolveFormForRender(def, ctx)
 	// Sanitisation pipeline (option whitelist → matrix whitelist → strip
@@ -901,6 +1005,14 @@ func (s *Service) submitForm(c *gin.Context) {
 	if userID != "" {
 		final["user_id"] = userID
 	}
+	// Carry the form trigger's flow node id so the executor injects the answers
+	// into THIS trigger node — a flow may have several triggers (e.g. a Manual
+	// trigger for testing alongside the Form trigger). The API sync stamps
+	// __node_id onto the form trigger's data. Reserved key: routing only, never
+	// injected as an answer.
+	if nodeID := formTriggerNodeID(tr.Data); nodeID != "" {
+		final["__node_id"] = nodeID
+	}
 	// Surface the per-field mid-state (what was paid/verified out-of-band) to
 	// the flow so downstream steps can act on it. Prefixed like the fire-once
 	// marker so it can never collide with a real answer key.
@@ -908,15 +1020,86 @@ func (s *Service) submitForm(c *gin.Context) {
 		final["__field_states"] = fieldStates
 	}
 
-	go func() {
-		if err := s.trigger.TriggerAs(tr, final, userID); err != nil {
-			log.WithFields(log.Fields{
-				"error": err,
-			}).Error("unable to execute trigger")
+	// Fire synchronously so we can hand the client the execution id — a form
+	// whose tail is a read-only "result page" polls this execution for its
+	// outputs (see handleFormExecution). The create call returns as soon as the
+	// execution row exists; the flow itself runs asynchronously on a runner, so
+	// this does not block on completion. On a fire failure we keep the historical
+	// contract (submission accepted, error logged) and simply omit the id.
+	executionID, terr := s.trigger.TriggerReturningExecution(tr, final, userID)
+	if terr != nil {
+		log.WithFields(log.Fields{
+			"error": terr,
+		}).Error("unable to execute trigger")
+		// Historical contract: the submission is accepted even if the fire fails.
+		if browserForm {
+			c.Redirect(http.StatusSeeOther, formSubmitRedirectDest(id, def))
+			return
 		}
-	}()
+		c.Status(http.StatusOK)
+		return
+	}
 
-	c.Status(http.StatusOK)
+	if browserForm {
+		// Post/Redirect/Get for a plain HTML form — the browser follows a 303 to
+		// the author's redirect URL, or back to the form with ?submitted=1.
+		c.Redirect(http.StatusSeeOther, formSubmitRedirectDest(id, def))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"execution_id": executionID})
+}
+
+// handleFormExecution lets a form's read-only result page poll the single
+// execution its submission created (see submitForm) for the flow outputs it
+// displays. Serves both the native form (GET /form/:id/execution/:eid) and the
+// embed SDK (GET /v1/embed/form/:id/execution/:eid, under the embed gate).
+//
+// Security: the execution MUST belong to this form's own flow
+// (flo_id == trigger.FlowID). Without that check a caller holding a valid
+// pk_/session could read ANY execution by guessing/reusing an id. A mismatch (or
+// an unknown execution) is reported as 404 so we never confirm another flow's
+// execution id. Returns {status, outputs?} — outputs present only once executed.
+func (s *Service) handleFormExecution(c *gin.Context) {
+	id := c.Param("id")
+	tr, err := s.trigger.GetTriggerByID(id)
+	if err != nil || tr == nil || tr.Type != launch.TriggerTypeForm {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	eid := c.Param("eid")
+	if uuid.Validate(eid) != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	floID, status, outputs, ok := s.formData.FetchExecution(eid)
+	if !ok || floID == "" || floID != tr.FlowID {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	resp := gin.H{"status": status}
+	if outputs != nil {
+		resp["outputs"] = outputs
+		// Also expose the outputs mapped to computed FIELD names (via the same
+		// computeOutputKey /compute uses). The embed projection strips
+		// value_output, so the SDK can't map raw outputs itself — it fills its
+		// result-page fields from `values` by name. The native form can use
+		// either. Best-effort: a definition that won't parse just omits values.
+		if def, perr := parseFormDefinition(tr.Data); perr == nil {
+			values := map[string]interface{}{}
+			for _, page := range def.Pages {
+				for _, comp := range page.Components {
+					if strings.TrimSpace(comp.ValueSource) == "" {
+						continue
+					}
+					if v, has := outputs[computeOutputKey(comp)]; has {
+						values[comp.Name] = v
+					}
+				}
+			}
+			resp["values"] = values
+		}
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // extractSubmissionID pops the client-supplied draft submission id out of a
@@ -1256,15 +1439,19 @@ func (s *Service) handleForm(c *gin.Context) {
 			log.WithFields(log.Fields{"error": err}).Warn("failed to load user variables for form; rendering without ${user.X}")
 		}
 	}
-	// ${data.X} — run the form's data-source flow (cached + de-duplicated)
-	// and expose its outputs. Only block the GET when the form actually uses
-	// a ${data.X} scalar; a form that uses the flow ONLY for dynamic dropdown
-	// options skips this and lets the browser fetch /form/:id/data after
-	// first paint. Failure/timeout resolves to empty values.
-	if def.DataSource != nil && def.DataSource.FlowID != "" && formUsesDataNamespace(def) {
-		ctx.DataVariables = s.formData.Resolve(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
-	}
+	// ${data.X} is resolved LAZILY, per page. We deliberately do NOT run the
+	// data-source flow at load — leaving ctx.DataVariables nil makes
+	// applySubstitutions leave ${data.X} tokens intact for the browser to
+	// resolve when the referencing page is entered (POST /form/:id/data with the
+	// answers so far). This avoids firing the flow before the user has provided
+	// the inputs an early page collects. PageNeedsData tells the client which
+	// pages must fetch data on entry.
 	resolved := resolveFormForRender(def, ctx)
+	pageNeedsData := []bool{}
+	if def.DataSource != nil && def.DataSource.FlowID != "" {
+		pageNeedsData = pagesNeedingData(def)
+	}
+	pageNeedsDataJSON, _ := json.Marshal(pageNeedsData)
 
 	// Draft submission. Resume an existing live draft when the client presents
 	// a valid submission_id that belongs to this trigger; otherwise mint a
@@ -1302,6 +1489,15 @@ func (s *Service) handleForm(c *gin.Context) {
 		}
 	}
 
+	// Multi-lingual: resolve the viewer's language (?lang → Accept-Language →
+	// default) so the server-rendered <title>/OG meta — which crawlers see
+	// without running our JS — is in the right language. The client seeds its
+	// active locale from this too (see SERVER_LANG in form.html).
+	langs, defaultLang := formLanguages(resolved)
+	lang := resolveLanguageFromHeader(c.Query("lang"), c.GetHeader("Accept-Language"), langs, defaultLang)
+	metaTitle := metaText(tI18n(resolved.Title, resolved.TitleI18n, lang, defaultLang))
+	metaDescription := metaText(tI18n(resolved.Description, resolved.DescriptionI18n, lang, defaultLang))
+
 	resolvedBytes, _ := json.Marshal(resolved)
 	c.HTML(http.StatusOK, "form.html", gin.H{
 		"Form":            base64.StdEncoding.EncodeToString(resolvedBytes),
@@ -1309,8 +1505,10 @@ func (s *Service) handleForm(c *gin.Context) {
 		"SubmissionID":    submissionID,
 		"ResumePayload":   resumePayload,
 		"FieldStates":     fieldStatesPayload,
-		"MetaTitle":       metaText(resolved.Title),
-		"MetaDescription": metaText(resolved.Description),
+		"MetaTitle":       metaTitle,
+		"MetaDescription": metaDescription,
+		"Lang":            lang,
+		"PageNeedsData":   base64.StdEncoding.EncodeToString(pageNeedsDataJSON),
 	})
 }
 
@@ -1353,7 +1551,24 @@ func (s *Service) handleFormData(c *gin.Context) {
 		return
 	}
 
-	outputs := s.formData.ResolveRaw(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
+	// A POST carries the answers gathered so far; run the data flow WITH them so
+	// a page's ${data.X} / dynamic options can depend on earlier fields. The
+	// resolver caches keyed on the inputs, so repeated identical page-enters
+	// collapse to one execution. A GET (no body) keeps the original inputless
+	// behaviour for callers that don't need answer-aware data.
+	var outputs map[string]interface{}
+	if c.Request != nil && c.Request.Method == http.MethodPost {
+		var body struct {
+			Answers map[string]interface{} `json:"answers"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		if body.Answers == nil {
+			body.Answers = map[string]interface{}{}
+		}
+		outputs = s.formData.ResolveComputed(def.DataSource.FlowID, body.Answers, def.DataSource.TimeoutSeconds)
+	} else {
+		outputs = s.formData.ResolveRaw(def.DataSource.FlowID, def.DataSource.TimeoutSeconds)
+	}
 	if outputs == nil {
 		outputs = map[string]interface{}{}
 	}

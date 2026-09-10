@@ -85,15 +85,17 @@ func isFieldStateSatisfied(fieldType string, state json.RawMessage) bool {
 // field never blocks submit. An empty result means submit may proceed.
 func unsatisfiedRequiredStatefulFields(def formDefinition, answers map[string]interface{}, states map[string]json.RawMessage) []string {
 	var missing []string
+	// Table answers compare by their value_column for visibility rules.
+	vis := tableComparableValues(def, answers)
 	for _, page := range def.Pages {
-		if page.VisibleIf != nil && len(page.VisibleIf.Rules) > 0 && !evalVisibility(page.VisibleIf, answers) {
+		if page.VisibleIf != nil && len(page.VisibleIf.Rules) > 0 && !evalVisibility(page.VisibleIf, vis) {
 			continue
 		}
 		for _, comp := range page.Components {
 			if !comp.Required || !isStatefulFieldType(comp.Type) {
 				continue
 			}
-			if comp.VisibleIf != nil && len(comp.VisibleIf.Rules) > 0 && !evalVisibility(comp.VisibleIf, answers) {
+			if comp.VisibleIf != nil && len(comp.VisibleIf.Rules) > 0 && !evalVisibility(comp.VisibleIf, vis) {
 				continue
 			}
 			if !isFieldStateSatisfied(comp.Type, states[comp.Name]) {

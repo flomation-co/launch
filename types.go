@@ -43,6 +43,10 @@ const (
 	TriggerTypeTypeformWebhook     = "typeform-webhook"     // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeJotformWebhook      = "jotform-webhook"      // #nosec G101 — trigger type identifier, not a credential
 	TriggerTypeSurveyMonkeyWebhook = "surveymonkey-webhook" // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeAWXWebhook          = "awx-webhook"          // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeApolloWebhook       = "apollo-webhook"       // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeFreshsalesWebhook   = "freshsales-webhook"   // #nosec G101 — trigger type identifier, not a credential
+	TriggerTypeHeyGenWebhook       = "heygen-webhook"       // #nosec G101 — trigger type identifier, not a credential
 
 	// TriggerTypeMQTT is not a webhook: nothing POSTs to Launch. The mqtt service
 	// holds a subscription open to the operator's broker and fires the flow when a
@@ -50,6 +54,37 @@ const (
 	// executor node directory (actions/trigger/mqtt) — the api derives the type
 	// from the node label, turning "trigger/mqtt" into "mqtt".
 	TriggerTypeMQTT = "mqtt"
+
+	// TriggerTypeDBRow polls a SQL table on an interval and fires the flow once
+	// per newly-inserted row, tracking a monotonic cursor column (an
+	// auto-increment id or a created_at/updated_at timestamp). Like the S3 and
+	// git-poll triggers nothing POSTs to Launch — the dbrow service drives the
+	// loop. The name must match what the api derives from the executor node
+	// label: "trigger/database_row" → "database-row".
+	TriggerTypeDBRow = "database-row"
+
+	// TriggerTypeSalesforcePoll polls a Salesforce object for records created or
+	// changed since the last check. Second-granular timestamps mean the cursor has
+	// to tolerate ties — see internal/salesforcepoll.
+	TriggerTypeSalesforcePoll = "salesforce-poll"
+
+	// TriggerTypeRDSEvent polls AWS RDS DescribeEvents on an interval and fires the
+	// flow once per newly-observed event (failover, backup complete, low storage,
+	// availability change). Like the S3 trigger nothing POSTs to Launch — the
+	// rdsevent service drives the loop. The name must match what the api derives
+	// from the executor node label: "trigger/rds_event" → "rds-event".
+	TriggerTypeRDSEvent = "rds-event"
+
+	// CloudWatch triggers — polled by internal/cloudwatch. Names must match what the
+	// api derives from the executor node label (underscores → hyphens):
+	// "trigger/cloudwatch_alarm" → "cloudwatch-alarm", etc.
+	TriggerTypeCloudWatchAlarm  = "cloudwatch-alarm"
+	TriggerTypeCloudWatchMetric = "cloudwatch-metric"
+	TriggerTypeCloudWatchLogs   = "cloudwatch-logs"
+
+	// Route 53 Health Check trigger — polled by internal/route53health.
+	// "trigger/route53_health_check" → "route53-health-check".
+	TriggerTypeRoute53HealthCheck = "route53-health-check"
 )
 
 type Trigger struct {

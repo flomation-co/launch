@@ -4,7 +4,9 @@ import (
 	"time"
 
 	"flomation.app/automate/launch/internal/agent"
+	"flomation.app/automate/launch/internal/cloudwatch"
 	"flomation.app/automate/launch/internal/config"
+	"flomation.app/automate/launch/internal/dbrow"
 	emailtrigger "flomation.app/automate/launch/internal/email"
 	"flomation.app/automate/launch/internal/embedding"
 	gitpoll "flomation.app/automate/launch/internal/git/poll"
@@ -17,7 +19,10 @@ import (
 	msmailpoll "flomation.app/automate/launch/internal/microsoft/mailpoll"
 	"flomation.app/automate/launch/internal/mqtt"
 	"flomation.app/automate/launch/internal/persistence"
+	"flomation.app/automate/launch/internal/rdsevent"
+	"flomation.app/automate/launch/internal/route53health"
 	s3trigger "flomation.app/automate/launch/internal/s3"
+	"flomation.app/automate/launch/internal/salesforcepoll"
 	"flomation.app/automate/launch/internal/schedule"
 	"flomation.app/automate/launch/internal/telegram"
 	"flomation.app/automate/launch/internal/trigger"
@@ -71,6 +76,19 @@ func main() {
 
 	_ = s3trigger.NewService(cfg, db, t)
 	log.Info("s3 trigger service started")
+
+	_ = dbrow.NewService(cfg, db, t)
+	_ = salesforcepoll.NewService(cfg, db, t)
+	log.Info("database row poll service started")
+
+	_ = rdsevent.NewService(cfg, db, t)
+	log.Info("rds event poll service started")
+
+	_ = cloudwatch.NewService(cfg, db, t)
+	log.Info("cloudwatch poll service started")
+
+	_ = route53health.NewService(cfg, db, t)
+	log.Info("route53 health check poll service started")
 
 	// Email trigger service is started after agent service (needs agent ref)
 	var emailSvc *emailtrigger.Service

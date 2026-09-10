@@ -46,7 +46,12 @@ migration-check:
   # A duplicate migration version took the sibling api service down in prod
   # on 13/07/2026; the same trap applies here.
   script:
+    # 1. the embedded set loads (duplicate/malformed within THIS branch)
     - go test ./internal/persistence/ -run TestMigrationsSourceLoads -v
+    # 2. no version number collides with the target branch it will merge into —
+    #    the cross-branch case the in-isolation test above cannot see (see the
+    #    script header; this is what took api main down on 14/07/2026).
+    - sh ci/check-migration-collision.sh
 
 lint:
   stage: prepare

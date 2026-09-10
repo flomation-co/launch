@@ -63,6 +63,89 @@ func TestProjectDefinition_StripsSecrets(t *testing.T) {
 	Expect(pay["computed"]).To(Equal(true))
 }
 
+// TestProjectDefinition_ProjectsTableConfig asserts the table field's config
+// keys survive the default-deny allowlist so the SDK can render the grid.
+func TestProjectDefinition_ProjectsTableConfig(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{
+		Title: "Choose a claim",
+		Pages: []formPage{{Components: []formComponent{{
+			Name:          "claim",
+			Label:         "Claims",
+			Type:          "table",
+			SelectionMode: "single",
+			ValueColumn:   "ref",
+			PageSize:      10,
+			Filterable:    true,
+			ValueSource:   "rows-flow-id", // computed rows — flow id must NOT leak
+			ValueOutput:   "claims",
+			TableColumns:  []tableColumn{{Key: "ref", Label: "Reference", Clickable: true}},
+			TableRows:     []map[string]interface{}{{"ref": "REF-1"}},
+		}}}},
+	}
+
+	proj := projectDefinition(def)
+	raw, _ := json.Marshal(proj)
+	blob := string(raw)
+	// The value_source flow id / output key are internal and must be absent.
+	Expect(blob).ToNot(ContainSubstring("rows-flow-id"))
+	Expect(blob).ToNot(ContainSubstring("value_source"))
+	var payload struct {
+		Pages []struct {
+			Components []map[string]interface{} `json:"components"`
+		} `json:"pages"`
+	}
+	Expect(json.Unmarshal(raw, &payload)).To(Succeed())
+	comp := payload.Pages[0].Components[0]
+	Expect(comp["type"]).To(Equal("table"))
+	Expect(comp["selection_mode"]).To(Equal("single"))
+	Expect(comp["value_column"]).To(Equal("ref"))
+	Expect(comp["filterable"]).To(Equal(true))
+	Expect(comp["table_columns"]).ToNot(BeNil())
+	Expect(comp["table_rows"]).ToNot(BeNil())
+	// A value_source table is flagged computed so the SDK fetches rows via /compute.
+	Expect(comp["computed"]).To(Equal(true))
+}
+
+// TestProjectDefinition_SubstitutesUserVars is the regression for the embedded
+// login-gated form: once the SDK forwards the session token, the definition
+// endpoint must resolve ${user.X} before projecting — otherwise the field's
+// default_value (e.g. a Username pre-filled with ${user.email}) reaches the SDK
+// verbatim. handleEmbedFormDefinition composes resolveFormForRender then
+// projectDefinition; this asserts that composition on the pure functions.
+func TestProjectDefinition_SubstitutesUserVars(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{
+		Title: "Self Start",
+		Pages: []formPage{{Components: []formComponent{
+			{Name: "username", Label: "Username", Type: "text", DefaultValue: "${user.email}"},
+		}}},
+	}
+
+	// Authenticated: ${user.email} resolves in the projected default_value.
+	ctx := substitutionContext{UserVariables: map[string]string{"email": "jane@dwp.gov.uk"}}
+	proj := projectDefinition(resolveFormForRender(def, ctx))
+	raw, _ := json.Marshal(proj)
+	var payload struct {
+		Pages []struct {
+			Components []map[string]interface{} `json:"components"`
+		} `json:"pages"`
+	}
+	Expect(json.Unmarshal(raw, &payload)).To(Succeed())
+	Expect(payload.Pages[0].Components[0]["default_value"]).To(Equal("jane@dwp.gov.uk"))
+	Expect(string(raw)).ToNot(ContainSubstring("${user.email}"))
+
+	// Anonymous (no user vars): an unresolved ${user.X} collapses to empty (the
+	// existing substitution contract) rather than leaking the raw token to the
+	// client. The SDK still can't submit a require_login form until it presents a
+	// token, at which point the field pre-fills.
+	projAnon := projectDefinition(resolveFormForRender(def, substitutionContext{}))
+	rawAnon, _ := json.Marshal(projAnon)
+	Expect(string(rawAnon)).ToNot(ContainSubstring("${user."))
+}
+
 // TestEmbedRoutesRegister_NoConflict asserts the embed route shapes register on a
 // fresh gin engine without a radix-tree conflict (gin panics on conflict at
 // registration time, which a plain build won't catch).

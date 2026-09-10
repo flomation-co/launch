@@ -19,11 +19,17 @@ import (
 // never exhaust memory.
 const formComputeMaxBytes int64 = 256 * 1024
 
-// computeFormFieldBody is the /form/:id/compute request: the name of the field
-// to compute and the current (client-authored) answers. The answers are
-// sanitised before they reach the compute flow.
+// computeFormFieldBody is the /form/:id/compute request. The current
+// (client-authored) answers are sanitised before they reach the compute flow.
+// A caller may compute ONE field (Field, → {"value": …}) or a BATCH (Fields, →
+// {"values": {name: …}}). Batching lets several computed fields that share a
+// flow collapse to a SINGLE execution: they resolve sequentially in one request,
+// so the first field's run populates the cache the rest read — robust even when
+// concurrent per-field requests would race the cache (or hit different
+// instances). The single-field form is kept for the SDK.
 type computeFormFieldBody struct {
 	Field   string                 `json:"field"`
+	Fields  []string               `json:"fields"`
 	Answers map[string]interface{} `json:"answers"`
 }
 
@@ -103,11 +109,22 @@ func (s *Service) computeFormField(c *gin.Context) {
 		return
 	}
 
-	// Only a field the author marked value_source may be computed.
-	comp, ok := computeFieldComponent(def, body.Field)
-	if !ok {
-		c.AbortWithStatus(http.StatusBadRequest)
-		return
+	// Resolve the requested field name(s): a single Field, or a Fields batch.
+	// Every named field must exist AND declare a value_source (else 400) — a
+	// caller may only run flows the form author attached to specific fields.
+	names := body.Fields
+	batch := len(names) > 0
+	if !batch {
+		names = []string{body.Field}
+	}
+	comps := make([]formComponent, 0, len(names))
+	for _, n := range names {
+		comp, ok := computeFieldComponent(def, n)
+		if !ok {
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		comps = append(comps, comp)
 	}
 
 	answers := body.Answers
@@ -138,8 +155,33 @@ func (s *Service) computeFormField(c *gin.Context) {
 	resolved := resolveFormForRender(def, ctx)
 	sanitised := sanitiseFormSubmission(answers, resolved)
 
-	out := s.formData.ResolveComputed(comp.ValueSource, sanitised, 0)
-	c.JSON(http.StatusOK, gin.H{"value": out[computeOutputKey(comp)]})
+	// Resolve each field's flow, memoised by flow id within THIS request so
+	// several fields sharing a flow (with the same sanitised answers) run it
+	// exactly once — the crux of the fix. (ResolveComputed also caches globally,
+	// but the per-request memo guarantees one run even if that cache is bypassed.)
+	flowOutputs := map[string]map[string]interface{}{}
+	resolveFlow := func(flowID string) map[string]interface{} {
+		if out, seen := flowOutputs[flowID]; seen {
+			return out
+		}
+		out := s.formData.ResolveComputed(flowID, sanitised, 0)
+		flowOutputs[flowID] = out
+		return out
+	}
+
+	if !batch {
+		comp := comps[0]
+		out := resolveFlow(comp.ValueSource)
+		c.JSON(http.StatusOK, gin.H{"value": out[computeOutputKey(comp)]})
+		return
+	}
+
+	values := make(map[string]interface{}, len(comps))
+	for _, comp := range comps {
+		out := resolveFlow(comp.ValueSource)
+		values[comp.Name] = out[computeOutputKey(comp)]
+	}
+	c.JSON(http.StatusOK, gin.H{"values": values})
 }
 
 // computeRateLimiter is a tiny per-key token bucket used to bound how often a

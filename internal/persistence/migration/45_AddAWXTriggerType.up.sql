@@ -1,0 +1,19 @@
+-- Add the AWX webhook trigger type to launch's TriggerType enum. Without it,
+-- CreateTrigger's INSERT INTO trigger (type) ... = 'awx-webhook' is rejected by
+-- Postgres (invalid enum value), the trigger silently fails to register, and
+-- every inbound AWX notification 404s.
+--
+-- Pairs with api migration 126, which seeds the api-side trigger_type row. BOTH
+-- are required — the api resolves trigger.type via
+-- (SELECT id FROM trigger_type WHERE name = :type_name), which returns NULL and
+-- violates NOT NULL without its seed, and does so SILENTLY from the operator's
+-- point of view.
+--
+-- NUMBERING: golang-migrate SILENTLY SKIPS a version once a HIGHER one has been
+-- applied, so the number has to be right against the whole live sequence, not
+-- just against the previous file on this branch. main is at 43. 44 is claimed by
+-- the repair migration that back-fills the typeform / jotform / surveymonkey
+-- trigger types (declared in types.go and routed in handleWebhook, but never
+-- added to this enum) — that repair MR merges FIRST, so AWX takes 45. If the
+-- ordering changes, RENUMBER rather than assuming the gap is free.
+ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'awx-webhook';

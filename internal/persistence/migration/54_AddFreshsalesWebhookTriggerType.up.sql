@@ -1,0 +1,18 @@
+-- Add the freshsales-webhook trigger type to launch's TriggerType enum. Without
+-- it, CreateTrigger's INSERT INTO trigger (type) ... = 'freshsales-webhook' is
+-- rejected by Postgres (invalid enum value), the trigger silently fails to
+-- register, and handleWebhook never routes to handleFreshsalesWebhook.
+--
+-- Pairs with api migration 150, which seeds the api-side trigger_type row. BOTH
+-- are required — the api resolves trigger.type via
+-- (SELECT id FROM trigger_type WHERE name = :type_name), which returns NULL and
+-- violates NOT NULL without its seed, and does so SILENTLY (flow saves 201, no
+-- trigger row written, nothing logged). The name must match the executor node
+-- id exactly: the api turns 'trigger/freshsales_webhook' into
+-- 'freshsales-webhook' (underscores -> hyphens).
+--
+-- NUMBERING: 54. origin/main is at 53 when this is written. golang-migrate
+-- SILENTLY SKIPS a version once a HIGHER one has been applied, and a DUPLICATE
+-- version makes the service fail to boot. If a concurrent branch also claims
+-- 54, RENUMBER to max+1 after rebasing.
+ALTER TYPE TriggerType ADD VALUE IF NOT EXISTS 'freshsales-webhook';

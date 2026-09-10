@@ -171,7 +171,15 @@ var publicComponentKeys = map[string]struct{}{
 	"accept_mime": {}, "max_size_bytes": {}, "allow_gallery": {},
 	"capture_mode": {}, "auto_submit": {}, "confidence_threshold": {},
 	"privacy_notice": {}, "show_privacy_notice": {},
-	"amount": {}, "currency": {}, "visible_if": {},
+	"amount": {}, "currency": {}, "allow_copy": {}, "visible_if": {},
+	// Table (data-grid) field. Manual table_rows are the display data; a computed
+	// table's rows arrive via the field's value_source flow, exposed to the SDK
+	// through the derived "computed" flag (never the internal flow id).
+	"table_columns": {}, "table_rows": {}, "selection_mode": {},
+	"value_column": {}, "page_size": {}, "filterable": {},
+	// Multi-lingual display-string translations. Option-level label_i18n rides
+	// along inside the "options" array (a passthrough of the formOption structs).
+	"label_i18n": {}, "placeholder_i18n": {}, "display_text_i18n": {},
 }
 
 // projectComponent reduces a component to its allowlisted keys plus derived
@@ -225,6 +233,23 @@ func projectDefinition(def formDefinition) map[string]interface{} {
 		// dynamic options — without ever exposing the data-source flow id.
 		"has_data_source": def.DataSource != nil && def.DataSource.FlowID != "",
 	}
+	// Multi-lingual metadata (all omitted for a monolingual form). These are safe
+	// to expose — they're display strings and language codes, no ids or secrets.
+	if def.DefaultLanguage != "" {
+		out["default_language"] = def.DefaultLanguage
+	}
+	if len(def.Languages) > 0 {
+		out["languages"] = def.Languages
+	}
+	if def.DisplayMode != "" {
+		out["display_mode"] = def.DisplayMode
+	}
+	if len(def.TitleI18n) > 0 {
+		out["title_i18n"] = def.TitleI18n
+	}
+	if len(def.DescriptionI18n) > 0 {
+		out["description_i18n"] = def.DescriptionI18n
+	}
 	if def.Submit != nil {
 		out["submit"] = def.Submit
 	}
@@ -233,7 +258,14 @@ func projectDefinition(def formDefinition) map[string]interface{} {
 
 // handleEmbedFormDefinition serves the public projection of a form definition to
 // the SDK. The embed gate has already validated the key/origin/resource, so this
-// just loads the trigger, projects it, and returns JSON.
+// just loads the trigger, resolves render-time substitutions, and returns JSON.
+//
+// Render-time substitution mirrors the hosted form path (handleForm): a
+// logged-in user (Bearer token or flomation-token cookie — the SDK forwards the
+// former via getAuthToken) gets ${user.X} resolved, and ${query.X} comes from the
+// request URL regardless of auth state. ${data.X} is deliberately left intact for
+// the client to resolve lazily per page (DataVariables stays nil). Without this,
+// a login-gated embedded form projected ${user.email} etc. verbatim.
 func (s *Service) handleEmbedFormDefinition(c *gin.Context) {
 	id := c.Param("id")
 	tr, err := s.trigger.GetTriggerByID(id)
@@ -247,7 +279,19 @@ func (s *Service) handleEmbedFormDefinition(c *gin.Context) {
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-	c.JSON(http.StatusOK, projectDefinition(def))
+
+	cookie, _ := c.Cookie("flomation-token")
+	token := extractSessionToken(c.GetHeader("Authorization"), cookie)
+	userID := s.resolveSessionUser(token)
+	ctx := substitutionContext{QueryParams: queryParamsMap(c)}
+	if userID != "" {
+		if vars, verr := s.loadUserVariables(userID); verr == nil {
+			ctx.UserVariables = vars
+		} else {
+			log.WithError(verr).Warn("embed: failed to load user variables; projecting without ${user.X}")
+		}
+	}
+	c.JSON(http.StatusOK, projectDefinition(resolveFormForRender(def, ctx)))
 }
 
 // handleEmbedFormSession mints a server-side draft for an embedded form and

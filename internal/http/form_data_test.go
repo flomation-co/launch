@@ -165,7 +165,50 @@ func TestApplySubstitutions_DataNamespace(t *testing.T) {
 
 	ctx := substitutionContext{DataVariables: map[string]string{"customer_name": "Ada"}}
 	Expect(applySubstitutions("Hi ${data.customer_name}", ctx)).To(Equal("Hi Ada"))
-	// Missing key resolves to empty, nil map is safe.
+	// A populated map resolves a missing key to empty (we DID run the flow).
 	Expect(applySubstitutions("${data.missing}", ctx)).To(Equal(""))
-	Expect(applySubstitutions("${data.x}", substitutionContext{})).To(Equal(""))
+	// A nil map means "not resolved yet" — the token is LEFT INTACT so the
+	// browser can resolve it lazily on the page that references it (the flow is
+	// deferred, not run at load). metaText strips any such leftover for crawlers.
+	Expect(applySubstitutions("${data.x}", substitutionContext{})).To(Equal("${data.x}"))
+}
+
+// TestPagesNeedingData verifies per-page detection of ${data.X} / dynamic
+// options — the flags the client uses to defer the data-source flow until the
+// page that actually references it.
+func TestPagesNeedingData(t *testing.T) {
+	RegisterTestingT(t)
+
+	def := formDefinition{Pages: []formPage{
+		// Page 0: plain field, no data reference.
+		{Components: []formComponent{{Name: "reg", Type: "text"}}},
+		// Page 1: label references ${data.X}.
+		{Components: []formComponent{{Name: "price", Type: "text", Label: "Price: ${data.amount}"}}},
+		// Page 2: dynamic options only.
+		{Components: []formComponent{{Name: "opts", Type: "dropdown", OptionsSource: "choices"}}},
+		// Page 3: default value references ${data.X}.
+		{Components: []formComponent{{Name: "vat", Type: "text", DefaultValue: "${data.vat}"}}},
+	}}
+
+	Expect(pagesNeedingData(def)).To(Equal([]bool{false, true, true, true}))
+	Expect(pageUsesDataNamespace(def.Pages[0])).To(BeFalse())
+	Expect(pageUsesDataNamespace(def.Pages[1])).To(BeTrue())
+	Expect(pageHasDynamicOptions(def.Pages[2])).To(BeTrue())
+}
+
+// TestSubmitLabel_SurvivesRemarshal guards the render-time round-trip of the
+// configurable Submit button text (same encoding/json-drops-unknown-keys concern
+// as allow_copy): it must reach the client via the re-marshalled definition.
+func TestSubmitLabel_SurvivesRemarshal(t *testing.T) {
+	RegisterTestingT(t)
+
+	raw := []byte(`{"title":"T","pages":[],"submit":{"submit_label":"Get my quote"}}`)
+	def, err := parseFormDefinition(raw)
+	Expect(err).To(BeNil())
+	Expect(def.Submit).ToNot(BeNil())
+	Expect(def.Submit.SubmitLabel).To(Equal("Get my quote"))
+
+	out, err := json.Marshal(def)
+	Expect(err).To(BeNil())
+	Expect(string(out)).To(ContainSubstring(`"submit_label":"Get my quote"`))
 }

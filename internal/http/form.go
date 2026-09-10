@@ -16,11 +16,29 @@ import (
 // formDefinition mirrors the editor's FormDefinition shape. Pure superset of
 // the older shape (no migrations) — older saved forms have nil RequireLogin
 // and missing per-field flags which decode cleanly to zero values.
+// i18nMap holds translations of a single display string, keyed by BCP-47
+// language code. The base field (e.g. Title) is the default-language value; a
+// missing/empty entry falls back to it. Canonical data (field name, option
+// value) is never translated. This is the Go twin of the SDK's tString. See
+// PLAN-multilingual-forms.md.
+type i18nMap map[string]string
+
 type formDefinition struct {
 	Title        string     `json:"title"`
 	Description  string     `json:"description"`
 	Pages        []formPage `json:"pages"`
 	RequireLogin bool       `json:"require_login,omitempty"`
+
+	// Multi-lingual authoring. DefaultLanguage is the language the base strings
+	// are written in (default "en" when empty); Languages lists every language
+	// the form was authored in (default: just the default language). DisplayMode
+	// is "switch" (default) or "sideBySide". TitleI18n/DescriptionI18n translate
+	// the header. A monolingual form leaves all of these unset.
+	DefaultLanguage string   `json:"default_language,omitempty"`
+	Languages       []string `json:"languages,omitempty"`
+	DisplayMode     string   `json:"display_mode,omitempty"`
+	TitleI18n       i18nMap  `json:"title_i18n,omitempty"`
+	DescriptionI18n i18nMap  `json:"description_i18n,omitempty"`
 
 	// DataSource, when set, names a flow that is run when the form loads;
 	// its outputs become ${data.X} substitution values usable in labels,
@@ -38,6 +56,8 @@ type formSubmit struct {
 	// SuccessMessage overrides the default "Your response has been submitted
 	// successfully." text. Shown for the "message" and "restart" modes.
 	SuccessMessage string `json:"success_message,omitempty"`
+	// SuccessMessageI18n translates SuccessMessage per language.
+	SuccessMessageI18n i18nMap `json:"success_message_i18n,omitempty"`
 	// OnSubmit selects the behaviour: "message" (default — a thank-you card),
 	// "restart" (reset the form for another response — kiosk loop), or
 	// "redirect" (send the browser to RedirectURL).
@@ -48,6 +68,10 @@ type formSubmit struct {
 	// RedirectDelaySeconds optionally holds the thank-you view for a moment
 	// before redirecting. Zero redirects immediately.
 	RedirectDelaySeconds int `json:"redirect_delay_seconds,omitempty"`
+	// SubmitLabel overrides the Submit button text (default "Submit"). Display
+	// only — it never affects the submission. Must live on the struct so it
+	// survives the render-time re-marshal to the client.
+	SubmitLabel string `json:"submit_label,omitempty"`
 }
 
 // formDataSource configures form-field autofill from a flow's outputs.
@@ -81,6 +105,12 @@ type formComponent struct {
 	ReadOnly     bool         `json:"read_only,omitempty"`
 	DefaultValue string       `json:"default_value,omitempty"`
 	Options      []formOption `json:"options,omitempty"`
+
+	// Translations of this component's display strings, keyed by language. The
+	// base Label/Placeholder/DisplayText remain the default-language values.
+	LabelI18n       i18nMap `json:"label_i18n,omitempty"`
+	PlaceholderI18n i18nMap `json:"placeholder_i18n,omitempty"`
+	DisplayTextI18n i18nMap `json:"display_text_i18n,omitempty"`
 
 	// OptionsSource, when set on an option-based field (radio, dropdown,
 	// checkboxes, ranking), names a key in the data-source flow's outputs
@@ -193,6 +223,61 @@ type formComponent struct {
 	// for fields that should have been hidden — a hidden branch must never
 	// smuggle answers into the trigger data.
 	VisibleIf *visibilityRule `json:"visible_if,omitempty"`
+
+	// AllowCopy renders a "Copy" button at the end of the field so a
+	// respondent can copy its current value to the clipboard. Purely a
+	// display affordance (no bearing on the submission), but it must live on
+	// this struct so it survives the render-time re-marshal to the client —
+	// encoding/json drops any JSON key without a matching field.
+	AllowCopy bool `json:"allow_copy,omitempty"`
+
+	// Table (data-grid) field — type == "table". Renders a grid the
+	// respondent can read and, when SelectionMode is "single"/"multiple", select
+	// row(s) from (radio/checkbox-like). TableColumns defines the columns (order,
+	// label, per-column formatting and sort/filter/clickable flags). TableRows
+	// holds MANUAL rows — each an object keyed by column Key. To populate rows
+	// from a flow instead, set the field's ValueSource (+ ValueOutput) like any
+	// other computed field: the flow's output is the rows array and is baked into
+	// TableRows at submit (bakeComputedTableRows). SelectionMode is "none"
+	// (display-only, no answer), "single" (the answer is the selected row object)
+	// or "multiple" (an array of selected row objects). ValueColumn names the
+	// column whose value is the scalar whitelist/${field} key. PageSize > 0
+	// enables client-side pagination; Filterable shows a global search box. The
+	// stored answer is validated + reconstructed server-side against the
+	// authoritative rows; a "none" table contributes no answer.
+	TableColumns  []tableColumn            `json:"table_columns,omitempty"`
+	TableRows     []map[string]interface{} `json:"table_rows,omitempty"`
+	SelectionMode string                   `json:"selection_mode,omitempty"`
+	ValueColumn   string                   `json:"value_column,omitempty"`
+	PageSize      int                      `json:"page_size,omitempty"`
+	Filterable    bool                     `json:"filterable,omitempty"`
+}
+
+// tableColumn defines one column of a table field: which row key it binds to,
+// its header label, how its cells are formatted (Type/Format/Align/Width) and
+// whether it participates in sorting/filtering or is Clickable (a clickable
+// cell selects the row — the table's radio-button affordance). Kept a plain
+// struct so it round-trips through the render-time re-marshal to the client.
+type tableColumn struct {
+	Key        string      `json:"key"`
+	Label      string      `json:"label,omitempty"`
+	Type       string      `json:"type,omitempty"`  // text|number|date|currency|boolean|link|enum (default text)
+	Align      string      `json:"align,omitempty"` // left|right|center
+	Width      string      `json:"width,omitempty"`
+	Format     string      `json:"format,omitempty"`
+	Sortable   bool        `json:"sortable,omitempty"`
+	Filterable bool        `json:"filterable,omitempty"`
+	Clickable  bool        `json:"clickable,omitempty"`
+	Pills      []tablePill `json:"pills,omitempty"` // for Type=="enum": value→coloured badge
+}
+
+// tablePill is one enum-column badge: a cell whose value equals Value renders as
+// a pill with Label (default: the value) and the given colours.
+type tablePill struct {
+	Value string `json:"value"`
+	Label string `json:"label,omitempty"`
+	Bg    string `json:"bg,omitempty"`
+	Fg    string `json:"fg,omitempty"`
 }
 
 // visibilityRule is a group of conditions combined with AND ("all") or OR
@@ -234,6 +319,11 @@ type formOption struct {
 	// Image is an option-tile image URL used by the picture_choice field.
 	// Empty means the option renders as a text fallback tile.
 	Image string `json:"image,omitempty"`
+	// Disabled shows the option but makes it non-selectable. It is excluded
+	// from the submission whitelist so a crafted POST can't smuggle its value.
+	Disabled bool `json:"disabled,omitempty"`
+	// LabelI18n translates the option Label per language. Value never translates.
+	LabelI18n i18nMap `json:"label_i18n,omitempty"`
 }
 
 // substitutionContext bundles the inputs to ${X} substitution at render time.
@@ -291,8 +381,14 @@ func applySubstitutions(s string, ctx substitutionContext) string {
 			}
 			return ctx.QueryParams[key]
 		case "data":
+			// A nil map signals "not resolved yet" — the render path deliberately
+			// defers the data-source flow to the page that references it (run on
+			// page-enter, client-side, with the answers so far). Leave the token
+			// intact so the browser can resolve it later; metaText strips any
+			// leftover ${...} so nothing leaks to crawlers. A populated (possibly
+			// empty) map means we DID resolve (e.g. on submit) — honour it.
 			if ctx.DataVariables == nil {
-				return ""
+				return match
 			}
 			return ctx.DataVariables[key]
 		default:
@@ -320,6 +416,94 @@ func metaText(s string) string {
 	s = boldMarker.ReplaceAllString(s, "$1")
 	s = italicMarker.ReplaceAllString(s, "$1")
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// ── Multi-lingual resolution (the Go twin of the SDK i18n.ts / form.html) ──
+
+// formLanguages returns the form's language config with monolingual defaults:
+// default language "en" and a single-entry language list.
+func formLanguages(def formDefinition) (langs []string, defaultLang string) {
+	defaultLang = def.DefaultLanguage
+	if defaultLang == "" {
+		defaultLang = "en"
+	}
+	if len(def.Languages) > 0 {
+		langs = def.Languages
+	} else {
+		langs = []string{defaultLang}
+	}
+	return langs, defaultLang
+}
+
+// resolveLanguage narrows a requested language to one the form offers, honouring
+// base subtags in both directions ("cy-GB" ↔ "cy"), else the default language.
+func resolveLanguage(requested string, langs []string, defaultLang string) string {
+	if requested == "" {
+		return defaultLang
+	}
+	norm := strings.ToLower(strings.TrimSpace(requested))
+	for _, l := range langs {
+		if strings.ToLower(l) == norm {
+			return l
+		}
+	}
+	base := norm
+	if i := strings.IndexByte(norm, '-'); i >= 0 {
+		base = norm[:i]
+	}
+	for _, l := range langs {
+		ll := strings.ToLower(l)
+		if i := strings.IndexByte(ll, '-'); i >= 0 {
+			ll = ll[:i]
+		}
+		if ll == base {
+			return l
+		}
+	}
+	return defaultLang
+}
+
+// resolveLanguageFromHeader picks the best form language from an explicit
+// request (?lang) then an Accept-Language header, falling back to the default.
+func resolveLanguageFromHeader(requested, acceptLanguage string, langs []string, defaultLang string) string {
+	if r := resolveLanguage(requested, langs, defaultLang); requested != "" && r != defaultLang {
+		return r
+	} else if requested != "" && baseSubtag(requested) == baseSubtag(defaultLang) {
+		return defaultLang
+	}
+	// Accept-Language: "cy-GB,cy;q=0.9,en;q=0.8" — try each tag in order.
+	for _, part := range strings.Split(acceptLanguage, ",") {
+		tag := strings.TrimSpace(part)
+		if i := strings.IndexByte(tag, ';'); i >= 0 {
+			tag = strings.TrimSpace(tag[:i])
+		}
+		if tag == "" || tag == "*" {
+			continue
+		}
+		if r := resolveLanguage(tag, langs, defaultLang); r != defaultLang || baseSubtag(tag) == baseSubtag(defaultLang) {
+			return r
+		}
+	}
+	return defaultLang
+}
+
+func baseSubtag(s string) string {
+	s = strings.ToLower(s)
+	if i := strings.IndexByte(s, '-'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// tI18n resolves a translatable string for a locale, falling back to the base
+// (default-language) value when there's no non-empty translation.
+func tI18n(base string, m i18nMap, locale, defaultLang string) string {
+	if locale != "" && locale != defaultLang && m != nil {
+		if v, ok := m[locale]; ok && v != "" {
+			return v
+		}
+	}
+	return base
 }
 
 // resolveFormForRender walks the form definition, resolving all
@@ -385,13 +569,49 @@ func formUsesDataNamespace(def formDefinition) bool {
 // options from the data-source flow (options_source set).
 func formHasDynamicOptions(def formDefinition) bool {
 	for _, page := range def.Pages {
-		for _, c := range page.Components {
-			if c.OptionsSource != "" {
-				return true
-			}
+		if pageHasDynamicOptions(page) {
+			return true
 		}
 	}
 	return false
+}
+
+// pageUsesDataNamespace reports whether a single page references ${data.X} in a
+// component's label, placeholder or default value. Per-page so the render can
+// tell the client which pages must run the data-source flow on entry (rather
+// than running it eagerly at load for the whole form).
+func pageUsesDataNamespace(page formPage) bool {
+	for _, c := range page.Components {
+		if strings.Contains(c.Label, "${data.") ||
+			strings.Contains(c.Placeholder, "${data.") ||
+			strings.Contains(c.DefaultValue, "${data.") ||
+			strings.Contains(c.DisplayText, "${data.") {
+			return true
+		}
+	}
+	return false
+}
+
+// pageHasDynamicOptions reports whether a single page has an option-based field
+// sourcing its options from the data-source flow.
+func pageHasDynamicOptions(page formPage) bool {
+	for _, c := range page.Components {
+		if c.OptionsSource != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// pagesNeedingData returns, per page (in order), whether that page must run the
+// data-source flow on entry — i.e. it references ${data.X} or sources dynamic
+// options. The client uses this to defer the flow until the relevant page.
+func pagesNeedingData(def formDefinition) []bool {
+	out := make([]bool, len(def.Pages))
+	for i, page := range def.Pages {
+		out[i] = pageUsesDataNamespace(page) || pageHasDynamicOptions(page)
+	}
+	return out
 }
 
 // optionsFromOutput normalises a data-source output value into a form option
@@ -426,6 +646,130 @@ func optionsFromOutput(val interface{}) []formOption {
 		}
 	}
 	return out
+}
+
+// rowsFromOutput normalises a data-source output value into table rows. Accepts
+// an array of objects (each a row keyed by column key) or an array of arrays
+// (bound positionally onto the given column keys). Anything else yields no
+// rows. The result matches the manual TableRows shape so the rest of the table
+// pipeline (whitelist, render) treats computed and manual rows identically.
+func rowsFromOutput(val interface{}, columns []tableColumn) []map[string]interface{} {
+	// A flow may emit the rows as a JSON STRING (e.g. a Set Output typed as
+	// text) rather than an array — parse it and use the decoded value.
+	if s, ok := val.(string); ok {
+		var parsed interface{}
+		if json.Unmarshal([]byte(s), &parsed) == nil {
+			val = parsed
+		}
+	}
+	arr, ok := val.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(arr))
+	for _, entry := range arr {
+		switch e := entry.(type) {
+		case map[string]interface{}:
+			out = append(out, e)
+		case []interface{}:
+			row := map[string]interface{}{}
+			for i, col := range columns {
+				if i < len(e) {
+					row[col.Key] = e[i]
+				}
+			}
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// formHasComputedTableRows reports whether any table populates its rows from a
+// per-field value_source flow (the same mechanism computed fields use).
+func formHasComputedTableRows(def formDefinition) bool {
+	for _, page := range def.Pages {
+		for _, c := range page.Components {
+			if c.Type == "table" && strings.TrimSpace(c.ValueSource) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// bakeComputedTableRows populates each computed table's TableRows by running its
+// value_source flow with the submitted answers, so the submit-time whitelist in
+// sanitiseTableSubmissions is authoritative for computed rows — the per-field
+// twin of bakeDynamicOptions for option lists. `resolve` runs a flow by id and
+// returns its outputs (cached upstream). Returns a copy; does not mutate def.
+func bakeComputedTableRows(def formDefinition, resolve func(flowID string) map[string]interface{}) formDefinition {
+	if !formHasComputedTableRows(def) {
+		return def
+	}
+	baked := def
+	baked.Pages = make([]formPage, len(def.Pages))
+	for pi, page := range def.Pages {
+		comps := make([]formComponent, len(page.Components))
+		for ci, c := range page.Components {
+			comp := c
+			if comp.Type == "table" && strings.TrimSpace(comp.ValueSource) != "" {
+				outputs := resolve(comp.ValueSource)
+				comp.TableRows = rowsFromOutput(outputs[computeOutputKey(comp)], comp.TableColumns)
+			}
+			comps[ci] = comp
+		}
+		baked.Pages[pi] = formPage{Components: comps, VisibleIf: page.VisibleIf}
+	}
+	return baked
+}
+
+// isOptionField reports whether a field presents a fixed option list (whose
+// options may be flow-computed via a per-field value_source).
+func isOptionField(t string) bool {
+	switch t {
+	case "radio", "dropdown", "select", "checkboxes", "multiple_choice", "ranking", "opinion_scale", "picture_choice":
+		return true
+	}
+	return false
+}
+
+// formHasComputedOptions reports whether any option field draws its OPTIONS from
+// a per-field value_source flow — the field-level equivalent of options_source,
+// and the option-list twin of formHasComputedTableRows.
+func formHasComputedOptions(def formDefinition) bool {
+	for _, page := range def.Pages {
+		for _, c := range page.Components {
+			if isOptionField(c.Type) && strings.TrimSpace(c.ValueSource) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// bakeComputedOptions populates each computed option field's Options by running
+// its value_source flow with the submitted answers, so the submit-time option
+// whitelist is authoritative for field-level computed options — the option-list
+// twin of bakeComputedTableRows. Returns a copy; does not mutate def.
+func bakeComputedOptions(def formDefinition, resolve func(flowID string) map[string]interface{}) formDefinition {
+	if !formHasComputedOptions(def) {
+		return def
+	}
+	baked := def
+	baked.Pages = make([]formPage, len(def.Pages))
+	for pi, page := range def.Pages {
+		comps := make([]formComponent, len(page.Components))
+		for ci, c := range page.Components {
+			comp := c
+			if isOptionField(comp.Type) && strings.TrimSpace(comp.ValueSource) != "" {
+				outputs := resolve(comp.ValueSource)
+				comp.Options = optionsFromOutput(outputs[computeOutputKey(comp)])
+			}
+			comps[ci] = comp
+		}
+		baked.Pages[pi] = formPage{Components: comps, VisibleIf: page.VisibleIf}
+	}
+	return baked
 }
 
 // bakeDynamicOptions returns a copy of def with each option_source field's
@@ -487,6 +831,11 @@ func sanitiseOptionSubmissions(submission map[string]interface{}, resolved formD
 	for name, spec := range specs {
 		whitelist := map[string]struct{}{}
 		for _, o := range spec.Options {
+			// A disabled option is not a valid choice; leaving it out of the
+			// whitelist strips a crafted submission that carries its value.
+			if o.Disabled {
+				continue
+			}
 			whitelist[o.Value] = struct{}{}
 		}
 
@@ -678,6 +1027,146 @@ func sanitiseMatrixSubmissions(submission map[string]interface{}, resolved formD
 	return out
 }
 
+// sanitiseTableSubmissions enforces the trust boundary for table fields. A
+// single-select table's answer is the selected row; a crafted POST must not be
+// able to smuggle a row that was never in the table, nor tamper with a row's
+// non-key columns. For each table field it:
+//
+//   - builds the authoritative row set keyed by the field's ValueColumn (from
+//     the manual/baked TableRows — a computed table has already had its rows
+//     baked from its value_source flow by bakeComputedTableRows;
+//   - reads the submitted answer's ValueColumn scalar and, if it is not a known
+//     key, DROPS the answer (mirrors the option-field whitelist);
+//   - REPLACES the kept answer with the server's authoritative row for that key,
+//     so tampering with other columns is discarded and the stored value is
+//     trustworthy.
+//
+// SelectionMode "none" (display-only) always strips any client value. A field
+// with no ValueColumn cannot be validated as a selection, so its value is
+// stripped rather than trusted. Returns a new map; does not mutate the input.
+func sanitiseTableSubmissions(submission map[string]interface{}, resolved formDefinition) map[string]interface{} {
+	specs := map[string]formComponent{}
+	for _, page := range resolved.Pages {
+		for _, c := range page.Components {
+			if c.Type == "table" {
+				specs[c.Name] = c
+			}
+		}
+	}
+	if len(specs) == 0 {
+		return submission
+	}
+
+	out := make(map[string]interface{}, len(submission))
+	for k, v := range submission {
+		out[k] = v
+	}
+
+	for name, spec := range specs {
+		// Display-only tables and tables without a value column collect no
+		// answer — never let a client value through.
+		if spec.SelectionMode == "none" || strings.TrimSpace(spec.ValueColumn) == "" {
+			delete(out, name)
+			continue
+		}
+
+		// Authoritative rows keyed by the value column's string form. By the
+		// time we run, a computed (value_source) table has already had its
+		// TableRows baked from the re-resolved data source (bakeDynamicOptions),
+		// so this whitelist is authoritative for both manual and computed rows.
+		authoritative := map[string]map[string]interface{}{}
+		for _, row := range spec.TableRows {
+			key := tableCellString(row[spec.ValueColumn])
+			if key == "" {
+				continue
+			}
+			if _, dupe := authoritative[key]; dupe {
+				continue // first row wins on a duplicate key
+			}
+			authoritative[key] = row
+		}
+
+		// authRowFor validates a submitted row object against the whitelist and
+		// returns the SERVER's row for that key so non-key columns can't be
+		// tampered. ok is false for a wrong shape or an unknown key.
+		authRowFor := func(v interface{}) (map[string]interface{}, bool) {
+			raw, isObj := v.(map[string]interface{})
+			if !isObj {
+				return nil, false
+			}
+			key := tableCellString(raw[spec.ValueColumn])
+			if key == "" {
+				return nil, false
+			}
+			row, known := authoritative[key]
+			return row, known
+		}
+
+		if spec.SelectionMode == "multiple" {
+			// The answer is an array of selected row objects; keep the known
+			// ones (reconstructed), de-duplicated by key, order preserved.
+			arr, isArr := out[name].([]interface{})
+			if !isArr {
+				delete(out, name)
+				continue
+			}
+			seen := map[string]struct{}{}
+			clean := make([]interface{}, 0, len(arr))
+			for _, entry := range arr {
+				row, ok := authRowFor(entry)
+				if !ok {
+					continue
+				}
+				key := tableCellString(row[spec.ValueColumn])
+				if _, dupe := seen[key]; dupe {
+					continue
+				}
+				seen[key] = struct{}{}
+				clean = append(clean, row)
+			}
+			if len(clean) == 0 {
+				// An empty multi-select contributes no answer, matching the
+				// single-select "nothing selected" behaviour.
+				delete(out, name)
+				continue
+			}
+			out[name] = clean
+			continue
+		}
+
+		// Single-select: the answer is one selected row object.
+		row, ok := authRowFor(out[name])
+		if !ok {
+			delete(out, name)
+			continue
+		}
+		out[name] = row
+	}
+	return out
+}
+
+// tableCellString renders a table cell value as the canonical string used for
+// value-column keys and whitelist comparison. Numbers are formatted without a
+// scientific-notation exponent (JSON unmarshals all numbers to float64), so an
+// integer id like 4471 compares as "4471", not "4471.000000" or "4.471e+03".
+func tableCellString(v interface{}) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
+
 // stripDisplayOnlySubmissions removes keys whose corresponding component
 // is a display-only type (section_header, divider, info_text). These
 // components exist to structure the form visually, not to collect input,
@@ -723,7 +1212,7 @@ func stripReadOnlySubmissions(submission map[string]interface{}, resolved formDe
 			// DefaultValue — skipping them here means a hand-authored
 			// read_only: true is ignored rather than corrupting the
 			// response shape.
-			if c.Type == "location" || c.Type == "address" || c.Type == "contact_name" || c.Type == "matrix" {
+			if c.Type == "location" || c.Type == "address" || c.Type == "contact_name" || c.Type == "matrix" || c.Type == "table" {
 				continue
 			}
 			if c.ReadOnly {
@@ -743,6 +1232,56 @@ func stripReadOnlySubmissions(submission map[string]interface{}, resolved formDe
 		out[k] = v
 	}
 	return out
+}
+
+// tableComparableValues returns a copy of values in which each table field's
+// answer is replaced by its COMPARABLE form for visibility rules: a single-
+// select table becomes its value_column scalar; a multi-select becomes the
+// array of its rows' value_column values (so contains / one_of work). Non-table
+// fields pass through unchanged. This lets a visible_if rule reference a table
+// field by name and compare against the selected row's value_column — the Go
+// twin of the identical transform in form.html and the SDK's visibility.ts.
+func tableComparableValues(resolved formDefinition, values map[string]interface{}) map[string]interface{} {
+	tables := map[string]formComponent{}
+	for _, page := range resolved.Pages {
+		for _, c := range page.Components {
+			if c.Type == "table" && strings.TrimSpace(c.ValueColumn) != "" {
+				tables[c.Name] = c
+			}
+		}
+	}
+	if len(tables) == 0 {
+		return values
+	}
+	out := make(map[string]interface{}, len(values))
+	for k, v := range values {
+		if spec, ok := tables[k]; ok {
+			out[k] = tableComparable(spec.ValueColumn, v)
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// tableComparable extracts the comparable value from a table answer: the
+// value_column scalar of the selected row (single), or the array of value_column
+// values (multiple). A nil / other shape passes through so is_empty still works.
+func tableComparable(valueColumn string, v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		return t[valueColumn]
+	case []interface{}:
+		arr := make([]interface{}, 0, len(t))
+		for _, e := range t {
+			if row, ok := e.(map[string]interface{}); ok {
+				arr = append(arr, row[valueColumn])
+			}
+		}
+		return arr
+	default:
+		return v
+	}
 }
 
 // evalVisibility reports whether a component with the given rule should be
@@ -950,8 +1489,10 @@ func stripHiddenSubmissions(submission map[string]interface{}, resolved formDefi
 
 	for pass := 0; pass <= len(units); pass++ {
 		changed := false
+		// Table answers compare by their value_column for visibility rules.
+		vis := tableComparableValues(resolved, out)
 		for _, u := range units {
-			if evalVisibility(u.rule, out) {
+			if evalVisibility(u.rule, vis) {
 				continue
 			}
 			for _, n := range u.names {
@@ -985,6 +1526,7 @@ func stripHiddenSubmissions(submission map[string]interface{}, resolved formDefi
 func sanitiseFormSubmission(body map[string]interface{}, resolved formDefinition) map[string]interface{} {
 	sanitised := sanitiseOptionSubmissions(body, resolved)
 	sanitised = sanitiseMatrixSubmissions(sanitised, resolved)
+	sanitised = sanitiseTableSubmissions(sanitised, resolved)
 	sanitised = stripDisplayOnlySubmissions(sanitised, resolved)
 	sanitised = stripComputedSubmissions(sanitised, resolved)
 	sanitised = stripReadOnlySubmissions(sanitised, resolved)
@@ -1012,6 +1554,15 @@ func stripComputedSubmissions(submission map[string]interface{}, resolved formDe
 	computed := map[string]struct{}{}
 	for _, page := range resolved.Pages {
 		for _, c := range page.Components {
+			// A table's value_source populates its ROWS (answer = row selection),
+			// and an option field's value_source populates its OPTIONS (answer =
+			// the chosen option). Neither is a "computed value" — their answers
+			// are user selections that must survive (validated against the baked
+			// rows/options whitelist). Only genuine computed-VALUE fields are
+			// stripped here.
+			if c.Type == "table" || isOptionField(c.Type) {
+				continue
+			}
 			if strings.TrimSpace(c.ValueSource) != "" {
 				computed[c.Name] = struct{}{}
 			}
@@ -1167,4 +1718,19 @@ func parseFormDefinition(data []byte) (formDefinition, error) {
 		return def, err
 	}
 	return def, nil
+}
+
+// formTriggerNodeID extracts the form trigger's flow node id (__node_id, stamped
+// onto the trigger data by the API sync) so a form submission can be routed to
+// the correct trigger node in a multi-trigger flow. Returns "" when absent (an
+// older trigger not yet re-synced) — the executor then falls back to its default.
+func formTriggerNodeID(data []byte) string {
+	var m map[string]interface{}
+	if json.Unmarshal(data, &m) != nil {
+		return ""
+	}
+	if s, ok := m["__node_id"].(string); ok {
+		return s
+	}
+	return ""
 }

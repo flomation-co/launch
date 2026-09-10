@@ -101,6 +101,11 @@ func (s *Service) createTrigger(c *gin.Context) {
 	// /webhook/{trigger_id} (idempotent). Errors are logged, not fatal.
 	s.registerSendGridWebhook(c.Request.Context(), &tr)
 
+	// AWX triggers: auto-register a webhook notification template on the operator's
+	// AWX / AAP controller pointing at /webhook/{trigger_id} and attach it to the
+	// chosen job template (idempotent). Errors are logged, not fatal.
+	s.registerAWXWebhook(c.Request.Context(), &tr)
+
 	// MQTT triggers: open the broker subscription now, rather than waiting for the
 	// mqtt service's next reconcile tick.
 	//
@@ -238,6 +243,11 @@ func (s *Service) deleteTrigger(c *gin.Context) {
 	// Deregister the SendGrid event webhook we created.
 	if t.Type == launch.TriggerTypeSendGridWebhook {
 		s.deregisterSendGridWebhook(c.Request.Context(), t)
+	}
+
+	// Deregister the AWX notification template we created.
+	if t.Type == launch.TriggerTypeAWXWebhook {
+		s.deregisterAWXWebhook(c.Request.Context(), t)
 	}
 
 	// Close the MQTT subscription. Unlike a webhook there is nothing to
