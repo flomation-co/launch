@@ -115,19 +115,6 @@ func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
 		cfg = s.fetchWebTriggerConfig(flowID)
 	}
 
-	// Optional auth: gate on the embed publishable key + origin + resource opt-in
-	// ONLY when the trigger opted into "publishable". Otherwise the endpoint is
-	// public — callable by anyone with the flow id (the default). Either way we
-	// reflect CORS so a browser accepts the response; a forwarded JWT still
-	// populates ${user.X} in both modes.
-	if cfg != nil && cfg.Auth == "publishable" {
-		if !s.applyEmbedGate(c, embedResourceFlow, flowID) {
-			return // applyEmbedGate wrote the 401/403 (and CORS on success)
-		}
-	} else {
-		s.setEmbedCORS(c, c.GetHeader("Origin"))
-	}
-
 	// Strict verb enforcement when the trigger declares accepted methods.
 	if cfg != nil && len(cfg.Methods) > 0 && !containsFold(cfg.Methods, method) {
 		c.Header("Allow", strings.Join(cfg.Methods, ", "))
@@ -235,7 +222,6 @@ const webTriggerCfgKey = "web_trigger_cfg"
 // webTriggerCfg mirrors the API's Web Trigger config projection.
 type webTriggerCfg struct {
 	Found        bool              `json:"found"`
-	Auth         string            `json:"auth"` // "none" (public) | "publishable"
 	KeepHistory  bool              `json:"keep_history"`
 	MessageField string            `json:"message_field"`
 	Methods      []string          `json:"methods"`
