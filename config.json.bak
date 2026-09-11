@@ -1,0 +1,34 @@
+{
+  "http": {
+    "address": "0.0.0.0",
+    "port": 8085
+  },
+  "database": {
+    "hostname": "localhost",
+    "port": 5435,
+    "username": "postgres",
+    "password": "Password1234",
+    "database": "postgres",
+    "encryption_key": "7f6c4417883fbf428f7682ddecf68e51",
+    "max_idle_connections": 5,
+    "max_open_connections": 20,
+    "ssl_mode": "disable"
+  },
+  "automate": {
+    "url": "http://localhost:8080"
+  },
+  "security": {
+    "identity_service": "http://localhost:8999",
+    "editor_url": "http://localhost:5174"
+  },
+  "public_url": "http://localhost:8085",
+  "embedding": {
+    "enabled": false
+  },
+  "metrics": {
+    "enabled": false
+  },
+  "tls": {
+    "enabled": false
+  }
+}

@@ -93,7 +93,11 @@ func (s *Service) embedFlowGate() gin.HandlerFunc {
 // caller can poll. Identity (${user.X}) and history (${history}) are layered on
 // in a later slice.
 func (s *Service) handleEmbedFlowInvoke(c *gin.Context) {
-	flowID := c.Param("id") // gate already validated uuid + opt-in
+	flowID := c.Param("id")
+	if uuid.Validate(flowID) != nil {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
 
 	method := c.Request.Method
 	// Forward the end-user's Sentinel JWT (if any) so the API can resolve the

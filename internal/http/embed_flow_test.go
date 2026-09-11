@@ -529,3 +529,90 @@ func TestEmbedFlowRoutesRegister_NoConflict(t *testing.T) {
 		fgrp.POST("", noop)
 	}).ToNot(Panic())
 }
+
+// authAPI serves a web-trigger config with the given auth, an embed-resolve
+// verdict, and a completed execution — for exercising the optional gate.
+func authAPI(authMode string, allow bool) *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/internal/flo/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/web-trigger") {
+			cfg := map[string]interface{}{"found": true}
+			// An empty mode stands for a config that never declared one, which
+			// the gate must read as publishable rather than open.
+			if authMode != "" {
+				cfg["auth_mode"] = authMode
+			}
+			_ = json.NewEncoder(w).Encode(cfg)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "e1"})
+	})
+	mux.HandleFunc("/api/v1/internal/execution/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"execution_status": "executed",
+			"result":           map[string]interface{}{"outputs": map[string]interface{}{}},
+		})
+	})
+	mux.HandleFunc("/api/v1/internal/embed/resolve", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"embed_app_id": "app-1", "origin_allowed": allow, "resource_allowed": allow,
+		})
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestWebInvoke_PublicTriggerNeedsNoKey(t *testing.T) {
+	RegisterTestingT(t)
+	defer withFastPolling(2*time.Second, 2*time.Millisecond)()
+
+	srv := authAPI(webAuthPublic, false)
+	defer srv.Close()
+
+	// No publishable key and no allowed origin: a trigger that opted into
+	// public still runs.
+	w := doInvokeGated(newInvokeService(srv.URL), http.MethodPost,
+		"/v1/embed/flow/"+testFlowID+"/invoke", "{}", map[string]string{"Origin": "https://app.example"})
+	Expect(w.Code).To(Equal(http.StatusOK))
+}
+
+func TestWebInvoke_PublishableGate(t *testing.T) {
+	RegisterTestingT(t)
+	defer withFastPolling(2*time.Second, 2*time.Millisecond)()
+
+	run := func(srv *httptest.Server, withKey bool) int {
+		headers := map[string]string{"Origin": "https://app.example"}
+		if withKey {
+			headers[publishableKeyHeader] = "pk_test"
+		}
+		return doInvokeGated(newInvokeService(srv.URL), http.MethodPost,
+			"/v1/embed/flow/"+testFlowID+"/invoke", "{}", headers).Code
+	}
+
+	// Opted into publishable, no key ⇒ 401.
+	deny := authAPI("publishable", true)
+	defer deny.Close()
+	Expect(run(deny, false)).To(Equal(http.StatusUnauthorized))
+
+	// Key plus an allowed origin and resource ⇒ through to the flow.
+	Expect(run(deny, true)).To(Equal(http.StatusOK))
+
+	// Key, but the app does not allow this origin or resource ⇒ 403.
+	blocked := authAPI("publishable", false)
+	defer blocked.Close()
+	Expect(run(blocked, true)).To(Equal(http.StatusForbidden))
+}
+
+func TestWebInvoke_AnUndeclaredModeIsGatedNotOpen(t *testing.T) {
+	RegisterTestingT(t)
+	defer withFastPolling(2*time.Second, 2*time.Millisecond)()
+
+	// The security-relevant default: a config that names no auth mode — or an
+	// API that could not be reached — must not leave the endpoint open.
+	srv := authAPI("", true)
+	defer srv.Close()
+
+	w := doInvokeGated(newInvokeService(srv.URL), http.MethodPost,
+		"/v1/embed/flow/"+testFlowID+"/invoke", "{}", map[string]string{"Origin": "https://app.example"})
+	Expect(w.Code).To(Equal(http.StatusUnauthorized))
+}
