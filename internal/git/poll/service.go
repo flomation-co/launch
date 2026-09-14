@@ -30,6 +30,8 @@ const (
 type triggerConfig struct {
 	RepositoryURL string `json:"repository_url"`
 	SSHKey        string `json:"ssh_key"`
+	HostKey       string `json:"host_key"`
+	SkipHostKey   bool   `json:"skip_host_key_verification"`
 	BranchRegex   string `json:"branch_regex"`
 	PollInterval  string `json:"poll_interval"`
 }
@@ -108,8 +110,9 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 	// Resolve variable references in config values
 	repoURL := s.trigger.ResolveString(tr.ID, cfg.RepositoryURL)
 	sshKey := s.trigger.ResolveString(tr.ID, cfg.SSHKey)
+	hostKey := s.trigger.ResolveString(tr.ID, cfg.HostKey)
 
-	refs, err := lsRemote(repoURL, sshKey)
+	refs, err := lsRemote(repoURL, sshKey, hostKey, cfg.SkipHostKey)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error":      err,
@@ -188,7 +191,7 @@ func (s *Service) checkTrigger(tr *launch.Trigger) {
 }
 
 // lsRemote uses go-git to list remote branch refs without cloning.
-func lsRemote(repoURL string, sshKey string) ([]branchRef, error) {
+func lsRemote(repoURL string, sshKey string, hostKey string, skipHostKeyVerification bool) ([]branchRef, error) {
 	if repoURL == "" {
 		return nil, fmt.Errorf("repository URL is empty")
 	}
@@ -205,6 +208,16 @@ func lsRemote(repoURL string, sshKey string) ([]branchRef, error) {
 		if err != nil {
 			return nil, fmt.Errorf("unable to create SSH auth: %w", err)
 		}
+		// go-git reads a nil HostKeyCallback as "verify against known_hosts",
+		// so leaving it nil keeps the secure default and only an explicit
+		// trigger setting changes it. See hostkey.go.
+		callback, err := hostKeyCallback(hostKey, skipHostKeyVerification)
+		if err != nil {
+			return nil, err
+		}
+		if callback != nil {
+			auth.HostKeyCallback = callback
+		}
 		// go-git v6.0.0-alpha.4 moved per-operation auth off ListOptions and
 		// onto transport client options.
 		listOpts.ClientOptions = append(listOpts.ClientOptions, gitclient.WithSSHAuth(auth))
@@ -212,7 +225,10 @@ func lsRemote(repoURL string, sshKey string) ([]branchRef, error) {
 
 	refs, err := remote.List(listOpts)
 	if err != nil {
-		return nil, err
+		// A host key failure repeats every poll interval and lands in a log
+		// rather than in front of someone who can ask what it means, so it has
+		// to carry the fix with it.
+		return nil, describeHostKeyError(err, repoURL)
 	}
 
 	var results []branchRef

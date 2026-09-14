@@ -10,6 +10,6 @@ func Test_LsRemote_EmptyURL(t *testing.T) {
 	t.Parallel()
 	RegisterTestingT(t)
 
-	_, err := lsRemote("", "")
+	_, err := lsRemote("", "", "", false)
 	Expect(err).NotTo(BeNil())
 }
