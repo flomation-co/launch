@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0"/>
-    <meta name="theme-color" content="#161019">
+    <meta name="theme-color" content="#f6f4f8">
     <link rel="icon" type="image/png" href="/favicon.png">
     <link rel="alternate icon" href="/favicon.ico">
     <link rel="apple-touch-icon" href="/favicon.png">
@@ -21,18 +21,57 @@
     <meta name="twitter:title" content="{{ if .MetaTitle }}{{ .MetaTitle }}{{ else }}Flomation Form{{ end }}">
     {{ if .MetaDescription }}<meta name="twitter:description" content="{{ .MetaDescription }}">{{ end }}
     <style>
+        /* Paper craft, the same palette the marketing site, Sentinel and the
+           editor carry. The names here already described roles rather than
+           colours, so only the values changed.
+
+           This is the default theme for a hosted form. It is the first thing a
+           customer's own customer sees, so it has to look like the brand
+           without looking like a product UI. */
         :root {
-            --bg: #161019;
-            --surface: rgba(255,255,255,0.04);
-            --border: rgba(255,255,255,0.08);
-            --border-focus: rgba(139,92,246,0.5);
-            --text: #fff;
-            --text-muted: rgba(255,255,255,0.5);
+            --bg: #f6f4f8;
+            --surface: #fdfcfe;
+            --border: rgba(70, 45, 84, 0.18);
+            --border-focus: rgba(107, 63, 128, 0.55);
+            --text: #342a38;
+            --text-muted: #524856;
             --primary: #460070;
-            --primary-hover: #6b21a8;
-            --input-bg: #17202e;
-            --success: #22c55e;
-            --danger: #ef4444;
+            --primary-hover: #5d3670;
+            --input-bg: #ffffff;
+            --success: #1b6d45;
+            --danger: #a8212f;
+
+            /* New roles the paper version needs. On a dark ground a panel was
+               a lift towards white and a rule was the same value at a
+               different alpha; on paper they are different things. */
+            --surface-2: #eae3ef;
+            --surface-hover: rgba(222, 209, 229, 0.42);
+            --placeholder: #6b6270;
+            --lift: 0 1px 2px rgba(70, 45, 84, 0.06), 0 8px 24px -12px rgba(70, 45, 84, 0.18);
+            --lift-card: 0 1px 2px rgba(70, 45, 84, 0.05), 0 18px 48px -22px rgba(70, 45, 84, 0.34);
+
+            /* The rest of the roles the stylesheet references. A var() with no
+               fallback that resolves to nothing does not fall back to the
+               property's previous value -- it makes the whole declaration
+               invalid, so the rule vanishes. Fifty-five declarations here were
+               one missing definition away from doing that. */
+            --surface-sunken: rgba(70, 45, 84, 0.03);
+            --surface-raise: rgba(70, 45, 84, 0.05);
+            --surface-active: rgba(222, 209, 229, 0.62);
+            --border-2: rgba(70, 45, 84, 0.18);
+            --border-3: rgba(70, 45, 84, 0.22);
+            --muted: #473d4b;
+            --dim: #5c5260;
+            --faint: #6b6270;
+            --lilac: #6b3f80;
+            --teal: #2f6b64;
+            --success-fill: rgba(27, 109, 69, 0.1);
+            --success-border: rgba(27, 109, 69, 0.22);
+
+            /* An empty rating star is still a control somebody has to see
+               before they can aim at it, so it clears the 3:1 bar for
+               non-text contrast (3.25) while staying clearly unfilled. */
+            --rating-empty: #938c9a;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -42,7 +81,7 @@
             font-family: 'Inter', sans-serif;
             font-size: 15px;
             color: var(--text);
-            background: radial-gradient(ellipse at top left, var(--bg), #1a1025);
+            background: radial-gradient(ellipse at top left, var(--bg), var(--surface));
         }
 
         .page-container {
@@ -60,7 +99,7 @@
             border: 1px solid var(--border);
             border-radius: 16px;
             padding: 36px 32px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            box-shadow: 0 8px 32px rgba(70, 45, 84, 0.16);
         }
 
         .form-title {
@@ -79,7 +118,7 @@
             padding: 6px 10px;
             border: 1px solid var(--border, #d0d0d8);
             border-radius: 8px;
-            background: var(--surface, #fff);
+            background: var(--surface, var(--surface));
             color: var(--text, #1a1a22);
             cursor: pointer;
         }
@@ -139,7 +178,7 @@
         input[type="datetime-local"]:focus,
         textarea:focus {
             border-color: var(--border-focus);
-            box-shadow: 0 0 0 3px rgba(139,92,246,0.15);
+            box-shadow: 0 0 0 3px rgba(70, 0, 112, 0.2);
         }
 
         /* Native date/time pickers show their calendar/clock indicator
@@ -169,7 +208,7 @@
         }
 
         .checkbox-group:hover {
-            border-color: rgba(255,255,255,0.15);
+            border-color: var(--border-2);
         }
 
         .checkbox-group input[type="checkbox"] {
@@ -177,7 +216,7 @@
             appearance: none;
             width: 20px; height: 20px;
             min-width: 20px;
-            border: 2px solid rgba(255,255,255,0.2);
+            border: 2px solid var(--border-3);
             border-radius: 4px;
             background: transparent;
             cursor: pointer;
@@ -194,7 +233,7 @@
             position: absolute;
             left: 5px; top: 2px;
             width: 6px; height: 10px;
-            border: solid #fff;
+            border: solid var(--border-3);
             border-width: 0 2px 2px 0;
             transform: rotate(45deg);
         }
@@ -236,12 +275,19 @@
             color: var(--text-muted);
         }
 
-        .btn-secondary:hover { background: rgba(255,255,255,0.08); }
+        .btn-secondary:hover { background: var(--surface-hover); }
 
-        .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+        .btn:disabled {
+            /* Not opacity: at 35% on paper the button and its label both
+               vanish. A disabled control should look deliberate. */
+            background: var(--surface-2);
+            color: var(--faint);
+            box-shadow: none;
+            cursor: not-allowed;
+        }
 
         .btn-submit {
-            background: linear-gradient(135deg, #059669, var(--success));
+            background: linear-gradient(135deg, var(--primary-hover), var(--primary));
             color: #fff;
         }
 
@@ -250,8 +296,8 @@
            The user knows it's read-only but the value remains highly readable. */
         .field-group input.readonly,
         .field-group textarea.readonly {
-            background: rgba(255, 255, 255, 0.02);
-            color: rgba(255, 255, 255, 0.7);
+            background: var(--surface-sunken);
+            color: var(--muted);
             cursor: not-allowed;
             border-style: dashed;
             opacity: 1;
@@ -281,7 +327,7 @@
         }
 
         .option-row:hover {
-            background: rgba(255, 255, 255, 0.03);
+            background: var(--surface-sunken);
         }
 
         .option-row input[type="radio"],
@@ -290,7 +336,7 @@
             appearance: none;
             width: 18px; height: 18px;
             min-width: 18px;
-            border: 2px solid rgba(255, 255, 255, 0.2);
+            border: 2px solid var(--border-3);
             background: transparent;
             cursor: pointer;
             position: relative;
@@ -316,7 +362,7 @@
             top: 3px; left: 3px;
             width: 8px; height: 8px;
             border-radius: 50%;
-            background: #fff;
+            background: var(--surface);
         }
 
         .option-row input[type="checkbox"]:checked::after {
@@ -324,7 +370,7 @@
             position: absolute;
             left: 4px; top: 1px;
             width: 6px; height: 10px;
-            border: solid #fff;
+            border: solid var(--border-3);
             border-width: 0 2px 2px 0;
             transform: rotate(45deg);
         }
@@ -377,7 +423,7 @@
             object-fit: cover;
             border-radius: 6px;
             display: block;
-            background: rgba(255, 255, 255, 0.03);
+            background: var(--surface-sunken);
         }
 
         .picture-choice-tile .picture-choice-fallback {
@@ -387,7 +433,7 @@
             align-items: center;
             justify-content: center;
             border-radius: 6px;
-            background: rgba(255, 255, 255, 0.03);
+            background: var(--surface-sunken);
             color: var(--text-muted);
             font-size: 13px;
             padding: 8px;
@@ -434,8 +480,8 @@
         }
 
         .field-group select.readonly {
-            background-color: rgba(255, 255, 255, 0.02);
-            color: rgba(255, 255, 255, 0.7);
+            background-color: var(--surface-sunken);
+            color: var(--muted);
             cursor: not-allowed;
             border-style: dashed;
             opacity: 1;
@@ -457,7 +503,7 @@
             appearance: none;
             width: 100%;
             height: 4px;
-            background: rgba(255, 255, 255, 0.1);
+            background: var(--surface-hover);
             border-radius: 2px;
             outline: none;
             cursor: pointer;
@@ -470,7 +516,7 @@
             background: var(--primary);
             border-radius: 50%;
             cursor: pointer;
-            border: 2px solid #fff;
+            border: 2px solid var(--border-3);
         }
         .slider-wrapper input[type="range"]::-moz-range-thumb {
             width: 18px;
@@ -478,13 +524,13 @@
             background: var(--primary);
             border-radius: 50%;
             cursor: pointer;
-            border: 2px solid #fff;
+            border: 2px solid var(--border-3);
         }
         .slider-value {
             min-width: 40px;
             padding: 4px 10px;
             border-radius: 4px;
-            background: rgba(255, 255, 255, 0.06);
+            background: var(--surface-2);
             font-family: 'SF Mono', 'Fira Code', monospace;
             font-size: 12px;
             color: var(--text);
@@ -506,16 +552,16 @@
             padding: 4px 6px;
             font-size: 26px;
             line-height: 1;
-            color: rgba(255, 255, 255, 0.18);
+            color: var(--rating-empty);
             cursor: pointer;
             transition: color 0.12s ease, transform 0.12s ease;
         }
         .rating-star:hover:not(:disabled) {
             transform: scale(1.15);
-            color: rgba(250, 204, 21, 0.6);
+            color: rgba(180, 83, 9, 0.55);
         }
         .rating-star.filled {
-            color: #facc15;
+            color: #b45309;
         }
         .rating-star:disabled {
             cursor: not-allowed;
@@ -525,7 +571,7 @@
         .section-header {
             margin: 28px 0 20px 0;
             padding-bottom: 10px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            border-bottom: 1px solid var(--border);
             font-size: 16px;
             font-weight: 600;
             color: var(--text);
@@ -533,12 +579,12 @@
         }
         .form-divider {
             border: none;
-            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            border-top: 1px solid var(--border);
             margin: 20px 0;
         }
         .info-text {
             padding: 12px 14px;
-            background: rgba(139, 92, 246, 0.05);
+            background: var(--surface-2);
             border-left: 3px solid var(--primary);
             border-radius: 4px;
             font-size: 13px;
@@ -561,9 +607,9 @@
         /* ── Payment summary (read-only "you will pay X" line) ── */
         .payment-summary {
             padding: 14px 16px;
-            background: rgba(0, 170, 156, 0.06);
+            background: rgba(47, 107, 100, 0.06);
             border: 1px solid var(--border);
-            border-left: 3px solid var(--teal, #00aa9c);
+            border-left: 3px solid var(--teal, var(--teal));
             border-radius: 6px;
             margin-bottom: 20px;
         }
@@ -580,7 +626,7 @@
         }
         /* Paid state — the field is satisfied, tint it and show a tick. */
         .payment-amount--paid {
-            color: var(--teal, #00aa9c);
+            color: var(--teal, var(--teal));
         }
         .payment-action {
             margin-top: 12px;
@@ -591,14 +637,14 @@
             font-size: 15px;
             font-weight: 600;
             color: #fff;
-            background: var(--teal, #00aa9c);
+            background: var(--teal, var(--teal));
             border: none;
             border-radius: 6px;
             cursor: pointer;
             transition: background 0.15s ease, opacity 0.15s ease;
         }
         .payment-pay-btn:hover:not(:disabled) {
-            background: #00958a;
+            background: var(--surface);
         }
         .payment-pay-btn:disabled {
             opacity: 0.5;
@@ -658,12 +704,12 @@
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.4px;
-            color: rgba(255, 255, 255, 0.35);
+            color: var(--faint);
         }
         .address-cell input {
             width: 100%;
             padding: 10px 12px;
-            background: rgba(255, 255, 255, 0.03);
+            background: var(--surface-sunken);
             border: 1px solid var(--border);
             border-radius: 6px;
             color: var(--text);
@@ -675,8 +721,8 @@
             border-color: var(--primary);
         }
         .address-cell input.readonly {
-            background-color: rgba(255, 255, 255, 0.02);
-            color: rgba(255, 255, 255, 0.7);
+            background-color: var(--surface-sunken);
+            color: var(--muted);
             cursor: not-allowed;
             border-style: dashed;
             opacity: 1;
@@ -698,7 +744,7 @@
             flex: 1 1 0;
             min-width: 34px;
             padding: 10px 0;
-            background: rgba(255, 255, 255, 0.03);
+            background: var(--surface-sunken);
             border: 1px solid var(--border);
             border-radius: 6px;
             color: var(--text);
@@ -708,7 +754,7 @@
             transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
         }
         .nps-button:hover:not(:disabled) {
-            background: rgba(139, 92, 246, 0.12);
+            background: var(--surface-2);
             border-color: var(--primary);
         }
         .nps-button.selected {
@@ -742,7 +788,7 @@
         .consent-terms {
             padding: 12px 14px;
             margin-bottom: 10px;
-            background: rgba(139, 92, 246, 0.05);
+            background: var(--surface-2);
             border-left: 3px solid var(--primary);
             border-radius: 4px;
             font-size: 13px;
@@ -769,7 +815,7 @@
         .contact-cell input {
             width: 100%;
             padding: 10px 12px;
-            background: rgba(255, 255, 255, 0.03);
+            background: var(--surface-sunken);
             border: 1px solid var(--border);
             border-radius: 6px;
             color: var(--text);
@@ -781,8 +827,8 @@
             border-color: var(--primary);
         }
         .contact-cell input.readonly {
-            background-color: rgba(255, 255, 255, 0.02);
-            color: rgba(255, 255, 255, 0.7);
+            background-color: var(--surface-sunken);
+            color: var(--muted);
             cursor: not-allowed;
             border-style: dashed;
             opacity: 1;
@@ -817,7 +863,7 @@
             display: inline-block;
             width: 10px; height: 10px;
             border-radius: 50%;
-            background: rgba(255,255,255,0.12);
+            background: var(--surface-active);
             transition: background 0.2s ease, transform 0.2s ease;
         }
 
@@ -860,8 +906,8 @@
             display: inline-block;
             width: 14px;
             height: 14px;
-            border: 2px solid rgba(139,92,246,0.25);
-            border-top-color: rgba(139,92,246,0.9);
+            border: 2px solid var(--border-2);
+            border-top-color: var(--border-2);
             border-radius: 50%;
             animation: flo-spin 0.7s linear infinite;
             vertical-align: middle;
@@ -903,16 +949,16 @@
             line-height: 1;
             font-family: inherit;
             color: var(--text-muted);
-            background: rgba(255,255,255,0.06);
+            background: var(--surface-2);
             border: 1px solid var(--border);
             border-radius: 6px;
             cursor: pointer;
             white-space: nowrap;
             transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
         }
-        .field-copy-btn:hover { color: var(--text); background: rgba(255,255,255,0.12); }
+        .field-copy-btn:hover { color: var(--text); background: var(--surface-active); }
         .field-copy-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-        .field-copy-btn.copied { color: var(--success); border-color: rgba(34,197,94,0.5); }
+        .field-copy-btn.copied { color: var(--success); border-color: var(--success-border); }
         .field-copy-btn svg { width: 12px; height: 12px; }
 
         /* Compute spinner — a flex child of .field-affordances; hidden until
@@ -928,12 +974,12 @@
             font: inherit;
             padding: 0 14px;
             color: var(--text);
-            background: rgba(255,255,255,0.06);
+            background: var(--surface-2);
             border: 1px solid var(--border);
             border-radius: 8px;
             cursor: pointer;
         }
-        .password-toggle:hover { background: rgba(255,255,255,0.12); }
+        .password-toggle:hover { background: var(--surface-active); }
 
         .success-message {
             text-align: center;
@@ -952,8 +998,8 @@
             gap: 12px;
             padding: 14px 16px;
             margin-bottom: 24px;
-            border: 1px solid rgba(34,197,94,0.35);
-            background: rgba(34,197,94,0.08);
+            border: 1px solid var(--success-border);
+            background: var(--success-fill);
             border-radius: 10px;
         }
         .summary-banner .success-icon { font-size: 24px; margin: 0; }
@@ -992,14 +1038,14 @@
             font-size: 12px;
             line-height: 1.45;
             color: var(--text-muted);
-            background: rgba(139, 92, 246, 0.08);
-            border: 1px solid rgba(139, 92, 246, 0.25);
+            background: var(--surface-2);
+            border: 1px solid var(--border-2);
             border-radius: 8px;
             padding: 8px 12px;
             margin: 6px 0 10px;
         }
         .upload-status.uploading {
-            color: rgba(139, 92, 246, 0.8);
+            color: var(--lilac);
         }
         .upload-status.error {
             color: var(--danger);
@@ -1020,7 +1066,7 @@
             max-height: 320px;
             border-radius: 6px;
             border: 1px solid var(--border);
-            background: #000;
+            background: var(--surface);
             /* getUserMedia streams the raw camera image (usually mirrored
                on the user-facing camera). Applying a subtle transform
                here would make it feel "flipped like a mirror" — but we
@@ -1032,8 +1078,8 @@
         .signature-canvas {
             width: 100%;
             height: 160px;
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px dashed rgba(255, 255, 255, 0.15);
+            background: var(--surface-sunken);
+            border: 1px dashed var(--border-2);
             border-radius: 6px;
             cursor: crosshair;
             touch-action: none;
@@ -1065,15 +1111,15 @@
             align-items: center;
             gap: 10px;
             padding: 10px 12px;
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            background: var(--surface-sunken);
+            border: 1px solid var(--border);
             border-radius: 6px;
             cursor: grab;
             transition: background 0.12s ease, transform 0.12s ease, border-color 0.12s ease;
         }
         .ranking-row:hover {
-            background: rgba(255, 255, 255, 0.05);
-            border-color: rgba(255, 255, 255, 0.08);
+            background: var(--surface-raise);
+            border-color: var(--border);
         }
         .ranking-row.dragging {
             opacity: 0.5;
@@ -1081,7 +1127,7 @@
         }
         .ranking-row.drop-target {
             border-color: var(--primary);
-            background: rgba(139, 92, 246, 0.08);
+            background: var(--surface-2);
         }
         .ranking-row.readonly {
             cursor: not-allowed;
@@ -1101,7 +1147,7 @@
             font-family: 'SF Mono', 'Fira Code', monospace;
         }
         .ranking-grip {
-            color: rgba(255, 255, 255, 0.25);
+            color: var(--faint);
             font-size: 14px;
             line-height: 1;
             letter-spacing: -1px;
@@ -1123,17 +1169,17 @@
             justify-content: center;
             padding: 0;
             background: transparent;
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--border);
             border-radius: 4px;
-            color: rgba(255, 255, 255, 0.5);
+            color: var(--dim);
             font-size: 10px;
             cursor: pointer;
             transition: all 0.1s ease;
         }
         .ranking-btn:hover:not(:disabled) {
-            background: rgba(139, 92, 246, 0.12);
-            border-color: rgba(139, 92, 246, 0.3);
-            color: #c4b5fd;
+            background: var(--surface-2);
+            border-color: var(--border-2);
+            color: var(--lilac);
         }
         .ranking-btn:disabled {
             opacity: 0.25;
@@ -1166,7 +1212,7 @@
             font-weight: 600;
             font-size: 12px;
             white-space: nowrap;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+            border-bottom: 1px solid var(--border-2);
         }
         /* Row headers sit on the left, left-aligned and readable. */
         .matrix-table tbody th[scope="row"] {
@@ -1181,7 +1227,7 @@
         }
         /* Zebra striping for legibility on the dark theme. */
         .matrix-table tbody tr:nth-child(even) {
-            background: rgba(255, 255, 255, 0.02);
+            background: var(--surface-sunken);
         }
         .matrix-table tbody tr:last-child th,
         .matrix-table tbody tr:last-child td {
@@ -1193,7 +1239,7 @@
             appearance: none;
             width: 18px; height: 18px;
             min-width: 18px;
-            border: 2px solid rgba(255, 255, 255, 0.2);
+            border: 2px solid var(--border-3);
             background: transparent;
             cursor: pointer;
             position: relative;
@@ -1213,14 +1259,14 @@
             top: 3px; left: 3px;
             width: 8px; height: 8px;
             border-radius: 50%;
-            background: #fff;
+            background: var(--surface);
         }
         .matrix-table input[type="checkbox"]:checked::after {
             content: '';
             position: absolute;
             left: 4px; top: 1px;
             width: 6px; height: 10px;
-            border: solid #fff;
+            border: solid var(--border-3);
             border-width: 0 2px 2px 0;
             transform: rotate(45deg);
         }
@@ -1240,29 +1286,29 @@
         .flo-table th, .flo-table td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
         .flo-table tbody tr:last-child td { border-bottom: none; }
         .flo-table thead th {
-            background: rgba(255,255,255,0.03); font-weight: 600; white-space: nowrap;
+            background: var(--surface-sunken); font-weight: 600; white-space: nowrap;
             color: var(--text-muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.4px;
         }
         .flo-table th.sortable { cursor: pointer; user-select: none; }
         .flo-table th.sortable:hover { color: var(--text); }
-        .flo-table th.sortable .sort-caret { color: rgba(255,255,255,0.35); margin-left: 4px; font-size: 11px; }
+        .flo-table th.sortable .sort-caret { color: var(--faint); margin-left: 4px; font-size: 11px; }
         .flo-table th.sorted { color: var(--text); }
-        .flo-table th.sorted .sort-caret { color: #a78bfa; }
-        .flo-table tbody tr.selected { background: rgba(139,92,246,0.16); }
+        .flo-table th.sorted .sort-caret { color: var(--lilac); }
+        .flo-table tbody tr.selected { background: var(--surface-2); }
         .flo-table tbody tr.selectable { cursor: pointer; }
-        .flo-table tbody tr.selectable:hover { background: rgba(255,255,255,0.04); }
+        .flo-table tbody tr.selectable:hover { background: var(--surface-raise); }
         .flo-table td.align-right { text-align: right; }
         .flo-table td.align-center { text-align: center; }
-        .flo-table a { color: #a78bfa; }
+        .flo-table a { color: var(--lilac); }
         .flo-table .cell-select-btn {
-            border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text);
+            border: 1px solid var(--border); background: var(--surface-raise); color: var(--text);
             border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; font-family: inherit;
             transition: background 0.15s, border-color 0.15s;
         }
-        .flo-table .cell-select-btn:hover { border-color: var(--border-focus); background: rgba(139,92,246,0.12); }
+        .flo-table .cell-select-btn:hover { border-color: var(--border-focus); background: var(--surface-2); }
         .flo-table tr.selected .cell-select-btn { background: var(--primary); border-color: var(--primary); color: #fff; }
         .flo-table input[type="radio"], .flo-table input[type="checkbox"] { accent-color: var(--primary); cursor: pointer; }
-        .flo-table .filter-row td { padding: 6px 10px; background: rgba(0,0,0,0.15); }
+        .flo-table .filter-row td { padding: 6px 10px; background: var(--surface-sunken); }
         .flo-table .filter-row input {
             width: 100%; font-size: 13px; padding: 6px 8px; color: var(--text);
             background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; outline: none;
@@ -1314,7 +1360,7 @@
     {{ end }}
     <div class="footer">
         <a href="https://www.flomation.co" target="_blank" title="Powered by Flomation">
-            <img src="/flomation-wordtype-small-white.png" alt="Powered by Flomation"/>
+            <img src="/flomation-wordmark-ink.png" alt="Powered by Flomation"/>
         </a>
     </div>
 </div>
@@ -2735,7 +2781,7 @@
         canvas.height = 160;
         if (component.read_only) canvas.classList.add("readonly");
         const ctx = canvas.getContext("2d");
-        ctx.strokeStyle = "#ffffff";
+        ctx.strokeStyle = "#342a38";
         ctx.lineWidth = 2;
         ctx.lineJoin = "round";
         ctx.lineCap = "round";
