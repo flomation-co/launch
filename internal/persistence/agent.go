@@ -16,25 +16,21 @@ func (s *Service) UpsertAgentRegistration(reg launch.AgentRegistration) error {
 	}
 
 	_, err := s.stmtUpsertAgentRegistration.Exec(struct {
-		AgentID              string          `db:"agent_id"`
-		OrchestratorFlowID   *string         `db:"orchestrator_flow_id"`
-		TriggerID            *string         `db:"trigger_id"`
-		Channels             json.RawMessage `db:"channels"`
-		EnvironmentID        *string         `db:"environment_id"`
-		MaxExecutionsPerHour int             `db:"max_executions_per_hour"`
-		RequiresApproval     bool            `db:"requires_approval"`
-		SystemPrompt         *string         `db:"system_prompt"`
-		APIURL               string          `db:"api_url"`
+		AgentID            string          `db:"agent_id"`
+		OrchestratorFlowID *string         `db:"orchestrator_flow_id"`
+		TriggerID          *string         `db:"trigger_id"`
+		Channels           json.RawMessage `db:"channels"`
+		EnvironmentID      *string         `db:"environment_id"`
+		SystemPrompt       *string         `db:"system_prompt"`
+		APIURL             string          `db:"api_url"`
 	}{
-		AgentID:              reg.AgentID,
-		OrchestratorFlowID:   reg.OrchestratorFlowID,
-		TriggerID:            reg.TriggerID,
-		Channels:             channels,
-		EnvironmentID:        reg.EnvironmentID,
-		MaxExecutionsPerHour: reg.MaxExecutionsPerHour,
-		RequiresApproval:     reg.RequiresApproval,
-		SystemPrompt:         reg.SystemPrompt,
-		APIURL:               reg.APIURL,
+		AgentID:            reg.AgentID,
+		OrchestratorFlowID: reg.OrchestratorFlowID,
+		TriggerID:          reg.TriggerID,
+		Channels:           channels,
+		EnvironmentID:      reg.EnvironmentID,
+		SystemPrompt:       reg.SystemPrompt,
+		APIURL:             reg.APIURL,
 	})
 	return err
 }
